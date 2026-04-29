@@ -1,6 +1,14 @@
 /**
- * ESP32 IMU Bridge — PhD-Grade Binary Firmware v3.0
- * ==================================================
+ * ESP32 IMU + Camera-Master Sync Bridge — v4.0
+ * ============================================
+ * Camera (D455) is the master at 90 fps; ESP32 receives the camera's
+ * FRAME_SYNC pulses on GPIO 27 (input, rising-edge interrupt) and timestamps
+ * each one. Same wire also feeds the IMU's FSYNC pad. No LEDC generation here.
+ *
+ * Trigger source: D455 aux port pin 5 (1.8 V CMOS). DIRECT to ESP GPIO 27 +
+ * IMU FSYNC, no level shifter — relies on real-silicon VIH being below the
+ * datasheet 0.7×VDD spec. firmware reports cam_trigger_count to verify.
+ *
  * ICM42688-P @ 1kHz, interrupt-driven, ±16g/±2000dps
  * 26-byte CRC-protected binary packets @ 921600 baud
  *
@@ -39,6 +47,8 @@
 
 #include <Arduino.h>
 #include <SPI.h>
+#include <WiFi.h>
+#include <esp_now.h>
 #include "driver/gpio.h"
 
 // ============================================================================
@@ -48,17 +58,9 @@ static constexpr int PIN_SCK  = 18;
 static constexpr int PIN_MISO = 19;
 static constexpr int PIN_MOSI = 23;
 static constexpr int PIN_CS   = 5;
-static constexpr int PIN_INT1 = 26;
-static constexpr int PIN_TRIG = 27;   // → IMU FSYNC + Cat5e pin 2 (was GPIO 25)
-static constexpr int PIN_LED  = 2;    // onboard LED, visual heartbeat
-
-// Camera trigger. D455 hardware limits external trigger to ≤ native_fps / 2.
-// At 848x480 native 90 fps, max trigger is 45 Hz → captured rate = 45 fps.
-//   period = 1/45 s ≈ 22.22 ms,   1 ms pulse → duty = 1000/22222 ≈ 4.5%
-static constexpr float TRIG_FREQ_HZ   = 45.0f;
-static constexpr float TRIG_DUTY_FRAC = 0.045f;
-static constexpr int   LEDC_CHANNEL   = 0;
-static constexpr int   LEDC_RES_BITS  = 13;
+static constexpr int PIN_INT1     = 26;
+static constexpr int PIN_CAM_TRIG = 27;   // INPUT: D455 SYNC out (1.8V) + IMU FSYNC (in parallel)
+static constexpr int PIN_LED      = 2;    // onboard LED, visual heartbeat
 
 // ============================================================================
 // ICM42688-P Registers (Bank 0)
@@ -160,11 +162,44 @@ static uint16_t g_last_tmst_fsync = 0;
 static uint8_t  g_last_temp_lsb = 0;     // raw TEMP_DATA0 byte from latest sample
 static uint8_t  g_last_int_status2 = 0;  // raw INT_STATUS2 from latest poll
 
+// Camera-master trigger input (PIN_CAM_TRIG): the D455 SYNC line edges as seen
+// by the ESP. Compare cam_trig_count to fsync_hits — if these match, both
+// chips see the 1.8V signal. If cam_trig_count is much higher than fsync_hits
+// the IMU isn't seeing the edges (level too low) and you need a shifter.
+static volatile uint32_t g_cam_trig_count = 0;
+static volatile int64_t  g_last_cam_trig_us = 0;
+static uint32_t g_last_cam_trig_count = 0;
+
+// ESP-NOW unicast to the relay ESP. Broadcast is rate-limited to ~100 Hz on
+// ESP32 and drops 99% of packets at IMU's 988 Hz; unicast has ACK + retry.
+// To find your relay's MAC, look at its boot output line "# Relay MAC: …"
+static const uint8_t RELAY_MAC[6] = {0x68, 0x25, 0xDD, 0x32, 0x78, 0x54};
+static uint32_t g_espnow_send_count = 0;
+static uint32_t g_espnow_fail_count = 0;
+
+// Batching: pack 8 IMU samples per ESP-NOW packet (8 × 26 = 208 bytes < 250 limit).
+// Drops radio packet rate from 988 Hz → 124 Hz, comfortably within ESP-NOW capacity.
+static constexpr size_t BATCH_N    = 8;
+static constexpr size_t PACKET_LEN = 26;
+static uint8_t g_batch_buf[BATCH_N * PACKET_LEN];
+static size_t  g_batch_idx = 0;
+
 // ============================================================================
-// Interrupt Handler
+// Interrupt Handlers
 // ============================================================================
 static void IRAM_ATTR isr_data_ready() {
     g_data_ready = true;
+}
+
+static void IRAM_ATTR isr_cam_trigger() {
+    // The 1.8V camera output sits right at the ESP32's input threshold,
+    // so the rising edge can ring through the threshold several times in a
+    // few µs producing many spurious ISRs. Real camera pulses are ≥10 ms
+    // apart at 90 fps, so reject any ISR firing within 5 ms of the last.
+    int64_t now = esp_timer_get_time();
+    if ((now - g_last_cam_trig_us) < 5000) return;
+    g_cam_trig_count++;
+    g_last_cam_trig_us = now;
 }
 
 // ============================================================================
@@ -252,35 +287,49 @@ static bool imu_init() {
 }
 
 // ============================================================================
-// Camera + IMU trigger (LEDC, hardware-timed, <100ns jitter)
+// ESP-NOW transmitter (sends 26-byte IMU packets to the relay ESP)
 // ============================================================================
-static void trigger_init() {
-    pinMode(PIN_TRIG, OUTPUT);
-    pinMode(PIN_LED,  OUTPUT);
+static void on_espnow_sent(const uint8_t* mac, esp_now_send_status_t st) {
+    if (st != ESP_NOW_SEND_SUCCESS) g_espnow_fail_count++;
+}
 
-    // Self-test: drive PIN_TRIG manually HIGH/LOW and read back from the same pin
-    // via gpio_get_level(). This proves the pin is electrically alive without
-    // needing any external connection or instrument.
-    Serial.printf("# TRIGGER: pin readback self-test on GPIO %d ...\n", PIN_TRIG);
-    int hi_seen = 0, lo_seen = 0;
-    for (int i = 0; i < 10; i++) {
-        digitalWrite(PIN_TRIG, HIGH); digitalWrite(PIN_LED, HIGH);
-        delay(50);
-        if (gpio_get_level((gpio_num_t)PIN_TRIG) == 1) hi_seen++;
-        digitalWrite(PIN_TRIG, LOW);  digitalWrite(PIN_LED, LOW);
-        delay(50);
-        if (gpio_get_level((gpio_num_t)PIN_TRIG) == 0) lo_seen++;
+static void espnow_init() {
+    WiFi.mode(WIFI_STA);
+    WiFi.disconnect();
+    if (esp_now_init() != ESP_OK) {
+        Serial.println("# ESP-NOW: init failed");
+        return;
     }
-    Serial.printf("# TRIGGER: readback HIGH=%d/10, LOW=%d/10 (both should be 10/10)\n",
-                  hi_seen, lo_seen);
+    esp_now_register_send_cb(on_espnow_sent);
+    esp_now_peer_info_t peer = {};
+    memcpy(peer.peer_addr, RELAY_MAC, 6);
+    peer.channel = 0;
+    peer.encrypt = false;
+    peer.ifidx   = WIFI_IF_STA;
+    if (esp_now_add_peer(&peer) != ESP_OK) {
+        Serial.println("# ESP-NOW: add_peer(unicast) failed");
+        return;
+    }
+    Serial.printf("# ESP-NOW: bar MAC=%s, unicast to relay %02X:%02X:%02X:%02X:%02X:%02X, "
+                  "batching %u samples/packet\n",
+                  WiFi.macAddress().c_str(),
+                  RELAY_MAC[0], RELAY_MAC[1], RELAY_MAC[2], RELAY_MAC[3], RELAY_MAC[4], RELAY_MAC[5],
+                  (unsigned)BATCH_N);
+}
 
-    double actual_freq = ledcSetup(LEDC_CHANNEL, TRIG_FREQ_HZ, LEDC_RES_BITS);
-    ledcAttachPin(PIN_TRIG, LEDC_CHANNEL);
-    const uint32_t maxDuty = 1U << LEDC_RES_BITS;
-    const uint32_t duty = (uint32_t)(TRIG_DUTY_FRAC * maxDuty);
-    ledcWrite(LEDC_CHANNEL, duty);
-    Serial.printf("# TRIGGER: LEDC ch=%d on GPIO %d, requested=%.1f Hz, actual=%.2f Hz, duty=%u/%u (%.0f%% HIGH)\n",
-                  LEDC_CHANNEL, PIN_TRIG, TRIG_FREQ_HZ, actual_freq, duty, maxDuty, TRIG_DUTY_FRAC*100);
+// ============================================================================
+// Camera trigger INPUT (camera is master; we listen)
+// ============================================================================
+static void cam_trigger_input_init() {
+    // Pull-down anchors the line at 0V when camera isn't driving it.
+    // Without this, a floating GPIO27 picks up RF/noise and the ISR fires
+    // tens of kHz of spurious "edges". The 1.8V camera output is strong enough
+    // to cleanly overcome a 75kΩ internal pull-down.
+    pinMode(PIN_CAM_TRIG, INPUT_PULLDOWN);
+    pinMode(PIN_LED, OUTPUT);
+    attachInterrupt(digitalPinToInterrupt(PIN_CAM_TRIG), isr_cam_trigger, RISING);
+    Serial.printf("# CAM_TRIG: GPIO %d INPUT_PULLDOWN, RISING-edge ISR attached\n", PIN_CAM_TRIG);
+    Serial.println("# CAM_TRIG: counting camera FRAME_SYNC pulses (1.8V CMOS, no level shifter)");
 }
 
 // ============================================================================
@@ -318,7 +367,14 @@ static void read_and_send() {
     uint16_t crc = crc16_ccitt(buf, 24);
     memcpy(&buf[24], &crc,  2);             // CRC16
 
-    Serial.write(buf, 26);
+    // Append to batch buffer; flush when full
+    memcpy(&g_batch_buf[g_batch_idx * PACKET_LEN], buf, PACKET_LEN);
+    g_batch_idx++;
+    if (g_batch_idx >= BATCH_N) {
+        if (esp_now_send(RELAY_MAC, g_batch_buf, BATCH_N * PACKET_LEN) == ESP_OK)
+            g_espnow_send_count++;
+        g_batch_idx = 0;
+    }
     g_sample_count++;
 
     g_last_temp_lsb = raw[1];
@@ -345,8 +401,8 @@ void setup() {
     Serial.begin(921600);
     delay(500);
     Serial.println();
-    Serial.println("# ESP32 IMU Bridge v3.0 (binary, interrupt-driven)");
-    Serial.println("# PhD-Grade VBT Data Collection System");
+    Serial.println("# ESP32 IMU + Camera-Master Sync Bridge v4.0");
+    Serial.println("# Mode: D455 is master, ESP listens on GPIO 27 (1.8V direct)");
 
     // SPI init
     pinMode(PIN_CS, OUTPUT);
@@ -368,8 +424,11 @@ void setup() {
     Serial.println("# Filter: 3rd-order, BW=ODR/4 (250Hz)");
     Serial.println("# FSYNC: tagged into TEMP LSB (host: fsync = temp_raw & 0x01)");
 
-    // Trigger driving GPIO 25 → IMU FSYNC + Cat5e to D455 (debug rate, see top of file)
-    trigger_init();
+    // Camera SYNC OUT (1.8V) feeds GPIO 27 + IMU FSYNC pad in parallel.
+    cam_trigger_input_init();
+
+    // Wireless: send IMU samples to relay ESP via ESP-NOW (no USB cable to PC)
+    espnow_init();
 
     // Attempt to attach INT1 interrupt
     pinMode(PIN_INT1, INPUT);
@@ -434,11 +493,15 @@ void loop() {
     if (now_ms - g_last_status_ms >= 5000) {
         uint32_t delta = g_sample_count - g_last_status_count;
         float rate = delta / 5.0f;
-        Serial.printf("# STATUS: rate=%.1f Hz, total=%u, mode=%s | fsync_hits=%u, ui_fsync_int=%u, tmst_fsync=%u us, temp0=0x%02X, int_st2=0x%02X\n",
-                       rate, g_sample_count,
-                       g_use_interrupt ? "INT" : "POLL",
-                       g_fsync_hits, g_ui_fsync_int, g_last_tmst_fsync,
-                       g_last_temp_lsb, g_last_int_status2);
+        uint32_t trig_total = g_cam_trig_count;
+        uint32_t trig_recent = trig_total - g_last_cam_trig_count;
+        float trig_rate = trig_recent / 5.0f;
+        g_last_cam_trig_count = trig_total;
+        Serial.printf("# STATUS: imu=%.1fHz/%u | cam_trig=%.1fHz/%u | fsync_hits=%u | "
+                      "tmst_fsync=%u us | espnow_sent=%u fail=%u\n",
+                      rate, g_sample_count, trig_rate, trig_total,
+                      g_fsync_hits, g_last_tmst_fsync,
+                      g_espnow_send_count, g_espnow_fail_count);
         g_last_status_ms = now_ms;
         g_last_status_count = g_sample_count;
     }

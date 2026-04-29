@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(/home/galaxy/Desktop/data_collection/.venv/bin/python -)"
+    ]
+  }
+}

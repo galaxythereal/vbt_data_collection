@@ -29,6 +29,21 @@ bool CameraReader::open(const CameraConfig& config) {
         if (config_.enable_rgb)
             rs_config_.enable_stream(RS2_STREAM_COLOR, 848, 480, RS2_FORMAT_BGR8, config_.rgb_fps);
 
+        // Set hardware sync mode (must happen BEFORE pipeline.start). With mode=1
+        // (master) the D455 drives a 90 Hz pulse out of aux pin 5 which the ESP
+        // wires to the IMU's FSYNC pad — gives full-rate hard sync on every frame.
+        for (auto& s : devices[0].query_sensors()) {
+            if (s.supports(RS2_OPTION_INTER_CAM_SYNC_MODE)) {
+                s.set_option(RS2_OPTION_INTER_CAM_SYNC_MODE, (float)config_.hw_sync_mode);
+                spdlog::info("D455 sensor '{}' inter_cam_sync_mode = {}",
+                             s.get_info(RS2_CAMERA_INFO_NAME), config_.hw_sync_mode);
+            }
+            // Bigger frame queue absorbs host-side processing pauses at 90 fps
+            if (s.supports(RS2_OPTION_FRAMES_QUEUE_SIZE)) {
+                try { s.set_option(RS2_OPTION_FRAMES_QUEUE_SIZE, 16.0f); } catch (...) {}
+            }
+        }
+
         profile_ = pipeline_.start(rs_config_);
         auto device = profile_.get_device();
         auto sensor = device.first<rs2::depth_sensor>();
