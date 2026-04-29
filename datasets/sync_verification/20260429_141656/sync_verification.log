@@ -1,0 +1,45 @@
+# Sync Verification — 20260429_141656
+# duration=25s, bar=/dev/ttyUSB0, relay=/dev/ttyUSB1
+# output: datasets/sync_verification/20260429_141656
+
+→ Probing both ports to identify bar vs relay…
+  WARN: could not unambiguously identify ports: {'/dev/ttyUSB0': 'BAR', '/dev/ttyUSB1': '?'}
+  bar  = /dev/ttyUSB0
+  relay= /dev/ttyUSB1
+
+→ Resetting bar ESP for fresh counters…
+→ Starting D455 in master mode (90 fps, 848×480 z16)…
+  USB: 3.2, FW: 5.17.0.10
+→ Streaming for 25 s …
+  +  5.0s  cam fn=431  rate=86.26 fps  missed=0
+  + 10.0s  cam fn=881  rate=88.07 fps  missed=0
+  + 15.0s  cam fn=1331  rate=88.67 fps  missed=0
+  + 20.0s  cam fn=1781  rate=88.87 fps  missed=2
+
+=== SUMMARY ===
+
+  Camera:
+    frames captured     : 2226
+    rate                : 83.27 fps  (target ~90)
+    missed (frame-num gap): 3
+
+  Bar ESP:
+    IMU samples         : 24696 (987.8 Hz)
+    cam_trig detected   : 2109  (last interval rate 90.0 Hz)
+    fsync_hits (IMU)    : 2109
+    cam_trig vs fsync   : 0 difference  (must be ≤1)
+    ESP-NOW sent / fail : 3087 / 0  (99.97% success)
+
+  PC USB serial (relay output):
+    sync words delivered: 26703  (= 998.9 Hz)
+
+  Pass / fail:
+    ✅  camera_steady_rate
+    ✅  cam_trig_matches_fsync
+    ✅  espnow_success_rate
+    ❌  relay_no_overruns
+    ✅  imu_samples_delivered
+
+  OVERALL: ❌ FAIL
+
+→ All artifacts written to: datasets/sync_verification/20260429_141656
