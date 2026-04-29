@@ -4,7 +4,9 @@
  */
 #include "app/Application.h"
 #include "app/Config.h"
+#include "app/Version.h"
 #include "gui/MainWindow.h"
+#include "utils/AudioCue.h"
 #include <spdlog/spdlog.h>
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
@@ -22,10 +24,16 @@ Application::Application() = default;
 Application::~Application() { shutdown(); }
 
 bool Application::init(int argc, char** argv) {
+    // Banner — pin build provenance to the log
+    spdlog::info("VBT v{} | git {} ({}) | built {}",
+                 kAppVersion, kGitSha, kGitBranch, kBuildTimestamp);
+
     // Load or create default config
     std::string config_path = "vbt_config.json";
     if (argc > 1) config_path = argv[1];
     load_config(config_path, config_);
+
+    AudioCue::set_enabled(config_.enable_audio_cues);
 
     session_ = std::make_unique<Session>();
 

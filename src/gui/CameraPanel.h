@@ -82,6 +82,9 @@ private:
             format = GL_RED;
             // Map red channel to RGB so it shows as grayscale instead of red
             GLint swizzleMask[] = {GL_RED, GL_RED, GL_RED, GL_ONE};
+#ifndef GL_TEXTURE_SWIZZLE_RGBA
+#define GL_TEXTURE_SWIZZLE_RGBA 0x8E46
+#endif
             glTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_RGBA, swizzleMask);
         } else if (image.channels() == 4) {
             format = GL_RGBA;
