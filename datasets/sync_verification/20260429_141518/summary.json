@@ -1,0 +1,37 @@
+{
+  "timestamp": "20260429_141518",
+  "duration_s": 26.733951568603516,
+  "camera": {
+    "frames": 2223,
+    "rate_fps": 83.15269047658118,
+    "missed": 6,
+    "usb": "3.2"
+  },
+  "bar": {
+    "imu_rate_hz": 987.8,
+    "imu_total": 24697,
+    "cam_trig_rate": 89.8,
+    "cam_trig_total": 2109,
+    "fsync_hits": 2111,
+    "tmst_fsync_us": 62,
+    "espnow_sent": 3087,
+    "espnow_fail": 0
+  },
+  "relay": {
+    "recv_pkts": 61545,
+    "recv_rate_pkt": 104.4,
+    "recv_bytes": 12801360,
+    "fwd_bytes": 12801360,
+    "overruns": 0
+  },
+  "pc_sync_words": 26760,
+  "pc_sync_rate_hz": 1000.9743576937977,
+  "verdict": {
+    "camera_steady_rate": false,
+    "cam_trig_matches_fsync": false,
+    "espnow_success_rate": true,
+    "relay_no_overruns": true,
+    "imu_samples_delivered": true
+  },
+  "overall_pass": false
+}
