@@ -24,10 +24,21 @@ bool SerialPort::open(const std::string& port, int baud_rate) {
 
     speed_t speed;
     switch (baud_rate) {
+#ifdef B2000000
         case 2000000: speed = B2000000; break;
+#endif
+#ifdef B921600
         case 921600:  speed = B921600; break;
+#endif
         case 115200:  speed = B115200; break;
-        default: ::close(fd_); fd_ = -1; return false;
+        default:
+#ifdef __APPLE__
+            // macOS uses IOSSIOSPEED for non-standard rates; fall through to set custom speed below.
+            speed = B115200;
+            break;
+#else
+            ::close(fd_); fd_ = -1; return false;
+#endif
     }
     cfsetispeed(&tty, speed);
     cfsetospeed(&tty, speed);

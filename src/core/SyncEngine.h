@@ -67,6 +67,14 @@ public:
     void update_drift(uint64_t esp_us, double host_s);
     double get_current_drift_ppm() const { return current_drift_ppm_; }
 
+    // ========================================================================
+    // Auto-rearm: monitor drift; if it exceeds auto_rearm_drift_ppm for
+    // auto_rearm_sustain_s seconds, set rearm_required_ true. The GUI inspects
+    // this flag, raises a banner, and the operator must run a fresh tap-test.
+    // ========================================================================
+    bool rearm_required() const { return rearm_required_; }
+    void clear_rearm()           { rearm_required_ = false; rearm_excess_start_ = 0.0; }
+
 private:
     SyncConfig config_;
 
@@ -89,6 +97,10 @@ private:
     // Drift tracking
     double current_drift_ppm_ = 0.0;
     std::vector<std::pair<double, double>> drift_samples_; // (host_time, esp_time)
+
+    // Auto-rearm state
+    bool   rearm_required_      = false;
+    double rearm_excess_start_  = 0.0;   // host_s when |drift| first crossed threshold
 };
 
 } // namespace vbt

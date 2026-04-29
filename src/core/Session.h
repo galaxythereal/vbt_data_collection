@@ -5,21 +5,27 @@
  * @brief Session lifecycle management: creation, recording, and storage.
  *
  * Manages the directory structure, metadata, and coordinates all
- * sub-components during a recording session.
+ * sub-components during a recording session. Sessions are written to a
+ * `.partial/` directory while in progress and atomically renamed on save,
+ * so a crash mid-session leaves a recoverable on-disk artifact rather
+ * than corrupting the dataset.
  */
 
 #include <string>
 #include <memory>
 #include <atomic>
 #include <chrono>
+#include <vector>
 #include "app/Config.h"
 #include "sensors/IMUReader.h"
 #include "sensors/CameraReader.h"
 #include "sensors/MarkerTracker.h"
 #include "core/SyncEngine.h"
 #include "core/DataLogger.h"
+#include "core/EventLog.h"
 #include "processing/RepSegmenter.h"
 #include "processing/Validator.h"
+#include "processing/Autoregulation.h"
 
 namespace vbt {
 
@@ -41,10 +47,16 @@ public:
     // ========================================================================
     // Lifecycle
     // ========================================================================
-    bool create(const std::string& dataset_root, const SessionInfo& info);
+    bool create(const std::string& dataset_root, const SessionInfo& info,
+                bool bids_layout = false);
     bool start_recording();
     void stop_recording();
     void save();
+    void discard();    // delete current .partial directory
+
+    /// On startup, scan dataset_root for orphaned .partial sessions and return
+    /// their absolute paths. The GUI can offer recover/discard/inspect.
+    static std::vector<std::string> find_orphaned_partials(const std::string& dataset_root);
 
     // ========================================================================
     // State
@@ -53,6 +65,7 @@ public:
     std::string  get_state_string() const;
     std::string  get_session_dir() const { return session_dir_; }
     const SessionInfo& get_info() const { return info_; }
+    SessionInfo&       mutable_info() { return info_; }
 
     // ========================================================================
     // Recording Statistics
@@ -76,14 +89,20 @@ public:
     SyncEngine&      sync()       { return *sync_engine_; }
     RepSegmenter&    segmenter()  { return *rep_segmenter_; }
     Validator&       validator()  { return *validator_; }
+    Autoregulation&  autoreg()    { return autoreg_; }
+    EventLog&        events()     { return event_log_; }
 
 private:
     void create_directory_structure();
     void write_metadata();
+    void write_manifest();
+    std::string build_dataset_path(const std::string& root) const;
 
     SessionState state_ = SessionState::IDLE;
     SessionInfo  info_;
-    std::string  session_dir_;
+    std::string  session_dir_;        // active path; ends in `.partial` while recording
+    std::string  final_dir_;          // path it will be renamed to on save
+    bool         bids_layout_ = false;
 
     // Components
     std::unique_ptr<IMUReader>      imu_reader_;
@@ -93,6 +112,8 @@ private:
     std::unique_ptr<DataLogger>     data_logger_;
     std::unique_ptr<RepSegmenter>   rep_segmenter_;
     std::unique_ptr<Validator>      validator_;
+    EventLog                        event_log_;
+    Autoregulation                  autoreg_;
 
     // Recording time
     std::chrono::steady_clock::time_point recording_start_;

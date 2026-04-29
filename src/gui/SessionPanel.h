@@ -67,17 +67,29 @@ public:
                 info.set_number = set_number_;
                 info.rpe = rpe_;
                 info.notes = notes_;
-                session.create(app_.config().dataset_root, info);
+
+                // Auto-load exercise profile defaults if available
+                if (auto* prof = find_exercise_profile(app_.config(), info.exercise)) {
+                    app_.config().rep_seg.lowpass_cutoff_hz   = prof->lowpass_cutoff_hz;
+                    app_.config().rep_seg.velocity_start_thresh = prof->velocity_start_thresh;
+                    app_.config().rep_seg.velocity_rest_thresh  = prof->velocity_rest_thresh;
+                    app_.config().rep_seg.min_rep_displacement_m = prof->min_rep_displacement_m;
+                    session.autoreg().set_threshold(prof->velocity_loss_threshold_pct);
+                }
+                session.autoreg().set_load_kg(total);
+
+                session.create(app_.config().dataset_root, info, app_.config().bids_layout);
             }
         }
 
         if (state == SessionState::CONFIGURED || state == SessionState::READY) {
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.55f, 0.20f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.20f, 0.70f, 0.25f, 1.0f));
-            if (ImGui::Button("START RECORDING", ImVec2(-1, 42))) {
-                session.start_recording();
+            if (ImGui::Button("START RECORDING (Space)", ImVec2(-1, 42))) {
+                request_preflight_ = true;
             }
             ImGui::PopStyleColor(2);
+            ImGui::TextDisabled("Space → pre-flight check → record");
         }
 
         if (state == SessionState::RECORDING) {
@@ -116,6 +128,12 @@ public:
         }
     }
 
+    bool consume_preflight_request() {
+        bool r = request_preflight_;
+        request_preflight_ = false;
+        return r;
+    }
+
 private:
     Application& app_;
     char subject_id_[64] = "S01";
@@ -126,6 +144,7 @@ private:
     int set_number_ = 1;
     int rpe_ = 7;
     char notes_[256] = "";
+    bool request_preflight_ = false;
 };
 
 } // namespace vbt
