@@ -52,11 +52,15 @@ struct CameraConfig {
     float  marker_min_area = 20.0f; // Min blob area in pixels
     float  marker_max_area = 500.0f;
     int    marker_threshold = 200;  // Binary threshold for IR marker detection
+    // 1 = master (camera drives 90 Hz sync pulse on aux pin 5 → ESP/IMU FSYNC).
+    // Slave modes (2,3,4) are capped at native_fps/2 by D455 hardware, so master
+    // is the only option for full-rate externally-aligned capture at 90 fps.
+    int    hw_sync_mode    = 1;
 
     NLOHMANN_DEFINE_TYPE_INTRUSIVE(CameraConfig, width, height, fps, exposure_us,
                                    gain, emitter_on, enable_depth, enable_rgb,
                                    rgb_fps, marker_min_area, marker_max_area,
-                                   marker_threshold)
+                                   marker_threshold, hw_sync_mode)
 };
 
 // ============================================================================
