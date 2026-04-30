@@ -37,6 +37,7 @@ public:
 
 private:
     void render_menu_bar();
+    void render_top_toolbar();        // primary CTAs + live hardware status
     void render_sensor_section();
     void render_sync_section();
     void render_status_bar();

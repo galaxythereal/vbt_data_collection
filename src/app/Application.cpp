@@ -6,6 +6,7 @@
 #include "app/Config.h"
 #include "app/Version.h"
 #include "gui/MainWindow.h"
+#include "gui/Fonts.h"
 #include "utils/AudioCue.h"
 #include <spdlog/spdlog.h>
 #include <imgui.h>
@@ -14,11 +15,18 @@
 #include <implot.h>
 #include <GLFW/glfw3.h>
 #include <fstream>
+#include <filesystem>
 
 namespace vbt {
 // Forward declarations for config helpers (defined in Config.cpp)
 bool load_config(const std::string& path, AppConfig& config);
 bool save_config(const std::string& path, const AppConfig& config);
+
+// Font globals (defined in gui/Fonts.h, populated during init_imgui)
+ImFont* g_font_default = nullptr;
+ImFont* g_font_title   = nullptr;
+ImFont* g_font_mono    = nullptr;
+ImFont* g_font_metric  = nullptr;
 
 Application::Application() = default;
 Application::~Application() { shutdown(); }
@@ -76,6 +84,22 @@ bool Application::init_imgui() {
 
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+
+    // ── Load proper TrueType fonts (replaces blurry Proggy default) ──
+    // Try a few common Linux paths, fall back to ImGui's bundled font.
+    auto try_load = [&](const char* path, float px) -> ImFont* {
+        for (const char* prefix : {"", "/usr/share/fonts/TTF/", "/usr/share/fonts/truetype/dejavu/",
+                                   "/usr/share/fonts/noto/"}) {
+            std::string p = std::string(prefix) + path;
+            if (std::filesystem::exists(p)) return io.Fonts->AddFontFromFileTTF(p.c_str(), px);
+        }
+        return nullptr;
+    };
+    g_font_default = try_load("DejaVuSans.ttf",       16.0f);
+    g_font_title   = try_load("DejaVuSans-Bold.ttf",  24.0f);
+    g_font_mono    = try_load("DejaVuSansMono.ttf",   15.0f);
+    g_font_metric  = try_load("DejaVuSans-Bold.ttf",  20.0f);
+    if (!g_font_default) io.Fonts->AddFontDefault();
 
     // Dark theme with custom colors
     ImGui::StyleColorsDark();
