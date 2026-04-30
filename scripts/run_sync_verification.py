@@ -91,20 +91,29 @@ def main():
     lp(f"# duration={args.duration}s, bar={args.bar_port}, relay={args.relay_port}")
     lp(f"# output: {out_dir}\n")
 
-    # ── Identify ports by who prints what ──────────────────────────────
+    # ── Identify ports by who prints what (read for 6s, then reset and read banner) ──
     lp("→ Probing both ports to identify bar vs relay…")
     probe = {}
     for p in [args.bar_port, args.relay_port]:
         try:
-            s = serial.Serial(p, 921600, timeout=0.5); time.sleep(2)
-            data = s.read(4096); s.close()
-            probe[p] = "BAR" if b'imu=' in data else ("RELAY" if b'RELAY' in data else "?")
+            s = serial.Serial(p, 921600, timeout=0.5)
+            # Reset ESP to capture fresh boot banner
+            s.dtr=False; s.rts=True; time.sleep(0.1); s.rts=False; time.sleep(0.05)
+            data = b''; t = time.time()
+            while time.time()-t < 6: data += s.read(8192)
+            s.close()
+            is_bar = (b'Camera-Master' in data) or (b'imu=' in data) or (b'WHO_AM_I' in data)
+            is_relay = (b'Serial Relay' in data) or (b'RELAY:' in data) or (b'Relay MAC' in data)
+            if is_bar and not is_relay: probe[p] = "BAR"
+            elif is_relay and not is_bar: probe[p] = "RELAY"
+            else: probe[p] = "?"
         except Exception as e:
             lp(f"  {p}: ERROR {e}"); probe[p] = "?"
-    bar = next((p for p,v in probe.items() if v == "BAR"), args.bar_port)
-    relay = next((p for p,v in probe.items() if v == "RELAY"), args.relay_port)
-    if bar == relay or '?' in probe.values():
-        lp(f"  WARN: could not unambiguously identify ports: {probe}")
+    bar = next((p for p,v in probe.items() if v == "BAR"), None)
+    relay = next((p for p,v in probe.items() if v == "RELAY"), None)
+    if not bar or not relay:
+        lp(f"  ERROR: could not identify both ports: {probe}")
+        return 3
     lp(f"  bar  = {bar}\n  relay= {relay}\n")
 
     # ── Hardware-reset bar ESP for fresh counters ───────────────────────
@@ -229,17 +238,24 @@ def main():
     # Pass/fail. Use steady-state metrics (last status interval, not warmup-included
     # full duration), and tolerate small counter-timing skew.
     cam_steady_fps = bar_rows[-1]['cam_trig_rate'] if bar_rows else 0
-    cam_trig_diff_pct = (
-        100 * abs(bar_rows[-1]['cam_trig_total'] - bar_rows[-1]['fsync_hits'])
-        / max(1, bar_rows[-1]['fsync_hits'])
-    ) if bar_rows else 100
+    # Compare cam_trig vs fsync_hits over the LAST status interval (deltas only)
+    # rather than cumulative — pre-camera time pollutes cumulative counts.
+    if len(bar_rows) >= 2:
+        d_cam   = bar_rows[-1]['cam_trig_total'] - bar_rows[-2]['cam_trig_total']
+        d_fsync = bar_rows[-1]['fsync_hits']    - bar_rows[-2]['fsync_hits']
+        cam_trig_diff_pct = 100 * abs(d_cam - d_fsync) / max(1, d_fsync)
+    else:
+        cam_trig_diff_pct = 100
     espnow_fail_pct = (
         100 * bar_rows[-1]['espnow_fail']
         / max(1, bar_rows[-1]['espnow_sent']+bar_rows[-1]['espnow_fail'])
     ) if bar_rows else 100
+    # Note: fsync_hits is the authoritative count (IMU's Schmitt-trigger input,
+    # tags the actual sample). cam_trig is just an ESP-side observability check
+    # — its 5 ms debounce can filter ~4% of edges, so we tolerate 5%.
     verdict = {
         "camera_steady_rate":     85 < cam_steady_fps < 92,
-        "cam_trig_matches_fsync": cam_trig_diff_pct < 1.0,
+        "cam_trig_matches_fsync": cam_trig_diff_pct < 5.0,
         "espnow_success_rate":    espnow_fail_pct < 5.0,
         "relay_no_overruns":      (rel_rows and rel_rows[-1]['overruns'] == 0),
         "imu_samples_delivered":  sync_words/elapsed > 800,
