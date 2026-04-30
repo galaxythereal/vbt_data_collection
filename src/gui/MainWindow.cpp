@@ -3,6 +3,7 @@
  * @brief ImGui main window with professional tiled layout.
  */
 #include "gui/MainWindow.h"
+#include "gui/Fonts.h"
 #include "gui/SensorPanel.h"
 #include "gui/SessionPanel.h"
 #include "gui/PlotPanel.h"
@@ -36,6 +37,25 @@ CalibrationManager& shared_calib_mgr() {
     static CalibrationManager m;
     return m;
 }
+
+// Filled rounded-corner status pill — much more glanceable than "● text".
+// Use for binary states (Connected / Synced / Recording / Disconnected).
+void status_pill(const char* label, ImVec4 bg, ImVec4 fg = ImVec4(1,1,1,1)) {
+    ImGui::PushStyleColor(ImGuiCol_Button,        bg);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, bg);
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  bg);
+    ImGui::PushStyleColor(ImGuiCol_Text,          fg);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 12.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10, 4));
+    ImGui::Button(label);
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(4);
+}
+constexpr ImVec4 kPillGreen{0.18f, 0.62f, 0.32f, 1.0f};
+constexpr ImVec4 kPillRed  {0.72f, 0.20f, 0.22f, 1.0f};
+constexpr ImVec4 kPillAmber{0.82f, 0.55f, 0.05f, 1.0f};
+constexpr ImVec4 kPillBlue {0.15f, 0.50f, 0.85f, 1.0f};
+constexpr ImVec4 kPillGray {0.32f, 0.34f, 0.40f, 1.0f};
 }
 
 MainWindow::MainWindow(Application& app) : app_(app) {
@@ -135,10 +155,26 @@ void MainWindow::render() {
     ImGuiIO& io = ImGui::GetIO();
     float W = io.DisplaySize.x;
     float H = io.DisplaySize.y;
-    float menu_h = ImGui::GetFrameHeight();
-    float status_h = ImGui::GetFrameHeightWithSpacing();
-    float body_y = menu_h;
-    float body_h = H - menu_h - status_h;
+    float menu_h    = ImGui::GetFrameHeight();
+    float header_h  = 96.0f;   // hero header band (title + session + record button)
+    float status_h  = ImGui::GetFrameHeightWithSpacing();
+
+    // Hero header band — branding, session context, primary CTAs, live status
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.07f, 0.08f, 0.11f, 1.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20, 12));
+    ImGui::SetNextWindowPos(ImVec2(0, menu_h));
+    ImGui::SetNextWindowSize(ImVec2(W, header_h));
+    ImGui::Begin("##HeroHeader", nullptr,
+                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+                 ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoBringToFrontOnFocus);
+    render_top_toolbar();
+    ImGui::End();
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor();
+
+    float body_y = menu_h + header_h;
+    float body_h = H - menu_h - header_h - status_h;
 
     float left_w   = 290.0f;
     float right_w  = 310.0f;
@@ -168,7 +204,55 @@ void MainWindow::render() {
     ImGui::Begin("Live Visualization", nullptr,
                  ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
                  ImGuiWindowFlags_NoCollapse);
-    plot_panel_->render_content();
+    bool imu_up = app_.session().imu().is_running();
+    bool cam_up = app_.session().camera().is_running();
+    if (!imu_up || !cam_up) {
+        // Guided welcome — centered panel walking the user through setup
+        float aw = ImGui::GetContentRegionAvail().x;
+        float ah = ImGui::GetContentRegionAvail().y;
+        ImGui::Dummy(ImVec2(0, ah * 0.18f));
+        const char* title = "Hardware setup";
+        ImVec2 ts = ImGui::CalcTextSize(title);
+        ImGui::SetCursorPosX((aw - ts.x*1.5f) * 0.5f);
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.85f, 1.0f, 1));
+        ImGui::SetWindowFontScale(1.5f);
+        ImGui::TextUnformatted(title);
+        ImGui::SetWindowFontScale(1.0f);
+        ImGui::PopStyleColor();
+        ImGui::Dummy(ImVec2(0, 18));
+
+        auto step = [&](int n, const char* label, bool done){
+            float ix = (aw - 380) * 0.5f;
+            ImGui::SetCursorPosX(ix);
+            char num[8]; snprintf(num, sizeof(num), "%d", n);
+            status_pill(num, done ? kPillGreen : kPillGray);
+            ImGui::SameLine();
+            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 4);
+            ImGui::PushStyleColor(ImGuiCol_Text,
+                done ? ImVec4(0.92f,0.93f,0.95f,1) : ImVec4(0.62f,0.62f,0.65f,1));
+            ImGui::TextUnformatted(label);
+            ImGui::PopStyleColor();
+        };
+
+        step(1, imu_up ? "IMU connected" : "Connect IMU  (top-left button)", imu_up);
+        ImGui::Dummy(ImVec2(0, 6));
+        step(2, cam_up ? "Camera connected" : "Connect Camera  (top-left button)", cam_up);
+        ImGui::Dummy(ImVec2(0, 6));
+        step(3, "Run tap test  (right panel)",
+             app_.session().sync().get_sync_result().valid);
+        ImGui::Dummy(ImVec2(0, 6));
+        step(4, "Configure session metadata  (right panel)", false);
+        ImGui::Dummy(ImVec2(0, 6));
+        step(5, "Press START RECORDING  (top toolbar)", false);
+
+        ImGui::Dummy(ImVec2(0, 24));
+        const char* hint = "Tip: F1 calibration  ·  F2 replay  ·  F12 operator view  ·  Space start/stop";
+        ImVec2 hs = ImGui::CalcTextSize(hint);
+        ImGui::SetCursorPosX((aw - hs.x) * 0.5f);
+        ImGui::TextDisabled("%s", hint);
+    } else {
+        plot_panel_->render_content();
+    }
     ImGui::End();
 
     ImGui::SetNextWindowPos(ImVec2(left_w, body_y + plot_h));
@@ -361,109 +445,293 @@ void MainWindow::render_menu_bar() {
     }
 }
 
+void MainWindow::render_top_toolbar() {
+    auto& session = app_.session();
+    auto& imu     = session.imu();
+    auto& cam     = session.camera();
+    auto& sync    = session.sync();
+    auto imu_st   = imu.get_stats();
+    auto cam_st   = cam.get_stats();
+    auto trk_st   = session.tracker().get_stats();
+    auto sync_r   = sync.get_sync_result();
+
+    // ─────── LEFT: brand title + session context ───────
+    if (g_font_title) ImGui::PushFont(g_font_title);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.85f, 1.0f, 1.0f));
+    ImGui::TextUnformatted("VBT");
+    ImGui::PopStyleColor();
+    if (g_font_title) ImGui::PopFont();
+    ImGui::SameLine();
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 8);
+    ImGui::TextDisabled("Data Collection  v%s", kAppVersion);
+
+    // Session context line (subject / exercise / set / rep)
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 4);
+    const auto& sinfo = session.get_info();
+    auto reps = session.segmenter().get_reps();
+    char ctx[160];
+    std::string subj = sinfo.subject_id.empty() ? "(no subject)" : sinfo.subject_id;
+    std::string ex   = sinfo.exercise.empty()   ? "(no exercise)"  : sinfo.exercise;
+    snprintf(ctx, sizeof(ctx), "subject %s   ·   %s   ·   set %d   ·   reps %d",
+             subj.c_str(), ex.c_str(), sinfo.set_number, (int)reps.size());
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.70f, 0.72f, 0.78f, 1.0f));
+    ImGui::TextUnformatted(ctx);
+    ImGui::PopStyleColor();
+
+    // ─────── RIGHT (top row): big record button ───────
+    SessionState st = session.get_state();
+    bool can_record = (st == SessionState::CONFIGURED || st == SessionState::READY);
+    bool is_recording = (st == SessionState::RECORDING);
+
+    ImVec4 rec_col = is_recording ? kPillRed
+                   : can_record   ? kPillGreen
+                                  : kPillGray;
+    float rec_w = 240, rec_h = 56;
+    ImGui::SetCursorPos(ImVec2(ImGui::GetWindowWidth() - rec_w - 24, 8));
+    ImGui::PushStyleColor(ImGuiCol_Button,        rec_col);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(rec_col.x*1.18f, rec_col.y*1.18f, rec_col.z*1.18f, 1));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(rec_col.x*0.82f, rec_col.y*0.82f, rec_col.z*0.82f, 1));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 10.0f);
+    if (g_font_metric) ImGui::PushFont(g_font_metric);
+    const char* rec_label = is_recording ? "■  STOP"
+                          : can_record   ? "●  START RECORDING"
+                                         : "●  Hardware not ready";
+    ImGui::BeginDisabled(!can_record && !is_recording);
+    if (ImGui::Button(rec_label, ImVec2(rec_w, rec_h))) {
+        if (is_recording) {
+            session.stop_recording();
+            AudioCue::play(Cue::StopRecord);
+        } else {
+            show_preflight_ = true;
+        }
+    }
+    ImGui::EndDisabled();
+    if (g_font_metric) ImGui::PopFont();
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor(3);
+
+    // ─────── MIDDLE row of bottom: connect/tap buttons ───────
+    // Continue inline below the title
+    ImGui::SetCursorPos(ImVec2(110, 56));
+
+    // Quick connect — single button when both offline, individual when one is up
+    auto try_connect_imu = [&]() {
+        if (imu.open(app_.config().imu)) {
+            imu.start();
+            Notifications::get().success("IMU connected on " + app_.config().imu.port);
+            return true;
+        }
+        Notifications::get().error("Failed to open IMU on " + app_.config().imu.port);
+        return false;
+    };
+    auto try_connect_cam = [&]() {
+        if (cam.open(app_.config().camera)) {
+            session.tracker().configure(app_.config().camera);
+            cam.start();
+            Notifications::get().success("RealSense camera connected");
+            return true;
+        }
+        Notifications::get().error("RealSense D455 not found on USB. Reseat the USB-C cable.");
+        return false;
+    };
+
+    if (!imu.is_running() && !cam.is_running()) {
+        ImGui::PushStyleColor(ImGuiCol_Button, kPillBlue);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.60f, 0.95f, 1));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.10f, 0.40f, 0.75f, 1));
+        if (ImGui::Button("Connect All Hardware", ImVec2(220, 44))) {
+            try_connect_imu();
+            try_connect_cam();
+        }
+        ImGui::PopStyleColor(3);
+        ImGui::SameLine();
+    } else {
+        if (!imu.is_running()) {
+            ImGui::PushStyleColor(ImGuiCol_Button, kPillBlue);
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.60f, 0.95f, 1));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.10f, 0.40f, 0.75f, 1));
+            if (ImGui::Button("Connect IMU", ImVec2(140, 44))) try_connect_imu();
+            ImGui::PopStyleColor(3);
+            ImGui::SameLine();
+        }
+        if (!cam.is_running()) {
+            ImGui::PushStyleColor(ImGuiCol_Button, kPillBlue);
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.60f, 0.95f, 1));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.10f, 0.40f, 0.75f, 1));
+            if (ImGui::Button("Connect Camera", ImVec2(160, 44))) try_connect_cam();
+            ImGui::PopStyleColor(3);
+            ImGui::SameLine();
+        }
+    }
+    if (sync.rearm_required()) {
+        ImGui::PushStyleColor(ImGuiCol_Button, kPillRed);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.85f, 0.25f, 0.25f, 1));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.65f, 0.18f, 0.18f, 1));
+        if (ImGui::Button("⚠  Re-run Tap Test", ImVec2(180, 44))) {
+            sync.start_tap_test();
+            Notifications::get().info("Tap test running — tap the bar sharply");
+        }
+        ImGui::PopStyleColor(3);
+        ImGui::SameLine();
+    }
+
+    // ────── Right side: live status pills ──────
+    float right_x = ImGui::GetWindowWidth() - 720;
+    if (right_x < ImGui::GetCursorPosX() + 20) right_x = ImGui::GetCursorPosX() + 20;
+    ImGui::SetCursorPosX(right_x);
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 8);  // vertical center
+
+    char buf[64];
+    if (imu.is_running()) {
+        snprintf(buf, sizeof(buf), "IMU  %.0f Hz", imu_st.measured_rate_hz);
+        status_pill(buf, kPillGreen);
+    } else {
+        status_pill("IMU  offline", kPillRed);
+    }
+    ImGui::SameLine();
+
+    if (cam.is_running()) {
+        snprintf(buf, sizeof(buf), "Cam  %.0f fps", cam_st.measured_fps);
+        status_pill(buf, kPillGreen);
+    } else {
+        status_pill("Cam  offline", kPillRed);
+    }
+    ImGui::SameLine();
+
+    if (sync.rearm_required()) {
+        status_pill("Sync  REARM", kPillRed);
+    } else if (sync_r.valid) {
+        snprintf(buf, sizeof(buf), "Sync  %.1f ppm", sync.get_current_drift_ppm());
+        status_pill(buf, kPillGreen);
+    } else {
+        status_pill("Sync  not run", kPillAmber);
+    }
+    ImGui::SameLine();
+
+    if (cam.is_running()) {
+        float dr = trk_st.detection_rate;
+        ImVec4 c = dr > 0.95f ? kPillGreen : dr > 0.80f ? kPillAmber : kPillRed;
+        snprintf(buf, sizeof(buf), "Marker  %.0f%%", dr * 100.0f);
+        status_pill(buf, c);
+    }
+}
+
+// Helper: two-column metric row — left label, right value (right-aligned, bold)
+static void metric(const char* label, const char* value, ImVec4 value_col = ImVec4(0.92f,0.93f,0.95f,1)) {
+    ImGui::TextDisabled("%s", label);
+    ImGui::SameLine();
+    float rx = ImGui::GetContentRegionMax().x;
+    ImVec2 sz = ImGui::CalcTextSize(value);
+    ImGui::SameLine(rx - sz.x - 2);
+    ImGui::PushStyleColor(ImGuiCol_Text, value_col);
+    ImGui::TextUnformatted(value);
+    ImGui::PopStyleColor();
+}
+
 void MainWindow::render_sensor_section() {
     auto& session = app_.session();
 
-    // IMU
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.8f, 1.0f, 1.0f));
-    ImGui::SeparatorText("IMU (ICM42688-P)");
+    // ─── IMU card ───────────────────────────────────────────────
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.13f, 0.14f, 0.18f, 1.0f));
+    ImGui::BeginChild("##imu_card", ImVec2(0, 0), ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_Border);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.85f, 1.0f, 1.0f));
+    ImGui::Text("IMU  ICM42688-P");
     ImGui::PopStyleColor();
-
+    ImGui::Separator();
     auto& imu = session.imu();
     auto imu_stats = imu.get_stats();
+    char buf[64];
 
     if (imu.is_running()) {
-        ImGui::TextColored(ImVec4(0.2f, 1, 0.3f, 1), "● Connected");
-        ImGui::SameLine();
-        ImGui::TextDisabled("%.0f Hz", imu_stats.measured_rate_hz);
+        snprintf(buf, sizeof(buf), "%.1f Hz", imu_stats.measured_rate_hz);
+        metric("rate", buf, ImVec4(0.4f, 1.0f, 0.5f, 1));
 
-        ImGui::Text("Valid: %llu | CRC: %llu | Drop: %llu",
-                    (unsigned long long)imu_stats.valid_packets,
-                    (unsigned long long)imu_stats.crc_errors,
-                    (unsigned long long)imu_stats.dropouts);
-        ImGui::Text("Sat A:%llu  G:%llu  Noise(g):%.4f  Noise(dps):%.3f",
-                    (unsigned long long)imu_stats.accel_saturation_count,
-                    (unsigned long long)imu_stats.gyro_saturation_count,
-                    imu_stats.accel_noise_floor_g,
-                    imu_stats.gyro_noise_floor_dps);
+        snprintf(buf, sizeof(buf), "%.0f us", imu_stats.jitter_us_mean);
+        metric("jitter", buf);
+
+        snprintf(buf, sizeof(buf), "%llu", (unsigned long long)imu_stats.valid_packets);
+        metric("samples", buf);
+
+        snprintf(buf, sizeof(buf), "%llu / %llu", (unsigned long long)imu_stats.crc_errors,
+                                                  (unsigned long long)imu_stats.dropouts);
+        ImVec4 ec = (imu_stats.crc_errors + imu_stats.dropouts > 0) ?
+                     ImVec4(1.0f, 0.6f, 0.3f, 1) : ImVec4(0.92f,0.93f,0.95f,1);
+        metric("crc / drop", buf, ec);
 
         auto sample = imu.get_latest_sample();
         float mag = sqrtf(sample.accel_x_g*sample.accel_x_g +
                           sample.accel_y_g*sample.accel_y_g +
                           sample.accel_z_g*sample.accel_z_g);
-        ImGui::Text("Accel: %.3f %.3f %.3f (%.3fg)",
-                    sample.accel_x_g, sample.accel_y_g, sample.accel_z_g, mag);
-        ImGui::Text("Gyro:  %.1f %.1f %.1f dps",
-                    sample.gyro_x_dps, sample.gyro_y_dps, sample.gyro_z_dps);
-        ImGui::Text("Temp:  %.1f °C | Jitter: %.0f µs",
-                    sample.temperature_c, imu_stats.jitter_us_mean);
+        snprintf(buf, sizeof(buf), "%.3f g", mag);
+        metric("|a|", buf);
 
-        if (ImGui::Button("Calibrate Gyro", ImVec2(-1, 0))) {
+        float gmag = sqrtf(sample.gyro_x_dps*sample.gyro_x_dps +
+                           sample.gyro_y_dps*sample.gyro_y_dps +
+                           sample.gyro_z_dps*sample.gyro_z_dps);
+        snprintf(buf, sizeof(buf), "%.1f dps", gmag);
+        metric("|w|", buf);
+
+        snprintf(buf, sizeof(buf), "%.1f C", sample.temperature_c);
+        metric("temp", buf);
+
+        ImGui::Spacing();
+        if (ImGui::Button("Calibrate Gyro Bias", ImVec2(-1, 0))) {
             imu.start_gyro_bias_calibration(5000);
         }
         if (imu.is_calibrating()) {
             ImGui::TextColored(ImVec4(1, 1, 0, 1), "Calibrating...");
         }
     } else {
-        ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1), "● Disconnected");
-        static char port_buf[64];
-        strncpy(port_buf, app_.config().imu.port.c_str(), sizeof(port_buf)-1);
-        if (ImGui::InputText("Port", port_buf, sizeof(port_buf))) {
-            app_.config().imu.port = port_buf;
-        }
-        if (ImGui::Button("Connect IMU", ImVec2(-1, 0))) {
-            if (imu.open(app_.config().imu)) {
-                imu.start();
-                Notifications::get().success("IMU connected on " + app_.config().imu.port);
-            } else {
-                Notifications::get().error(
-                    "Failed to open IMU on " + app_.config().imu.port +
-                    ". Check the cable, port name, and permissions "
-                    "(udev rules or `dialout` group on Linux).");
-            }
-        }
+        ImGui::TextDisabled("not connected");
+        ImGui::TextDisabled("port: %s", app_.config().imu.port.c_str());
+        ImGui::TextDisabled("(use top toolbar to connect)");
     }
+    ImGui::EndChild();
+    ImGui::PopStyleColor();
 
     ImGui::Spacing();
 
-    // Camera
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.8f, 1.0f, 1.0f));
-    ImGui::SeparatorText("Camera (D455)");
+    // ─── Camera card ────────────────────────────────────────────
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.13f, 0.14f, 0.18f, 1.0f));
+    ImGui::BeginChild("##cam_card", ImVec2(0, 0), ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_Border);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.85f, 1.0f, 1.0f));
+    ImGui::Text("Camera  D455");
     ImGui::PopStyleColor();
-
+    ImGui::Separator();
     auto& cam = session.camera();
     auto cam_stats = cam.get_stats();
-
     if (cam.is_running()) {
-        ImGui::TextColored(ImVec4(0.2f, 1, 0.3f, 1), "● Connected");
-        ImGui::SameLine();
-        ImGui::TextDisabled("SN:%s", cam.get_serial().c_str());
-        ImGui::Text("Frames: %llu (dropped: %llu)",
-                    (unsigned long long)cam_stats.total_frames,
-                    (unsigned long long)cam_stats.dropped_frames);
+        snprintf(buf, sizeof(buf), "%.0f fps", cam_stats.measured_fps);
+        metric("rate", buf, ImVec4(0.4f, 1.0f, 0.5f, 1));
+
+        snprintf(buf, sizeof(buf), "%llu", (unsigned long long)cam_stats.total_frames);
+        metric("frames", buf);
+
+        snprintf(buf, sizeof(buf), "%llu", (unsigned long long)cam_stats.dropped_frames);
+        ImVec4 dc = cam_stats.dropped_frames > 0 ?
+                     ImVec4(1.0f, 0.6f, 0.3f, 1) : ImVec4(0.92f,0.93f,0.95f,1);
+        metric("dropped", buf, dc);
 
         auto tstat = session.tracker().get_stats();
         float dr = tstat.detection_rate;
-        ImVec4 tc = dr > 0.95f ? ImVec4(0.2f,1,0.3f,1) :
-                    dr > 0.80f ? ImVec4(1,0.8f,0.2f,1) :
-                                 ImVec4(1,0.3f,0.2f,1);
-        ImGui::TextColored(tc, "Marker: %.0f%%", dr * 100.0f);
-        ImGui::SameLine();
-        ImGui::Text("SNR:%.1f", tstat.avg_snr);
+        ImVec4 tc = dr > 0.95f ? ImVec4(0.4f, 1.0f, 0.5f, 1) :
+                    dr > 0.80f ? ImVec4(1.0f, 0.85f, 0.3f, 1) :
+                                 ImVec4(1.0f, 0.4f, 0.3f, 1);
+        snprintf(buf, sizeof(buf), "%.0f%%", dr * 100.0f);
+        metric("marker det", buf, tc);
+
+        snprintf(buf, sizeof(buf), "%.1f", tstat.avg_snr);
+        metric("marker SNR", buf);
+
+        ImGui::Spacing();
+        ImGui::TextDisabled("SN: %s", cam.get_serial().c_str());
     } else {
-        ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1), "● Disconnected");
-        if (ImGui::Button("Connect Camera", ImVec2(-1, 0))) {
-            if (cam.open(app_.config().camera)) {
-                session.tracker().configure(app_.config().camera);
-                cam.start();
-                Notifications::get().success("RealSense camera connected");
-            } else {
-                Notifications::get().error(
-                    "RealSense not found. Plug in the D455, run "
-                    "`rs-enumerate-devices` to verify, then click again.");
-            }
-        }
+        ImGui::TextDisabled("not connected");
+        ImGui::TextDisabled("D455 over USB 3.x required");
+        ImGui::TextDisabled("(use top toolbar to connect)");
     }
+    ImGui::EndChild();
+    ImGui::PopStyleColor();
 }
 
 void MainWindow::render_sync_section() {
@@ -537,27 +805,30 @@ void MainWindow::render_status_bar() {
 }
 
 void MainWindow::apply_style() {
+    // We have proper TTF fonts loaded in Application::init_imgui — no
+    // FontGlobalScale (which makes the bitmap font blurry).
     ImGuiStyle& s = ImGui::GetStyle();
 
-    s.WindowPadding     = ImVec2(10, 10);
-    s.FramePadding      = ImVec2(8, 4);
-    s.ItemSpacing       = ImVec2(8, 5);
-    s.ItemInnerSpacing  = ImVec2(6, 4);
-    s.IndentSpacing     = 18;
-    s.ScrollbarSize     = 12;
-    s.GrabMinSize       = 10;
+    s.WindowPadding     = ImVec2(14, 12);
+    s.FramePadding      = ImVec2(10, 6);
+    s.ItemSpacing       = ImVec2(10, 8);
+    s.ItemInnerSpacing  = ImVec2(8, 5);
+    s.IndentSpacing     = 20;
+    s.ScrollbarSize     = 14;
+    s.GrabMinSize       = 12;
 
     s.WindowBorderSize  = 1.0f;
     s.FrameBorderSize   = 0.0f;
     s.PopupBorderSize   = 1.0f;
     s.TabBorderSize     = 0.0f;
 
-    s.WindowRounding    = 4.0f;
-    s.FrameRounding     = 4.0f;
-    s.PopupRounding     = 4.0f;
-    s.ScrollbarRounding = 6.0f;
-    s.GrabRounding      = 4.0f;
-    s.TabRounding       = 4.0f;
+    s.WindowRounding    = 6.0f;
+    s.FrameRounding     = 6.0f;
+    s.PopupRounding     = 6.0f;
+    s.ScrollbarRounding = 8.0f;
+    s.GrabRounding      = 6.0f;
+    s.TabRounding       = 6.0f;
+    s.ChildRounding     = 6.0f;
 
     ImVec4* c = s.Colors;
     c[ImGuiCol_Text]                  = ImVec4(0.92f, 0.93f, 0.95f, 1.00f);
