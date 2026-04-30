@@ -91,13 +91,16 @@ def main():
     lp(f"# duration={args.duration}s, bar={args.bar_port}, relay={args.relay_port}")
     lp(f"# output: {out_dir}\n")
 
-    # ── Identify ports by who prints what (read for 6s, then reset and read banner) ──
-    lp("→ Probing both ports to identify bar vs relay…")
+    # ── Identify available ports by what they print ─────────────────────
+    # In production wireless mode the bar ESP is on battery (not USB),
+    # so only the relay may be present. The script handles both cases.
+    lp("→ Probing all /dev/ttyUSB* to identify bar vs relay…")
+    import glob
+    candidate_ports = sorted(glob.glob('/dev/ttyUSB*'))
     probe = {}
-    for p in [args.bar_port, args.relay_port]:
+    for p in candidate_ports:
         try:
             s = serial.Serial(p, 921600, timeout=0.5)
-            # Reset ESP to capture fresh boot banner
             s.dtr=False; s.rts=True; time.sleep(0.1); s.rts=False; time.sleep(0.05)
             data = b''; t = time.time()
             while time.time()-t < 6: data += s.read(8192)
@@ -111,23 +114,37 @@ def main():
             lp(f"  {p}: ERROR {e}"); probe[p] = "?"
     bar = next((p for p,v in probe.items() if v == "BAR"), None)
     relay = next((p for p,v in probe.items() if v == "RELAY"), None)
-    if not bar or not relay:
-        lp(f"  ERROR: could not identify both ports: {probe}")
+    if not relay:
+        lp(f"  ERROR: relay ESP not found on USB. Probe: {probe}")
         return 3
-    lp(f"  bar  = {bar}\n  relay= {relay}\n")
+    wireless_mode = (bar is None)
+    if wireless_mode:
+        lp(f"  bar  = (on battery, not on USB — wireless mode)")
+        lp(f"  relay= {relay}\n")
+        lp("  In wireless mode, IMU sample rate and sync are inferred from the")
+        lp("  relay's forwarded byte stream + camera's own frame counter.\n")
+    else:
+        lp(f"  bar  = {bar}")
+        lp(f"  relay= {relay}\n")
 
-    # ── Hardware-reset bar ESP for fresh counters ───────────────────────
-    lp("→ Resetting bar ESP for fresh counters…")
-    bar_ser = reset_esp(bar)
+    # ── Open serial ports (bar may be skipped in wireless mode) ─────────
+    if wireless_mode:
+        bar_ser = None
+    else:
+        lp("→ Resetting bar ESP for fresh counters…")
+        bar_ser = reset_esp(bar)
     relay_ser = serial.Serial(relay, 921600, timeout=0.5)
     time.sleep(2)
 
     # ── Start parallel readers ──────────────────────────────────────────
     bar_buf = [b'']; relay_buf = [b'']
     stop_evt = threading.Event()
-    t_bar = threading.Thread(target=reader_thread, args=(bar_ser,   bar_buf,   stop_evt))
+    t_bar = None
+    if bar_ser is not None:
+        t_bar = threading.Thread(target=reader_thread, args=(bar_ser, bar_buf, stop_evt))
+        t_bar.start()
     t_rel = threading.Thread(target=reader_thread, args=(relay_ser, relay_buf, stop_evt))
-    t_bar.start(); t_rel.start()
+    t_rel.start()
 
     # ── Camera in master mode ───────────────────────────────────────────
     lp("→ Starting D455 in master mode (90 fps, 848×480 z16)…")
@@ -150,8 +167,8 @@ def main():
     cam_csv = open(out_dir / "camera_metrics.csv", "w")
     cam_csv.write("t_s,frame_number,hw_ts_ms,host_dt_ms,missed_total\n")
     last_fn = None; last_ts = None; n_missed = 0; n_frames = 0
+    frame_times = []  # host wall-clock timestamps for steady-state rate calc
     t0 = time.time()
-    interval_log = []
     last_lp = t0
     lp("→ Streaming for {} s …".format(args.duration))
     try:
@@ -168,6 +185,7 @@ def main():
                 n_missed += fn - last_fn - 1
             last_fn, last_ts = fn, ts_ms
             n_frames += 1
+            frame_times.append(now)
             cam_csv.write(f"{now-t0:.3f},{fn},{ts_ms:.3f},{dt:.3f},{n_missed}\n")
             if now - last_lp >= 5.0:
                 lp(f"  +{now-t0:5.1f}s  cam fn={fn}  rate={n_frames/(now-t0):.2f} fps  missed={n_missed}")
@@ -175,8 +193,11 @@ def main():
     finally:
         pipe.stop()
         cam_csv.close()
-        stop_evt.set(); t_bar.join(timeout=2); t_rel.join(timeout=2)
-        bar_ser.close(); relay_ser.close()
+        stop_evt.set()
+        if t_bar is not None: t_bar.join(timeout=2)
+        t_rel.join(timeout=2)
+        if bar_ser is not None: bar_ser.close()
+        relay_ser.close()
     elapsed = time.time() - t0
 
     # ── Parse bar status lines (regex search; binary data may contain 0x0A) ──
@@ -207,11 +228,22 @@ def main():
     sync_words = relay_buf[0].count(b'\x55\xaa')
 
     # ── Summary verdict ─────────────────────────────────────────────────
+    # Steady-state camera rate (computed early so summary can print it)
+    if frame_times and frame_times[-1] - frame_times[0] > 12:
+        cutoff = frame_times[-1] - 10
+        steady = [t for t in frame_times if t >= cutoff]
+        cam_steady_fps_local = len(steady) / (frame_times[-1] - cutoff)
+    else:
+        cam_steady_fps_local = n_frames / max(elapsed, 1)
+
     lp("\n=== SUMMARY ===\n")
     lp(f"  Camera:")
     lp(f"    frames captured     : {n_frames}")
-    lp(f"    rate                : {n_frames/elapsed:.2f} fps  (target ~90)")
+    lp(f"    rate (avg / steady) : {n_frames/elapsed:.2f} / {cam_steady_fps_local:.2f} fps  (target ~90)")
     lp(f"    missed (frame-num gap): {n_missed}")
+    if wireless_mode:
+        lp(f"\n  Bar ESP: ON BATTERY — STATUS lines not visible. Health inferred")
+        lp(f"           from relay forwarding rate + sync words on PC USB.")
 
     if bar_rows:
         last_bar = bar_rows[-1]
@@ -235,9 +267,8 @@ def main():
     lp(f"\n  PC USB serial (relay output):")
     lp(f"    sync words delivered: {sync_words}  (= {sync_words/elapsed:.1f} Hz)")
 
-    # Pass/fail. Use steady-state metrics (last status interval, not warmup-included
-    # full duration), and tolerate small counter-timing skew.
-    cam_steady_fps = bar_rows[-1]['cam_trig_rate'] if bar_rows else 0
+    # If bar is on USB, prefer its cam_trig_rate (more reliable). Else use local.
+    cam_steady_fps = bar_rows[-1]['cam_trig_rate'] if bar_rows else cam_steady_fps_local
     # Compare cam_trig vs fsync_hits over the LAST status interval (deltas only)
     # rather than cumulative — pre-camera time pollutes cumulative counts.
     if len(bar_rows) >= 2:
@@ -250,16 +281,20 @@ def main():
         100 * bar_rows[-1]['espnow_fail']
         / max(1, bar_rows[-1]['espnow_sent']+bar_rows[-1]['espnow_fail'])
     ) if bar_rows else 100
-    # Note: fsync_hits is the authoritative count (IMU's Schmitt-trigger input,
-    # tags the actual sample). cam_trig is just an ESP-side observability check
-    # — its 5 ms debounce can filter ~4% of edges, so we tolerate 5%.
+    # Pass/fail. In wireless mode we skip checks that depend on bar's USB serial.
+    # The relay's recv rate (123 pkt/s) and IMU sync words on PC USB are still
+    # authoritative for end-to-end health.
+    relay_recv_rate = rel_rows[-1]['recv_rate_pkt'] if rel_rows else 0
     verdict = {
-        "camera_steady_rate":     85 < cam_steady_fps < 92,
-        "cam_trig_matches_fsync": cam_trig_diff_pct < 5.0,
-        "espnow_success_rate":    espnow_fail_pct < 5.0,
-        "relay_no_overruns":      (rel_rows and rel_rows[-1]['overruns'] == 0),
+        "camera_steady_rate":     85 < (cam_steady_fps or n_frames/elapsed) < 92,
+        "espnow_success_rate":    bar_rows is None or len(bar_rows)==0 or espnow_fail_pct < 5.0,
+        "relay_no_overruns":      bool(rel_rows and rel_rows[-1]['overruns'] == 0),
+        "relay_recv_rate":        100 < relay_recv_rate < 130,  # 124 pkt/s expected (988/8)
         "imu_samples_delivered":  sync_words/elapsed > 800,
     }
+    if not wireless_mode:
+        # Bar-USB-only checks
+        verdict["cam_trig_matches_fsync"] = cam_trig_diff_pct < 5.0
     lp(f"\n  Pass / fail:")
     for k,v in verdict.items():
         lp(f"    {'✅' if v else '❌'}  {k}")
