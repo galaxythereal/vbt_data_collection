@@ -19,15 +19,9 @@ bool CameraReader::open(const CameraConfig& config) {
         rs2::context ctx;
         auto devices = ctx.query_devices();
         if (devices.size() == 0) { spdlog::error("No RealSense device found"); return false; }
+        std::string usb_type = devices[0].get_info(RS2_CAMERA_INFO_USB_TYPE_DESCRIPTOR);
         serial_ = devices[0].get_info(RS2_CAMERA_INFO_SERIAL_NUMBER);
-        spdlog::info("D455 found: SN={}", serial_);
-
-        rs_config_.enable_stream(RS2_STREAM_INFRARED, 1, config_.width, config_.height, RS2_FORMAT_Y8, config_.fps);
-        rs_config_.enable_stream(RS2_STREAM_INFRARED, 2, config_.width, config_.height, RS2_FORMAT_Y8, config_.fps);
-        if (config_.enable_depth)
-            rs_config_.enable_stream(RS2_STREAM_DEPTH, config_.width, config_.height, RS2_FORMAT_Z16, config_.fps);
-        if (config_.enable_rgb)
-            rs_config_.enable_stream(RS2_STREAM_COLOR, 848, 480, RS2_FORMAT_BGR8, config_.rgb_fps);
+        spdlog::info("D455 found: SN={}, USB={}", serial_, usb_type);
 
         // Set hardware sync mode (must happen BEFORE pipeline.start). With mode=1
         // (master) the D455 drives a 90 Hz pulse out of aux pin 5 which the ESP
@@ -38,13 +32,49 @@ bool CameraReader::open(const CameraConfig& config) {
                 spdlog::info("D455 sensor '{}' inter_cam_sync_mode = {}",
                              s.get_info(RS2_CAMERA_INFO_NAME), config_.hw_sync_mode);
             }
-            // Bigger frame queue absorbs host-side processing pauses at 90 fps
             if (s.supports(RS2_OPTION_FRAMES_QUEUE_SIZE)) {
                 try { s.set_option(RS2_OPTION_FRAMES_QUEUE_SIZE, 16.0f); } catch (...) {}
             }
         }
 
-        profile_ = pipeline_.start(rs_config_);
+        // Try requested fps first. If it fails (typical when USB 2.1 negotiation
+        // limits available bandwidth), fall back through 60 → 30 → 15 so the user
+        // gets a working camera connection rather than a hard error.
+        const int try_fps[] = {config_.fps, 60, 30, 15, 6};
+        bool started = false;
+        int  effective_fps = 0;
+        std::string last_err;
+        for (int fps : try_fps) {
+            if (fps <= 0) continue;
+            try {
+                rs2::config cfg;
+                cfg.enable_stream(RS2_STREAM_INFRARED, 1, config_.width, config_.height, RS2_FORMAT_Y8, fps);
+                cfg.enable_stream(RS2_STREAM_INFRARED, 2, config_.width, config_.height, RS2_FORMAT_Y8, fps);
+                if (config_.enable_depth)
+                    cfg.enable_stream(RS2_STREAM_DEPTH, config_.width, config_.height, RS2_FORMAT_Z16, fps);
+                if (config_.enable_rgb)
+                    cfg.enable_stream(RS2_STREAM_COLOR, 848, 480, RS2_FORMAT_BGR8,
+                                      std::min(config_.rgb_fps, fps));
+                profile_ = pipeline_.start(cfg);
+                rs_config_ = cfg;
+                effective_fps = fps;
+                started = true;
+                break;
+            } catch (const rs2::error& e) {
+                last_err = e.what();
+                spdlog::warn("D455 start at {} fps failed: {} — trying lower rate", fps, last_err);
+            }
+        }
+        if (!started) {
+            spdlog::error("D455 could not start at any rate (USB={}): {}", usb_type, last_err);
+            return false;
+        }
+        if (effective_fps != config_.fps) {
+            spdlog::warn("D455 fell back to {} fps (requested {}). USB negotiation = {}. "
+                         "Reseat USB-C cable for full 90 fps.",
+                         effective_fps, config_.fps, usb_type);
+            config_.fps = effective_fps;       // reflect actual rate so UI can show it
+        }
         auto device = profile_.get_device();
         auto sensor = device.first<rs2::depth_sensor>();
 

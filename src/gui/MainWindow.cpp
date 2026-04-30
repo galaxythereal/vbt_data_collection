@@ -25,6 +25,7 @@
 #include "utils/AudioCue.h"
 #include "utils/DiagnosticExport.h"
 #include <imgui.h>
+#include <algorithm>
 #include <cstdio>
 #include <filesystem>
 
@@ -176,13 +177,11 @@ void MainWindow::render() {
     float body_y = menu_h + header_h;
     float body_h = H - menu_h - header_h - status_h;
 
-    float left_w   = 290.0f;
-    float right_w  = 310.0f;
+    // Responsive column widths: scale with screen size, minimum acceptable on
+    // small displays. Center always gets the most room.
+    float left_w   = std::clamp(W * 0.18f, 250.0f, 320.0f);
+    float right_w  = std::clamp(W * 0.20f, 280.0f, 360.0f);
     float center_w = W - left_w - right_w;
-    if (center_w < 400.0f) {
-        left_w = 240.0f; right_w = 260.0f;
-        center_w = W - left_w - right_w;
-    }
 
     // LEFT
     ImGui::SetNextWindowPos(ImVec2(0, body_y));
@@ -268,36 +267,29 @@ void MainWindow::render() {
     else                    annotation_panel_->render_content();
     ImGui::End();
 
-    // RIGHT
-    float session_h = body_h * 0.45f;
-    float valid_h   = body_h * 0.25f;
-    float camera_h  = body_h - session_h - valid_h;
-
+    // RIGHT — single tabbed panel (Session / Validation / Camera) replaces the
+    // old three-stack. One thing at a time, full vertical breathing room.
     ImGui::SetNextWindowPos(ImVec2(left_w + center_w, body_y));
-    ImGui::SetNextWindowSize(ImVec2(right_w, session_h));
-    ImGui::Begin("Session Control", nullptr,
-                 ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-                 ImGuiWindowFlags_NoCollapse);
-    session_panel_->render_content();
-    if (session_panel_->consume_preflight_request()) {
-        show_preflight_ = true;
+    ImGui::SetNextWindowSize(ImVec2(right_w, body_h));
+    ImGui::Begin("##RightColumn", nullptr,
+                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse);
+    if (ImGui::BeginTabBar("##right_tabs", ImGuiTabBarFlags_FittingPolicyResizeDown)) {
+        if (ImGui::BeginTabItem("Session")) {
+            session_panel_->render_content();
+            if (session_panel_->consume_preflight_request()) show_preflight_ = true;
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Metrics")) {
+            validation_panel_->render_content();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Camera")) {
+            camera_panel_->render_content();
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
     }
-    ImGui::End();
-
-    ImGui::SetNextWindowPos(ImVec2(left_w + center_w, body_y + session_h));
-    ImGui::SetNextWindowSize(ImVec2(right_w, valid_h));
-    ImGui::Begin("Validation Metrics", nullptr,
-                 ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-                 ImGuiWindowFlags_NoCollapse);
-    validation_panel_->render_content();
-    ImGui::End();
-
-    ImGui::SetNextWindowPos(ImVec2(left_w + center_w, body_y + session_h + valid_h));
-    ImGui::SetNextWindowSize(ImVec2(right_w, camera_h));
-    ImGui::Begin("Camera Settings", nullptr,
-                 ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-                 ImGuiWindowFlags_NoCollapse);
-    camera_panel_->render_content();
     ImGui::End();
 
     // Wizards / modals
@@ -830,44 +822,59 @@ void MainWindow::apply_style() {
     s.TabRounding       = 6.0f;
     s.ChildRounding     = 6.0f;
 
+    // Tokyo-Night–inspired slate base + cyan/amber accents.
+    // Window backgrounds are slightly lighter than the screen background so cards
+    // stand out, with darker child bg for nested cards.
     ImVec4* c = s.Colors;
-    c[ImGuiCol_Text]                  = ImVec4(0.92f, 0.93f, 0.95f, 1.00f);
-    c[ImGuiCol_TextDisabled]          = ImVec4(0.50f, 0.52f, 0.55f, 1.00f);
-    c[ImGuiCol_WindowBg]              = ImVec4(0.10f, 0.10f, 0.13f, 1.00f);
-    c[ImGuiCol_ChildBg]               = ImVec4(0.10f, 0.10f, 0.13f, 1.00f);
-    c[ImGuiCol_PopupBg]               = ImVec4(0.13f, 0.13f, 0.17f, 1.00f);
-    c[ImGuiCol_Border]                = ImVec4(0.22f, 0.23f, 0.28f, 1.00f);
-    c[ImGuiCol_FrameBg]               = ImVec4(0.16f, 0.16f, 0.20f, 1.00f);
-    c[ImGuiCol_FrameBgHovered]        = ImVec4(0.22f, 0.22f, 0.28f, 1.00f);
-    c[ImGuiCol_FrameBgActive]         = ImVec4(0.28f, 0.28f, 0.36f, 1.00f);
-    c[ImGuiCol_TitleBg]               = ImVec4(0.10f, 0.10f, 0.13f, 1.00f);
-    c[ImGuiCol_TitleBgActive]         = ImVec4(0.14f, 0.14f, 0.18f, 1.00f);
-    c[ImGuiCol_MenuBarBg]             = ImVec4(0.12f, 0.12f, 0.15f, 1.00f);
-    c[ImGuiCol_ScrollbarBg]           = ImVec4(0.10f, 0.10f, 0.13f, 1.00f);
-    c[ImGuiCol_ScrollbarGrab]         = ImVec4(0.30f, 0.30f, 0.38f, 1.00f);
-    c[ImGuiCol_ScrollbarGrabHovered]  = ImVec4(0.40f, 0.40f, 0.50f, 1.00f);
-    c[ImGuiCol_ScrollbarGrabActive]   = ImVec4(0.50f, 0.50f, 0.60f, 1.00f);
-    c[ImGuiCol_CheckMark]             = ImVec4(0.40f, 0.75f, 1.00f, 1.00f);
-    c[ImGuiCol_SliderGrab]            = ImVec4(0.35f, 0.65f, 1.00f, 1.00f);
-    c[ImGuiCol_SliderGrabActive]      = ImVec4(0.50f, 0.80f, 1.00f, 1.00f);
-    c[ImGuiCol_Button]                = ImVec4(0.20f, 0.22f, 0.28f, 1.00f);
-    c[ImGuiCol_ButtonHovered]         = ImVec4(0.28f, 0.32f, 0.42f, 1.00f);
-    c[ImGuiCol_ButtonActive]          = ImVec4(0.35f, 0.40f, 0.55f, 1.00f);
-    c[ImGuiCol_Header]                = ImVec4(0.18f, 0.20f, 0.26f, 1.00f);
-    c[ImGuiCol_HeaderHovered]         = ImVec4(0.26f, 0.30f, 0.40f, 1.00f);
-    c[ImGuiCol_HeaderActive]          = ImVec4(0.30f, 0.36f, 0.48f, 1.00f);
-    c[ImGuiCol_Separator]             = ImVec4(0.25f, 0.27f, 0.33f, 1.00f);
-    c[ImGuiCol_SeparatorHovered]      = ImVec4(0.40f, 0.60f, 1.00f, 0.80f);
-    c[ImGuiCol_SeparatorActive]       = ImVec4(0.40f, 0.65f, 1.00f, 1.00f);
-    c[ImGuiCol_Tab]                   = ImVec4(0.16f, 0.16f, 0.20f, 1.00f);
-    c[ImGuiCol_TabHovered]            = ImVec4(0.28f, 0.40f, 0.65f, 0.80f);
-    c[ImGuiCol_TableHeaderBg]         = ImVec4(0.16f, 0.18f, 0.22f, 1.00f);
-    c[ImGuiCol_TableBorderStrong]     = ImVec4(0.24f, 0.26f, 0.32f, 1.00f);
-    c[ImGuiCol_TableBorderLight]      = ImVec4(0.20f, 0.22f, 0.28f, 1.00f);
-    c[ImGuiCol_TableRowBg]            = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
-    c[ImGuiCol_TableRowBgAlt]         = ImVec4(0.14f, 0.14f, 0.18f, 0.60f);
-    c[ImGuiCol_PlotLines]             = ImVec4(0.40f, 0.75f, 1.00f, 1.00f);
-    c[ImGuiCol_PlotHistogram]         = ImVec4(0.40f, 0.75f, 1.00f, 1.00f);
+    const ImVec4 BG_DEEP   = ImVec4(0.060f, 0.070f, 0.094f, 1.00f);  // page bg
+    const ImVec4 BG_PANEL  = ImVec4(0.094f, 0.106f, 0.137f, 1.00f);  // panel surface
+    const ImVec4 BG_CARD   = ImVec4(0.122f, 0.137f, 0.176f, 1.00f);  // card surface
+    const ImVec4 BG_INPUT  = ImVec4(0.078f, 0.090f, 0.118f, 1.00f);  // input/frame
+    const ImVec4 ACCENT    = ImVec4(0.376f, 0.808f, 0.945f, 1.00f);  // cyan #60CEF1
+    const ImVec4 ACCENT_HI = ImVec4(0.580f, 0.890f, 0.980f, 1.00f);
+    const ImVec4 BORDER    = ImVec4(0.180f, 0.200f, 0.250f, 1.00f);
+    const ImVec4 TEXT      = ImVec4(0.945f, 0.953f, 0.969f, 1.00f);
+    const ImVec4 TEXT_DIM  = ImVec4(0.580f, 0.620f, 0.690f, 1.00f);
+
+    c[ImGuiCol_Text]                  = TEXT;
+    c[ImGuiCol_TextDisabled]          = TEXT_DIM;
+    c[ImGuiCol_WindowBg]              = BG_PANEL;
+    c[ImGuiCol_ChildBg]               = BG_CARD;
+    c[ImGuiCol_PopupBg]               = BG_PANEL;
+    c[ImGuiCol_Border]                = BORDER;
+    c[ImGuiCol_FrameBg]               = BG_INPUT;
+    c[ImGuiCol_FrameBgHovered]        = ImVec4(0.110f, 0.130f, 0.170f, 1.00f);
+    c[ImGuiCol_FrameBgActive]         = ImVec4(0.140f, 0.165f, 0.215f, 1.00f);
+    c[ImGuiCol_TitleBg]               = BG_DEEP;
+    c[ImGuiCol_TitleBgActive]         = BG_PANEL;
+    c[ImGuiCol_MenuBarBg]             = BG_DEEP;
+    c[ImGuiCol_ScrollbarBg]           = BG_DEEP;
+    c[ImGuiCol_ScrollbarGrab]         = ImVec4(0.220f, 0.250f, 0.310f, 1.0f);
+    c[ImGuiCol_ScrollbarGrabHovered]  = ImVec4(0.290f, 0.330f, 0.410f, 1.0f);
+    c[ImGuiCol_ScrollbarGrabActive]   = ImVec4(0.360f, 0.420f, 0.520f, 1.0f);
+    c[ImGuiCol_CheckMark]             = ACCENT;
+    c[ImGuiCol_SliderGrab]            = ACCENT;
+    c[ImGuiCol_SliderGrabActive]      = ACCENT_HI;
+    c[ImGuiCol_Button]                = ImVec4(0.165f, 0.200f, 0.255f, 1.0f);
+    c[ImGuiCol_ButtonHovered]         = ImVec4(0.220f, 0.270f, 0.345f, 1.0f);
+    c[ImGuiCol_ButtonActive]          = ImVec4(0.275f, 0.345f, 0.435f, 1.0f);
+    c[ImGuiCol_Header]                = ImVec4(0.165f, 0.200f, 0.255f, 1.0f);
+    c[ImGuiCol_HeaderHovered]         = ImVec4(0.220f, 0.270f, 0.345f, 1.0f);
+    c[ImGuiCol_HeaderActive]          = ImVec4(0.275f, 0.345f, 0.435f, 1.0f);
+    c[ImGuiCol_Separator]             = BORDER;
+    c[ImGuiCol_SeparatorHovered]      = ACCENT;
+    c[ImGuiCol_SeparatorActive]       = ACCENT_HI;
+    c[ImGuiCol_Tab]                   = BG_INPUT;
+    c[ImGuiCol_TabHovered]            = ImVec4(0.180f, 0.230f, 0.310f, 1.0f);
+    c[ImGuiCol_TabActive]             = ImVec4(0.200f, 0.260f, 0.340f, 1.0f);
+    c[ImGuiCol_TableHeaderBg]         = ImVec4(0.140f, 0.165f, 0.215f, 1.0f);
+    c[ImGuiCol_TableBorderStrong]     = BORDER;
+    c[ImGuiCol_TableBorderLight]      = ImVec4(0.150f, 0.170f, 0.215f, 1.0f);
+    c[ImGuiCol_TableRowBg]            = ImVec4(0.000f, 0.000f, 0.000f, 0.000f);
+    c[ImGuiCol_TableRowBgAlt]         = ImVec4(0.105f, 0.120f, 0.155f, 0.500f);
+    c[ImGuiCol_PlotLines]             = ACCENT;
+    c[ImGuiCol_PlotHistogram]         = ACCENT;
+    c[ImGuiCol_NavHighlight]          = ACCENT;
 }
 
 } // namespace vbt
