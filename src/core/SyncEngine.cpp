@@ -144,6 +144,23 @@ void SyncEngine::update_drift(uint64_t esp_us, double host_s) {
     if (std::abs(denom) < 1e-12) return;
     double slope = (n * sxy - sx * sy) / denom;
     current_drift_ppm_ = (slope - 1.0) * 1e6;
+
+    // Auto-rearm hysteresis: only flag if exceeded for sustained window.
+    float threshold = config_.auto_rearm_drift_ppm > 0 ? config_.auto_rearm_drift_ppm : 100.0f;
+    int   sustain_s = config_.auto_rearm_sustain_s > 0 ? config_.auto_rearm_sustain_s : 5;
+    if (std::abs(current_drift_ppm_) > threshold) {
+        if (rearm_excess_start_ < 1.0) {
+            rearm_excess_start_ = host_s;
+        } else if (host_s - rearm_excess_start_ >= sustain_s) {
+            if (!rearm_required_) {
+                rearm_required_ = true;
+                spdlog::warn("Sync drift {:.1f} ppm sustained for {:.1f} s — rearm required",
+                             current_drift_ppm_, host_s - rearm_excess_start_);
+            }
+        }
+    } else {
+        rearm_excess_start_ = 0.0;
+    }
 }
 
 } // namespace vbt

@@ -6,8 +6,60 @@
 #include <cmath>
 #include <numeric>
 #include <fstream>
+#include <sstream>
 
 namespace vbt {
+
+nlohmann::json PlausibilityResult::to_json() const {
+    nlohmann::json j;
+    j["passed"] = passed;
+    j["failures"] = failures;
+    return j;
+}
+
+PlausibilityResult validate_rep_plausibility(const RepAnnotation& rep,
+                                              const PlausibilityConfig& cfg)
+{
+    PlausibilityResult r;
+    auto fail = [&](const std::string& s){ r.passed = false; r.failures.push_back(s); };
+
+    // Velocity bounds
+    if (rep.peak_concentric_velocity > cfg.max_velocity_mps) {
+        std::ostringstream oss;
+        oss << "peak velocity " << rep.peak_concentric_velocity
+            << " m/s exceeds plausibility cap " << cfg.max_velocity_mps;
+        fail(oss.str());
+    }
+    if (rep.peak_concentric_velocity < 0.05f) {
+        fail("peak concentric velocity < 0.05 m/s — likely false positive");
+    }
+
+    // ROM bounds
+    if (rep.rom_m > cfg.max_rom_m) {
+        std::ostringstream oss;
+        oss << "ROM " << rep.rom_m << " m exceeds " << cfg.max_rom_m;
+        fail(oss.str());
+    }
+    if (rep.rom_m < cfg.min_rom_m) {
+        std::ostringstream oss;
+        oss << "ROM " << rep.rom_m << " m below " << cfg.min_rom_m;
+        fail(oss.str());
+    }
+
+    // Concentric duration
+    double con_dur = rep.concentric.t_end_s - rep.concentric.t_start_s;
+    if (con_dur > cfg.max_concentric_dur_s) {
+        std::ostringstream oss;
+        oss << "concentric phase " << con_dur << " s > " << cfg.max_concentric_dur_s;
+        fail(oss.str());
+    }
+    if (con_dur < cfg.min_concentric_dur_s && con_dur > 0) {
+        std::ostringstream oss;
+        oss << "concentric phase " << con_dur << " s < " << cfg.min_concentric_dur_s;
+        fail(oss.str());
+    }
+    return r;
+}
 
 void Validator::add_position_pair(double t, float cam, float imu) {
     position_pairs_.push_back({t, cam, imu});

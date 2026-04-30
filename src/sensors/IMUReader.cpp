@@ -50,14 +50,24 @@ bool IMUReader::open(const IMUConfig& config) {
     // Set baud rate
     speed_t baud;
     switch (config_.baud_rate) {
+#ifdef B2000000
         case 2000000: baud = B2000000; break;
+#endif
+#ifdef B921600
         case 921600:  baud = B921600;  break;
+#endif
         case 115200:  baud = B115200;  break;
         default:
+#ifdef __APPLE__
+            // macOS lacks B921600/B2000000 constants; fall back to 115200.
+            baud = B115200;
+            break;
+#else
             spdlog::error("Unsupported baud rate: {}", config_.baud_rate);
             ::close(serial_fd_);
             serial_fd_ = -1;
             return false;
+#endif
     }
     cfsetispeed(&tty, baud);
     cfsetospeed(&tty, baud);
@@ -134,6 +144,17 @@ IMUStats IMUReader::get_stats() const {
     s.crc_errors     = counters_.crc_errors.load();
     s.sync_errors    = counters_.sync_errors.load();
     s.dropouts       = counters_.dropouts.load();
+    s.accel_saturation_count = accel_saturation_count_.load();
+    s.gyro_saturation_count  = gyro_saturation_count_.load();
+    // Rolling stddev as noise floor proxy
+    auto stddev = [](const std::vector<float>& v) -> double {
+        if (v.size() < 8) return 0.0;
+        double mean = 0; for (float x : v) mean += x; mean /= v.size();
+        double sq = 0; for (float x : v) { double d = x - mean; sq += d * d; }
+        return std::sqrt(sq / v.size());
+    };
+    s.gyro_noise_floor_dps = stddev(gyro_history_for_noise_);
+    s.accel_noise_floor_g  = stddev(accel_history_for_noise_);
     return s;
 }
 
@@ -307,10 +328,34 @@ void IMUReader::read_thread_func() {
                             sample.gyro_y_dps -= gyro_bias_.y;
                             sample.gyro_z_dps -= gyro_bias_.z;
 
-                            // Store latest
+                            // Signal-quality bookkeeping
+                            const int16_t kSat = 32700;  // ~99.8% of int16 range
+                            if (std::abs(sample.accel_x_raw) > kSat ||
+                                std::abs(sample.accel_y_raw) > kSat ||
+                                std::abs(sample.accel_z_raw) > kSat) {
+                                accel_saturation_count_++;
+                            }
+                            if (std::abs(sample.gyro_x_raw) > kSat ||
+                                std::abs(sample.gyro_y_raw) > kSat ||
+                                std::abs(sample.gyro_z_raw) > kSat) {
+                                gyro_saturation_count_++;
+                            }
+                            // Store latest + update rolling-noise buffers under the same lock
                             {
                                 std::lock_guard<std::mutex> lock(sample_mutex_);
                                 latest_sample_ = sample;
+                                float gmag = std::sqrt(sample.gyro_x_dps*sample.gyro_x_dps +
+                                                       sample.gyro_y_dps*sample.gyro_y_dps +
+                                                       sample.gyro_z_dps*sample.gyro_z_dps);
+                                float amag = std::sqrt(sample.accel_x_g*sample.accel_x_g +
+                                                       sample.accel_y_g*sample.accel_y_g +
+                                                       sample.accel_z_g*sample.accel_z_g);
+                                gyro_history_for_noise_.push_back(gmag);
+                                accel_history_for_noise_.push_back(amag - 1.0f);
+                                if (gyro_history_for_noise_.size() > kNoiseWindow)
+                                    gyro_history_for_noise_.erase(gyro_history_for_noise_.begin());
+                                if (accel_history_for_noise_.size() > kNoiseWindow)
+                                    accel_history_for_noise_.erase(accel_history_for_noise_.begin());
                             }
 
                             // Callback

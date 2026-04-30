@@ -63,6 +63,12 @@ struct IMUStats {
     double jitter_us_mean    = 0.0;
     double jitter_us_max     = 0.0;
     double jitter_us_stddev  = 0.0;
+
+    // Signal-quality (added v1.1)
+    uint64_t accel_saturation_count = 0;  // samples at ±FSR
+    uint64_t gyro_saturation_count  = 0;  // samples at ±FSR
+    double   gyro_noise_floor_dps   = 0.0;  // rolling stddev of gyro at rest
+    double   accel_noise_floor_g    = 0.0;  // rolling stddev of |a|-1 at rest
 };
 
 // Internal atomic counters (non-copyable) — private to IMUReader
@@ -137,6 +143,13 @@ private:
     IMUStats          stats_snapshot_;   // updated under sample_mutex_
     uint64_t prev_timestamp_us_ = 0;
     std::vector<double> jitter_history_;
+
+    // Signal-quality rolling buffers (last ~1 s at 1 kHz)
+    std::atomic<uint64_t> accel_saturation_count_{0};
+    std::atomic<uint64_t> gyro_saturation_count_{0};
+    std::vector<float> gyro_history_for_noise_;  // |gyro| samples
+    std::vector<float> accel_history_for_noise_; // |a|-1 samples
+    static constexpr size_t kNoiseWindow = 1000;
 
     // Clock sync
     uint64_t first_esp_timestamp_ = 0;
