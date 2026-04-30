@@ -1,4 +1,5 @@
 build/
+build-*/
 .cache/
 *.log
 !datasets/sync_verification/**/*.log
@@ -6,3 +7,17 @@ datasets/*
 !datasets/sync_verification/
 vbt_config.json
 __pycache__/
+
+# Editor / IDE
+.vscode/
+.idea/
+.DS_Store
+
+# Tooling
+.claude/
+.codex/
+diagnostics/
+
+# Runtime
+imgui.ini
+

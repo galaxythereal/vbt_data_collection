@@ -11,8 +11,22 @@
 #include <vector>
 #include <string>
 #include <nlohmann/json.hpp>
+#include "app/Config.h"
+#include "processing/RepSegmenter.h"
 
 namespace vbt {
+
+// ============================================================================
+// Per-Rep Plausibility Result
+// ============================================================================
+struct PlausibilityResult {
+    bool        passed = true;
+    std::vector<std::string> failures;     // empty if passed
+    nlohmann::json to_json() const;
+};
+
+PlausibilityResult validate_rep_plausibility(const RepAnnotation& rep,
+                                              const PlausibilityConfig& cfg);
 
 struct ValidationMetrics {
     // Position comparison

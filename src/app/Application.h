@@ -35,7 +35,9 @@ public:
 
     // Access
     AppConfig& config() { return config_; }
+    const AppConfig& config() const { return config_; }
     Session& session() { return *session_; }
+    const Session& session() const { return *session_; }
 
 private:
     bool init_window();
