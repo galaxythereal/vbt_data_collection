@@ -126,6 +126,14 @@ CameraStats CameraReader::get_stats() const {
     CameraStats s;
     s.total_frames   = counters_.total_frames.load();
     s.dropped_frames = counters_.dropped_frames.load();
+    // Live fps: average frames/sec since first frame arrived. Suppress flicker
+    // for the first 0.5 s so the readout doesn't bounce on connect.
+    if (first_frame_received_ && s.total_frames > 0) {
+        auto now = std::chrono::steady_clock::now();
+        double now_s = std::chrono::duration<double>(now.time_since_epoch()).count();
+        double elapsed = now_s - first_host_timestamp_;
+        if (elapsed > 0.5) s.measured_fps = s.total_frames / elapsed;
+    }
     return s;
 }
 

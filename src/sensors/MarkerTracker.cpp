@@ -18,11 +18,36 @@ void MarkerTracker::configure(const CameraConfig& config) { config_ = config; }
 cv::Mat MarkerTracker::threshold_ir(const cv::Mat& ir) {
     cv::Mat binary;
     cv::threshold(ir, binary, config_.marker_threshold, 255, cv::THRESH_BINARY);
-    // Morphological cleanup
-    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
-    cv::morphologyEx(binary, binary, cv::MORPH_OPEN, kernel);
-    cv::morphologyEx(binary, binary, cv::MORPH_CLOSE, kernel);
+    // Asymmetric morphology (ported from ir_tracker.cpp): small open kernel
+    // removes single-pixel salt-and-pepper noise, larger close kernel fills
+    // small holes inside the marker without smearing it.
+    cv::Mat k3 = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
+    cv::Mat k5 = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5));
+    cv::morphologyEx(binary, binary, cv::MORPH_OPEN,  k3);
+    cv::morphologyEx(binary, binary, cv::MORPH_CLOSE, k5);
     return binary;
+}
+
+float MarkerTracker::robust_depth_median(const cv::Mat& depth_mm, int cx, int cy, int win) {
+    // Collect non-zero depth samples in a (2*win+1)² patch and return median.
+    // Median is the right central tendency here because the depth stream has
+    // sparse holes / quantisation artefacts; mean would be biased by them.
+    if (depth_mm.empty()) return 0.0f;
+    int w = depth_mm.cols, h = depth_mm.rows;
+    std::vector<float> samples;
+    samples.reserve((2*win+1)*(2*win+1));
+    for (int dy = -win; dy <= win; ++dy) {
+        for (int dx = -win; dx <= win; ++dx) {
+            int px = cx + dx, py = cy + dy;
+            if (px < 0 || py < 0 || px >= w || py >= h) continue;
+            uint16_t d = depth_mm.at<uint16_t>(py, px);
+            if (d > 10) samples.push_back(d * 0.001f);  // ignore <1cm (noise) and zero (hole)
+        }
+    }
+    if (samples.empty()) return 0.0f;
+    auto mid = samples.begin() + samples.size() / 2;
+    std::nth_element(samples.begin(), mid, samples.end());
+    return *mid;
 }
 
 std::vector<MarkerDetection> MarkerTracker::find_blobs(const cv::Mat& binary, const cv::Mat& ir) {
@@ -94,20 +119,10 @@ void MarkerTracker::deproject_to_3d(MarkerDetection& det, const cv::Mat& depth,
     int u = std::clamp((int)std::round(det.pixel_u), 0, depth.cols - 1);
     int v = std::clamp((int)std::round(det.pixel_v), 0, depth.rows - 1);
 
-    // Sample depth in a small window for robustness
-    float depth_m = 0;
-    int count = 0;
-    for (int dy = -2; dy <= 2; dy++) {
-        for (int dx = -2; dx <= 2; dx++) {
-            int su = std::clamp(u + dx, 0, depth.cols - 1);
-            int sv = std::clamp(v + dy, 0, depth.rows - 1);
-            uint16_t d = depth.at<uint16_t>(sv, su);
-            if (d > 0) { depth_m += d * 0.001f; count++; }  // mm to m
-        }
-    }
-
-    if (count > 0) {
-        depth_m /= count;
+    // Median over an 11×11 patch (win=5). More robust to depth holes / outliers
+    // than the previous 5×5 mean.
+    float depth_m = robust_depth_median(depth, u, v, 5);
+    if (depth_m > 0.01f) {
         float pixel[2] = { det.pixel_u, det.pixel_v };
         float point[3];
         rs2_deproject_pixel_to_point(point, &depth_intrinsics, pixel, depth_m);

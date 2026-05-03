@@ -1,0 +1,54 @@
+# Sync Verification — 20260503_133104
+# duration=60s, bar=/dev/ttyUSB0, relay=/dev/ttyUSB1
+# output: datasets/sync_verification/20260503_133104
+
+→ Probing all /dev/ttyUSB* to identify bar vs relay…
+  bar  = (on battery, not on USB — wireless mode)
+  relay= /dev/ttyUSB0
+
+  In wireless mode, IMU sample rate and sync are inferred from the
+  relay's forwarded byte stream + camera's own frame counter.
+
+→ Starting D455 in master mode (90 fps, 848×480 z16)…
+  USB: 3.2, FW: 5.17.0.10
+→ Streaming for 60 s …
+  +  5.0s  cam fn=431  rate=86.36 fps  missed=0
+  + 10.0s  cam fn=881  rate=88.12 fps  missed=0
+  + 15.0s  cam fn=1331  rate=88.64 fps  missed=1
+  + 20.0s  cam fn=1781  rate=88.95 fps  missed=1
+  + 25.0s  cam fn=2231  rate=89.10 fps  missed=2
+  + 30.0s  cam fn=2681  rate=89.19 fps  missed=3
+  + 35.0s  cam fn=3131  rate=89.24 fps  missed=5
+  + 40.0s  cam fn=3581  rate=89.29 fps  missed=6
+  + 45.1s  cam fn=4031  rate=89.36 fps  missed=6
+  + 50.1s  cam fn=4481  rate=89.41 fps  missed=6
+  + 55.1s  cam fn=4931  rate=89.45 fps  missed=6
+
+=== SUMMARY ===
+
+  Camera:
+    frames captured     : 5369
+    rate (avg / steady) : 85.62 / 89.80 fps  (target ~90)
+    missed (frame-num gap): 7
+
+  Bar ESP: ON BATTERY — STATUS lines not visible. Health inferred
+           from relay forwarding rate + sync words on PC USB.
+
+  Relay ESP:
+    packets received    : 8680  (123.6 pkt/s)
+    bytes recv = fwd    : 1805440 = 1805440  (OK)
+    overruns            : 0  (must be 0)
+
+  PC USB serial (relay output):
+    sync words delivered: 62352  (= 994.4 Hz)
+
+  Pass / fail:
+    ✅  camera_steady_rate
+    ✅  espnow_success_rate
+    ✅  relay_no_overruns
+    ✅  relay_recv_rate
+    ✅  imu_samples_delivered
+
+  OVERALL: ✅ PASS
+
+→ All artifacts written to: datasets/sync_verification/20260503_133104

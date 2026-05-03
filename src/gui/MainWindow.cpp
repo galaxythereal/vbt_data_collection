@@ -26,6 +26,7 @@
 #include "utils/DiagnosticExport.h"
 #include <imgui.h>
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
 
@@ -115,6 +116,21 @@ void MainWindow::process_hotkeys() {
             AudioCue::play(Cue::StopRecord);
         }
     }
+    // M / U — manual rep marker / undo last rep (only while recording)
+    if (sess.get_state() == SessionState::RECORDING && !io.KeyCtrl) {
+        if (ImGui::IsKeyPressed(ImGuiKey_M, false)) {
+            double now_s = std::chrono::duration<double>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+            sess.segmenter().mark_rep_boundary_now(now_s);
+            AudioCue::play(Cue::LiftOff);
+            Notifications::get().info("Manual rep boundary inserted");
+        }
+        if (ImGui::IsKeyPressed(ImGuiKey_U, false)) {
+            sess.segmenter().delete_last_rep();
+            Notifications::get().warn("Last rep deleted");
+        }
+    }
+
     // Ctrl+S — save session if stopped
     if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false)) {
         if (sess.get_state() == SessionState::STOPPED) sess.save();
@@ -205,7 +221,20 @@ void MainWindow::render() {
                  ImGuiWindowFlags_NoCollapse);
     bool imu_up = app_.session().imu().is_running();
     bool cam_up = app_.session().camera().is_running();
-    if (!imu_up || !cam_up) {
+    if (cam_up) {
+        // Tabs: IR Tracker (live camera + marker overlay) | Plots
+        if (ImGui::BeginTabBar("##center_tabs", ImGuiTabBarFlags_FittingPolicyResizeDown)) {
+            if (ImGui::BeginTabItem("IR Tracker")) {
+                camera_panel_->render_content();
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Plots")) {
+                plot_panel_->render_content();
+                ImGui::EndTabItem();
+            }
+            ImGui::EndTabBar();
+        }
+    } else if (!imu_up || !cam_up) {
         // Guided welcome — centered panel walking the user through setup
         float aw = ImGui::GetContentRegionAvail().x;
         float ah = ImGui::GetContentRegionAvail().y;
@@ -233,12 +262,16 @@ void MainWindow::render() {
             ImGui::PopStyleColor();
         };
 
+        // Hardware FSYNC tagging is the actual sync mechanism — tap test is a
+        // legacy sanity check that's now optional (Tools menu).
+        bool hw_sync_live = (app_.session().imu().get_stats().fsync_rate_hz > 5.0);
+
         step(1, imu_up ? "IMU connected" : "Connect IMU  (top-left button)", imu_up);
         ImGui::Dummy(ImVec2(0, 6));
         step(2, cam_up ? "Camera connected" : "Connect Camera  (top-left button)", cam_up);
         ImGui::Dummy(ImVec2(0, 6));
-        step(3, "Run tap test  (right panel)",
-             app_.session().sync().get_sync_result().valid);
+        step(3, hw_sync_live ? "Hardware sync receiving FSYNC ✓"
+                             : "Waiting for camera FSYNC pulses…", hw_sync_live);
         ImGui::Dummy(ImVec2(0, 6));
         step(4, "Configure session metadata  (right panel)", false);
         ImGui::Dummy(ImVec2(0, 6));
@@ -249,8 +282,6 @@ void MainWindow::render() {
         ImVec2 hs = ImGui::CalcTextSize(hint);
         ImGui::SetCursorPosX((aw - hs.x) * 0.5f);
         ImGui::TextDisabled("%s", hint);
-    } else {
-        plot_panel_->render_content();
     }
     ImGui::End();
 
@@ -520,7 +551,14 @@ void MainWindow::render_top_toolbar() {
         if (cam.open(app_.config().camera)) {
             session.tracker().configure(app_.config().camera);
             cam.start();
-            Notifications::get().success("RealSense camera connected");
+            // Install LIVE preview callback so the IR Tracker tab shows frames
+            // before recording starts. start_recording() replaces this with a
+            // fuller callback that also logs data.
+            cam.set_callback([&session = session](const CameraFrame& f) {
+                session.tracker().process(f.ir_left, f.ir_right, f.depth,
+                                          f.ir_intrinsics, f.depth_intrinsics);
+            });
+            Notifications::get().success("RealSense camera connected — live IR preview on");
             return true;
         }
         Notifications::get().error("RealSense D455 not found on USB. Reseat the USB-C cable.");
@@ -567,6 +605,29 @@ void MainWindow::render_top_toolbar() {
         ImGui::SameLine();
     }
 
+    // ── Manual annotation buttons (only useful when recording) ──
+    // Auto-segmenter handles most reps but quasi-static or unusual reps may
+    // need a manual boundary. M = mark, U = undo last rep.
+    if (st == SessionState::RECORDING) {
+        ImGui::PushStyleColor(ImGuiCol_Button, kPillBlue);
+        if (ImGui::Button("Mark Rep [M]", ImVec2(120, 44))) {
+            double now_s = std::chrono::duration<double>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+            session.segmenter().mark_rep_boundary_now(now_s);
+            AudioCue::play(Cue::LiftOff);
+            Notifications::get().info("Manual rep boundary inserted");
+        }
+        ImGui::PopStyleColor();
+        ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_Button, kPillAmber);
+        if (ImGui::Button("Undo Rep [U]", ImVec2(120, 44))) {
+            session.segmenter().delete_last_rep();
+            Notifications::get().warn("Last rep deleted");
+        }
+        ImGui::PopStyleColor();
+        ImGui::SameLine();
+    }
+
     // ────── Right side: live status pills ──────
     float right_x = ImGui::GetWindowWidth() - 720;
     if (right_x < ImGui::GetCursorPosX() + 20) right_x = ImGui::GetCursorPosX() + 20;
@@ -590,13 +651,21 @@ void MainWindow::render_top_toolbar() {
     }
     ImGui::SameLine();
 
+    // Sync pill prefers the live FSYNC-rate from the IMU (hardware truth)
+    // over the offline tap-test offset. If FSYNC ticks at the camera rate, we
+    // are physically synced regardless of whether the user has run a tap test.
     if (sync.rearm_required()) {
         status_pill("Sync  REARM", kPillRed);
+    } else if (imu.is_running() && cam.is_running() && imu_st.fsync_rate_hz > 5.0) {
+        snprintf(buf, sizeof(buf), "Sync  %.0f Hz HW", imu_st.fsync_rate_hz);
+        status_pill(buf, kPillGreen);
     } else if (sync_r.valid) {
         snprintf(buf, sizeof(buf), "Sync  %.1f ppm", sync.get_current_drift_ppm());
         status_pill(buf, kPillGreen);
+    } else if (imu.is_running() && cam.is_running()) {
+        status_pill("Sync  waiting", kPillAmber);  // both up but no edges yet
     } else {
-        status_pill("Sync  not run", kPillAmber);
+        status_pill("Sync  offline", kPillGray);
     }
     ImGui::SameLine();
 
