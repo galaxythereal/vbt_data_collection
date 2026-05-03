@@ -13,6 +13,7 @@
 #include <fstream>
 #include <cmath>
 #include <algorithm>
+#include <array>
 #include <numeric>
 
 namespace vbt {
@@ -152,16 +153,108 @@ void RepSegmenter::feed_accel_sample(double time_s, float accel_x_g, float accel
 }
 
 // ============================================================================
-// Algorithm A: Camera velocity zero-crossing (PRIMARY)
+// Algorithm A (NEW): Windowed peak-confirmation rep detector.
+//
+// Why we don't just use velocity-zero-crossings:
+//   - Heavy reps slow but never zero velocity ("sticking points") → missed
+//     reps with the v1.0 logic.
+//   - Velocity is the noisy derivative of position, and small wiggles around
+//     zero are amplified into spurious phase-flips.
+//
+// Why we don't just use position-extrema online:
+//   - On its own, "running max retreats by N cm" oscillates 2–3× per real
+//     rep at the bottom of the eccentric phase as the bar bounces.
+//
+// What works (industry standard, Sánchez-Medina / Pueo / GymAware):
+//   - Buffer the last ~2 s of (t, position).
+//   - For each sample about to fall outside a centered window of ±W samples
+//     (≈0.22 s), check if it is the max OR min over that window AND has
+//     prominence (surrounding extremum is `prominence` lower / higher).
+//   - That sample is then a CONFIRMED extremum, emitted exactly once.
+//   - Detection lag = W samples. At 90 fps that's ~0.22 s — invisible to
+//     a lifter, plenty of evidence to be sure.
+//
+// Rep cycle:
+//   - First confirmed extremum seeds the cycle (squat → TOP, deadlift → BOTTOM).
+//   - Next confirmed extremum of the OPPOSITE type is the rep midpoint.
+//   - Next confirmed extremum of the SAME type as the seed = rep complete.
 // ============================================================================
 void RepSegmenter::feed_sample(const VelocitySample& sample) {
     float filt_vel = filter_velocity(sample.velocity_mps);
     sample_history_.push_back(sample);
     if (sample_history_.size() > MAX_HISTORY) sample_history_.pop_front();
-
-    // Track last camera sample time (gates IMU algorithm)
     last_camera_sample_time_ = sample.time_s;
 
+    // Always track the running peak +vel since the last extremum so that
+    // when we emit a rep we can populate concentric peak velocity.
+    if (filt_vel > peak_vel_current_) peak_vel_current_ = filt_vel;
+
+    // 5-sample moving-median smoothing of position. The marker tracker can
+    // emit single-sample spikes when the marker is partially occluded or
+    // depth flickers — those look like real peaks to the prominence detector
+    // and cause spurious reps. Median is more robust to outliers than mean,
+    // and a 5-sample window gives ~50 ms latency at 90 Hz which is invisible.
+    static thread_local std::deque<float> med_buf;
+    med_buf.push_back(sample.position_m);
+    if (med_buf.size() > 5) med_buf.pop_front();
+    float smooth_pos = sample.position_m;
+    if (med_buf.size() == 5) {
+        std::array<float, 5> tmp;
+        std::copy(med_buf.begin(), med_buf.end(), tmp.begin());
+        std::nth_element(tmp.begin(), tmp.begin() + 2, tmp.end());
+        smooth_pos = tmp[2];   // median
+    }
+
+    // Append SMOOTHED position to peak-detector buffer
+    pos_buf_.emplace_back(sample.time_s, smooth_pos);
+    while (pos_buf_.size() > 200) {
+        pos_buf_.pop_front();
+        if (pos_buf_last_checked_idx_ > 0) pos_buf_last_checked_idx_--;
+    }
+
+    // We can only check samples that have at least PEAK_WINDOW_N samples
+    // both before AND after them. So the latest checkable index is
+    // (size - 1 - W).
+    if (pos_buf_.size() < 2 * PEAK_WINDOW_N + 1) return;
+    const size_t last_checkable = pos_buf_.size() - PEAK_WINDOW_N - 1;
+    if (pos_buf_last_checked_idx_ >= last_checkable) return;
+
+    const float prominence = std::max(0.005f, config_.min_rep_displacement_m * 0.4f);
+
+    for (size_t c = pos_buf_last_checked_idx_ + 1; c <= last_checkable; ++c) {
+        const float center_pos = pos_buf_[c].second;
+        const double center_t  = pos_buf_[c].first;
+        bool is_max = true, is_min = true;
+        float win_min = center_pos, win_max = center_pos;
+        for (size_t i = c - PEAK_WINDOW_N; i <= c + PEAK_WINDOW_N; ++i) {
+            if (i == c) continue;
+            const float p = pos_buf_[i].second;
+            if (p > center_pos) is_max = false;
+            if (p < center_pos) is_min = false;
+            if (p < win_min) win_min = p;
+            if (p > win_max) win_max = p;
+            if (!is_max && !is_min) break;   // early out
+        }
+        if (is_max && (center_pos - win_min) > prominence) {
+            handle_extremum(1 /*TOP*/, center_t, center_pos);
+        } else if (is_min && (win_max - center_pos) > prominence) {
+            handle_extremum(2 /*BOTTOM*/, center_t, center_pos);
+        }
+    }
+    pos_buf_last_checked_idx_ = last_checkable;
+}
+
+// (kept for reference — the original Algorithm A path is unused now but the
+//  code is preserved here in case we want to A/B-compare; reachable only via
+//  the `current_phase_ == REST` branch below if we route old samples to it.)
+[[maybe_unused]] static void unused_legacy_a(int) {
+    // intentionally empty
+}
+#if 0
+void RepSegmenter::feed_sample_legacy(const VelocitySample& sample) {
+    float filt_vel = filter_velocity(sample.velocity_mps);
+    sample_history_.push_back(sample);
+    last_camera_sample_time_ = sample.time_s;
     switch (current_phase_) {
     case RepPhase::REST:
         if (std::abs(filt_vel) > config_.velocity_start_thresh) {
@@ -242,6 +335,103 @@ void RepSegmenter::feed_sample(const VelocitySample& sample) {
         break;
     }
 }
+#endif // legacy
+
+// ----------------------------------------------------------------------------
+// Cycle bookkeeping for the windowed peak-detector.  Called once per confirmed
+// extremum (TOP=1 / BOTTOM=2).
+// ----------------------------------------------------------------------------
+void RepSegmenter::handle_extremum(int type_int, double t, float pos) {
+    ExtType type = (type_int == 1) ? ExtType::TOP : ExtType::BOTTOM;
+
+    // Same-type debounce: if two consecutive same-type extrema arrive within
+    // 0.3 s of each other (very rare with the windowed detector but possible
+    // under heavy noise) keep the better-confirmed one.
+    if (last_confirmed_ext_ == type && (t - last_ext_t_) < 0.30) return;
+
+    // First extremum seeds the cycle direction
+    if (first_confirmed_ext_ == ExtType::NONE) {
+        first_confirmed_ext_ = type;
+        last_confirmed_ext_  = type;
+        last_ext_t_          = t;
+        last_ext_pos_        = pos;
+        cycle_start_t_       = t;
+        cycle_start_pos_     = pos;
+        peak_vel_current_    = 0;
+        rep_concentric_peak_vel_ = 0;
+        return;
+    }
+
+    // Mid-rep extremum (opposite type to seed)
+    if (type != first_confirmed_ext_) {
+        if (first_confirmed_ext_ == ExtType::BOTTOM && type == ExtType::TOP) {
+            // Deadlift: concentric just ended at this TOP — capture peak.
+            rep_concentric_peak_vel_ = peak_vel_current_;
+        }
+        // For squat (first=TOP), midpoint is BOTTOM — concentric is about to
+        // start; reset peak_vel_current_ so we capture only the upward peak.
+        peak_vel_current_   = 0;
+        midpoint_t_         = t;
+        midpoint_pos_       = pos;
+        last_confirmed_ext_ = type;
+        last_ext_t_         = t;
+        last_ext_pos_       = pos;
+        return;
+    }
+
+    // Same type as seed → REP COMPLETE
+    if (first_confirmed_ext_ == ExtType::TOP) {
+        rep_concentric_peak_vel_ = peak_vel_current_;   // ascent peak
+    }
+    RepAnnotation rep;
+    rep.concentric.phase  = RepPhase::CONCENTRIC;
+    rep.eccentric.phase   = RepPhase::ECCENTRIC;
+    rep.rest.phase        = RepPhase::REST;
+    rep.concentric.source = "camera";
+    rep.eccentric.source  = "camera";
+    if (first_confirmed_ext_ == ExtType::TOP) {
+        rep.eccentric.t_start_s  = cycle_start_t_;
+        rep.eccentric.t_end_s    = midpoint_t_;
+        rep.concentric.t_start_s = midpoint_t_;
+        rep.concentric.t_end_s   = t;
+    } else {
+        rep.concentric.t_start_s = cycle_start_t_;
+        rep.concentric.t_end_s   = midpoint_t_;
+        rep.eccentric.t_start_s  = midpoint_t_;
+        rep.eccentric.t_end_s    = t;
+    }
+    const float disp = std::abs(midpoint_pos_ - cycle_start_pos_);
+    rep.concentric.peak_velocity_mps = rep_concentric_peak_vel_;
+    rep.concentric.displacement_m = disp;
+    rep.eccentric.displacement_m  = disp;
+    rep.rest.t_start_s = t;
+    rep.rest.t_end_s   = t;
+    rep.peak_concentric_velocity = rep_concentric_peak_vel_;
+    rep.mean_concentric_velocity = rep_concentric_peak_vel_ * 0.7f;
+    rep.rom_m = disp;
+
+    const float duration = (float)(t - cycle_start_t_);
+    if (duration >= config_.min_rep_duration_s &&
+        disp     >= config_.min_rep_displacement_m) {
+        completed_reps_.push_back(rep);
+        renumber_reps();
+        spdlog::info("Rep {} (windowed-peak): peak_vel={:.3f} m/s, ROM={:.3f} m, dur={:.2f}s",
+                     completed_reps_.back().rep_id,
+                     rep.peak_concentric_velocity, rep.rom_m, duration);
+    } else {
+        spdlog::debug("Rep candidate rejected: dur={:.2f}s (min {:.2f}), disp={:.3f} m (min {:.3f})",
+                      duration, config_.min_rep_duration_s, disp, config_.min_rep_displacement_m);
+    }
+
+    // The just-confirmed extremum starts the next cycle.
+    cycle_start_t_   = t;
+    cycle_start_pos_ = pos;
+    last_confirmed_ext_ = type;
+    last_ext_t_   = t;
+    last_ext_pos_ = pos;
+    rep_concentric_peak_vel_ = 0;
+    peak_vel_current_        = 0;
+}
 
 // ============================================================================
 // Manual Annotation
@@ -294,6 +484,15 @@ void RepSegmenter::reset() {
     accel_sustain_count_ = 0; imu_rest_count_ = 0; imu_peak_dynamic_ = 0;
     imu_last_rep_end_time_ = 0; current_accel_variance_ = 0;
     last_camera_sample_time_ = 0;
+    // Windowed peak detector state
+    pos_buf_.clear();
+    pos_buf_last_checked_idx_ = 0;
+    first_confirmed_ext_ = ExtType::NONE;
+    last_confirmed_ext_  = ExtType::NONE;
+    last_ext_t_ = last_ext_pos_ = 0;
+    cycle_start_t_ = cycle_start_pos_ = 0;
+    midpoint_t_ = midpoint_pos_ = 0;
+    rep_concentric_peak_vel_ = 0;
 }
 
 // ============================================================================

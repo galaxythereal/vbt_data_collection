@@ -154,6 +154,30 @@ private:
     float max_pos_current_ = 0.0f;
     double rest_start_time_ = 0.0;
 
+    // ── Windowed peak-confirmation detector (the actual rep counter) ──
+    // For each new (t, pos) sample we scan a sliding window centred ~0.3 s in
+    // the past. A sample is a confirmed TOP if it is the max over [center-W,
+    // center+W] AND the surrounding minimum is `prominence` lower; symmetric
+    // for BOTTOM. Detection has a fixed lag of W samples (~0.3 s @ 90 Hz),
+    // which is the price we pay for noise / oscillation immunity. Returns
+    // every confirmed extremum exactly once.
+    enum class ExtType { NONE, TOP, BOTTOM };
+    std::deque<std::pair<double, float>> pos_buf_;   // (t, pos)
+    size_t pos_buf_last_checked_idx_ = 0;
+    static constexpr size_t PEAK_WINDOW_N = 20;       // ±0.22 s @ 90 fps
+
+    // Cycle state
+    ExtType first_confirmed_ext_ = ExtType::NONE;
+    ExtType last_confirmed_ext_  = ExtType::NONE;
+    double  last_ext_t_          = 0.0;
+    float   last_ext_pos_        = 0.0f;
+    double  cycle_start_t_       = 0.0;
+    float   cycle_start_pos_     = 0.0f;
+    double  midpoint_t_          = 0.0;
+    float   midpoint_pos_        = 0.0f;
+    float   rep_concentric_peak_vel_ = 0.0f;
+    void handle_extremum(int type_int, double t, float pos);
+
     // IMU accel state machine (Algorithm B — FALLBACK, gated by camera)
     RepPhase imu_phase_ = RepPhase::REST;
     int accel_sustain_count_ = 0;
