@@ -285,21 +285,35 @@ void MainWindow::render() {
     }
     ImGui::End();
 
+    // Center-bottom split: camera view (full IR feed, left) + rep stats (right).
+    // Camera lives here rather than the right-column tab so the IR image isn't
+    // squished into 300 px width. Rep stats default to the autoscrolling table
+    // (v1.0 style) — toggle to timeline-bars view via the checkbox.
+    float cam_w = center_w * 0.55f;
+    float reps_w = center_w - cam_w;
+
     ImGui::SetNextWindowPos(ImVec2(left_w, body_y + plot_h));
-    ImGui::SetNextWindowSize(ImVec2(center_w, annot_h));
-    ImGui::Begin("Rep Annotations", nullptr,
+    ImGui::SetNextWindowSize(ImVec2(cam_w, annot_h));
+    ImGui::Begin("Camera View", nullptr,
+                 ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                 ImGuiWindowFlags_NoCollapse);
+    camera_panel_->render_content();
+    ImGui::End();
+
+    ImGui::SetNextWindowPos(ImVec2(left_w + cam_w, body_y + plot_h));
+    ImGui::SetNextWindowSize(ImVec2(reps_w, annot_h));
+    ImGui::Begin("Rep Stats", nullptr,
                  ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
                  ImGuiWindowFlags_NoCollapse);
     ImGui::Checkbox("Timeline view", &use_rep_timeline_);
     ImGui::SameLine();
-    ImGui::TextDisabled("(F12: operator view  F1: calib  F2: replay)");
+    ImGui::TextDisabled("(F1 calib · F2 replay · F12 operator)");
     ImGui::Separator();
     if (use_rep_timeline_) rep_timeline_->render_content();
-    else                    annotation_panel_->render_content();
+    else                   annotation_panel_->render_content();
     ImGui::End();
 
-    // RIGHT — single tabbed panel (Session / Validation / Camera) replaces the
-    // old three-stack. One thing at a time, full vertical breathing room.
+    // RIGHT — Session + Metrics tabs (Camera moved to center-bottom)
     ImGui::SetNextWindowPos(ImVec2(left_w + center_w, body_y));
     ImGui::SetNextWindowSize(ImVec2(right_w, body_h));
     ImGui::Begin("##RightColumn", nullptr,
@@ -315,8 +329,17 @@ void MainWindow::render() {
             validation_panel_->render_content();
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Camera")) {
-            camera_panel_->render_content();
+        if (ImGui::BeginTabItem("Camera Settings")) {
+            // Camera tuning sliders live here; the live IR feed is in the
+            // center-bottom CameraView panel where it has more room.
+            auto& cfg = app_.config().camera;
+            ImGui::SliderInt("Exposure (us)", &cfg.exposure_us, 10, 5000);
+            ImGui::SliderInt("Gain", &cfg.gain, 16, 248);
+            ImGui::SliderInt("Marker Threshold", &cfg.marker_threshold, 50, 254);
+            ImGui::SliderFloat("Min Area", &cfg.marker_min_area, 5, 100);
+            ImGui::SliderFloat("Max Area", &cfg.marker_max_area, 50, 2000);
+            if (ImGui::IsItemDeactivatedAfterEdit())
+                app_.session().tracker().configure(cfg);
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();

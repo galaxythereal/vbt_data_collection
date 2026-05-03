@@ -65,7 +65,7 @@ private:
     bool show_calib_window_  = false;
     bool show_preflight_     = false;
     bool show_operator_view_ = false;
-    bool use_rep_timeline_   = true;     // hot-toggle: timeline vs table
+    bool use_rep_timeline_   = false;    // hot-toggle: false = autoscroll table (default)
     bool checked_partials_   = false;
     int  prev_rep_count_     = 0;        // for lift-off audio cue
 };
