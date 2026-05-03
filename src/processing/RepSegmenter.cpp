@@ -261,38 +261,36 @@ void RepSegmenter::feed_sample(const VelocitySample& sample) {
     }
     if (new_ext == ExtType::NONE) return;
 
-    // Seed cycle on first extremum
+    // Seed cycle on first extremum. Mark its t/pos as the "start of rep 1".
     if (first_confirmed_ext_ == ExtType::NONE) {
         first_confirmed_ext_ = new_ext;
         last_confirmed_ext_  = new_ext;
-        last_ext_pos_        = ext_pos;
+        last_ext_pos_        = ext_pos;        // start-of-current-rep anchor
         last_ext_t_          = ext_t;
+        prev_concentric_start_t_ = ext_t;
         peak_vel_current_     = 0;
         peak_neg_vel_current_ = 0;
         return;
     }
 
-    // Mid-rep extremum: opposite type — phase transition, not a rep yet.
-    if (new_ext != last_confirmed_ext_) {
-        // Save previous-extremum context. We'll need it when the next
-        // same-type extremum closes the rep.
-        last_confirmed_ext_ = new_ext;
-        // Carry rep_concentric_peak_vel_ from this midpoint so the rep's
-        // concentric peak velocity is available regardless of which way the
-        // exercise starts (squat vs deadlift).
-        if (first_confirmed_ext_ == ExtType::TOP && new_ext == ExtType::BOTTOM) {
-            // Squat: just hit BOTTOM. Concentric (up) is about to start.
-            peak_vel_current_ = 0;  // reset to capture concentric peak
-        } else if (first_confirmed_ext_ == ExtType::BOTTOM && new_ext == ExtType::TOP) {
-            // Deadlift: just hit TOP. Concentric just ended; capture its peak.
+    // Mid-rep extremum: opposite type to the start. Capture state but don't
+    // emit a rep yet. Extrema alternate strictly so this is just the midpoint
+    // of the rep that started at the previous same-type extremum.
+    if (new_ext != first_confirmed_ext_) {
+        last_confirmed_ext_      = new_ext;
+        prev_concentric_start_t_ = ext_t;
+        if (first_confirmed_ext_ == ExtType::TOP) {
+            // Squat: midpoint is the BOTTOM. Reset peak so we capture the
+            // upcoming concentric peak velocity correctly.
+            peak_vel_current_ = 0;
+        } else {
+            // Deadlift: midpoint is the TOP. Concentric just ended; freeze its peak.
             rep_concentric_peak_vel_ = peak_vel_current_;
         }
-        last_ext_pos_ = ext_pos;
-        last_ext_t_   = ext_t;
         return;
     }
 
-    // Same-type extremum returned → REP COMPLETE.
+    // Returned to the same-type extremum we started from → REP COMPLETE.
     // Squat: TOP→BOTTOM→TOP. Concentric was last_ext_t_ (mid BOTTOM) → ext_t.
     // Deadlift: BOTTOM→TOP→BOTTOM. Concentric peak was captured above.
     RepAnnotation rep;
@@ -302,21 +300,25 @@ void RepSegmenter::feed_sample(const VelocitySample& sample) {
     rep.concentric.source = "camera";
     rep.eccentric.source  = "camera";
 
+    // last_ext_t_/_pos_ holds the START of THIS rep (previous same-type extremum).
+    // prev_concentric_start_t_ holds the MID extremum (set during the midpoint branch).
     if (first_confirmed_ext_ == ExtType::TOP) {
-        // Squat-style: ecc was [prev_top → mid_bottom], con was [mid_bottom → cur_top]
-        rep.eccentric.t_start_s  = last_ext_t_;  // mid bottom (was set previously)
-        rep.eccentric.t_end_s    = last_ext_t_;
-        rep.concentric.t_start_s = last_ext_t_;
-        rep.concentric.t_end_s   = ext_t;
-        rep_concentric_peak_vel_ = peak_vel_current_;
-    } else {
-        rep.concentric.t_start_s = last_ext_t_;
-        rep.concentric.t_end_s   = last_ext_t_;
+        // Squat-style: ecc = (start_top → mid_bottom), con = (mid_bottom → cur_top)
         rep.eccentric.t_start_s  = last_ext_t_;
+        rep.eccentric.t_end_s    = prev_concentric_start_t_;
+        rep.concentric.t_start_s = prev_concentric_start_t_;
+        rep.concentric.t_end_s   = ext_t;
+        rep_concentric_peak_vel_ = peak_vel_current_;  // peak captured during the up phase
+    } else {
+        // Deadlift-style: con = (start_bottom → mid_top), ecc = (mid_top → cur_bottom)
+        rep.concentric.t_start_s = last_ext_t_;
+        rep.concentric.t_end_s   = prev_concentric_start_t_;
+        rep.eccentric.t_start_s  = prev_concentric_start_t_;
         rep.eccentric.t_end_s    = ext_t;
+        // rep_concentric_peak_vel_ already captured at the midpoint
     }
-    rep.concentric.peak_velocity_mps = rep_concentric_peak_vel_;
     float disp = std::abs(ext_pos - last_ext_pos_);
+    rep.concentric.peak_velocity_mps = rep_concentric_peak_vel_;
     rep.concentric.displacement_m = disp;
     rep.eccentric.displacement_m  = disp;
     rep.rest.t_start_s = ext_t;
@@ -329,12 +331,15 @@ void RepSegmenter::feed_sample(const VelocitySample& sample) {
     if (duration >= config_.min_rep_duration_s && disp >= config_.min_rep_displacement_m) {
         completed_reps_.push_back(rep);
         renumber_reps();
-        spdlog::info("Rep {} (extremum, prom={:.3f}m): peak_vel={:.3f} m/s, ROM={:.3f} m",
+        spdlog::info("Rep {} (extremum, prom={:.3f}m): peak_vel={:.3f} m/s, ROM={:.3f} m, dur={:.2f}s",
                      completed_reps_.back().rep_id, prominence,
-                     rep.peak_concentric_velocity, rep.rom_m);
+                     rep.peak_concentric_velocity, rep.rom_m, duration);
+    } else {
+        spdlog::debug("Rep candidate rejected: dur={:.2f}s (min {:.2f}), disp={:.3f}m (min {:.3f})",
+                      duration, config_.min_rep_duration_s, disp, config_.min_rep_displacement_m);
     }
 
-    // The just-confirmed extremum starts the next cycle.
+    // This same-type extremum is the START of the NEXT rep.
     last_confirmed_ext_ = new_ext;
     last_ext_pos_       = ext_pos;
     last_ext_t_         = ext_t;
