@@ -823,36 +823,22 @@ void MainWindow::render_sync_section() {
     ImGui::SeparatorText("Synchronization");
     ImGui::PopStyleColor();
 
+    // Hardware FSYNC tagging is the only sync path now — tap-test logic
+    // removed per user request. Live FSYNC rate from IMU's TEMP-LSB tag is
+    // the canonical sync indicator.
     auto& session = app_.session();
-    auto sync_result = session.sync().get_sync_result();
-    bool rearm = session.sync().rearm_required();
-    if (rearm) {
-        ImGui::TextColored(ImVec4(1,0.30f,0.30f,1), "● REARM REQUIRED");
-    } else if (sync_result.valid) {
-        ImGui::TextColored(ImVec4(0.2f, 1, 0.3f, 1), "● Synced");
-    } else {
-        ImGui::TextColored(ImVec4(1, 1, 0, 1), "○ Not calibrated");
-    }
-    if (sync_result.valid) {
-        ImGui::Text("Offset: %.1f µs", sync_result.offset_us);
-        ImGui::Text("Drift: %.1f ppm", session.sync().get_current_drift_ppm());
-    }
+    const auto& imu_st = session.imu().get_stats();
+    bool hw_sync_live = imu_st.fsync_rate_hz > 5.0;
 
-    if (ImGui::Button("Run Tap Test", ImVec2(-1, 0))) {
-        session.sync().start_tap_test();
-        Notifications::get().info("Tap test running — tap the bar sharply");
-    }
-    if (session.sync().is_tap_test_active()) {
-        ImGui::TextColored(ImVec4(1, 1, 0, 1), "TAP the barbell now!");
-        if (ImGui::Button("Finish", ImVec2(-1, 0))) {
-            auto r = session.sync().finish_tap_test();
-            if (r.valid) {
-                Notifications::get().success("Tap test complete");
-                session.sync().clear_rearm();
-            } else {
-                Notifications::get().warn("Tap test inconclusive — try again");
-            }
-        }
+    if (hw_sync_live) {
+        ImGui::TextColored(ImVec4(0.2f, 1, 0.3f, 1), "● HW Synced (FSYNC)");
+        ImGui::Text("FSYNC rate: %.1f Hz", imu_st.fsync_rate_hz);
+        ImGui::Text("FSYNC hits: %llu", (unsigned long long)imu_st.fsync_hit_count);
+    } else if (session.imu().is_running() && session.camera().is_running()) {
+        ImGui::TextColored(ImVec4(1, 1, 0, 1), "○ Waiting for FSYNC pulses");
+        ImGui::TextDisabled("Both ESPs powered? Cat5e to camera SYNC pin?");
+    } else {
+        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1), "● Hardware offline");
     }
 }
 
