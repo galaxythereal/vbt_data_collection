@@ -116,6 +116,15 @@ public:
     void insert_rep(const RepAnnotation& annotation);
     void delete_rep(int rep_id);
 
+    /// Real-time manual rep boundary: closes the rep currently being built
+    /// (if any) at `now_s`, regardless of velocity criteria. Marked source="manual".
+    /// Used as a fallback when automatic segmentation misses a rep.
+    void mark_rep_boundary_now(double now_s);
+
+    /// Drop the most recently completed rep — useful when auto-segmenter
+    /// double-counts or reports a spurious rep.
+    void delete_last_rep();
+
     // ========================================================================
     // Serialization
     // ========================================================================
@@ -141,7 +150,8 @@ private:
 
     RepAnnotation current_rep_;
     bool building_rep_ = false;
-    float peak_vel_current_ = 0.0f;
+    float peak_vel_current_     = 0.0f;   // peak +vel in current concentric
+    float peak_neg_vel_current_ = 0.0f;   // most-negative vel in current eccentric
     float min_pos_current_ = 0.0f;
     float max_pos_current_ = 0.0f;
     double rest_start_time_ = 0.0;

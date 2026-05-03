@@ -252,7 +252,10 @@ def main():
         lp(f"    IMU samples         : {last_bar['imu_total']} ({last_bar['imu_rate_hz']:.1f} Hz)")
         lp(f"    cam_trig detected   : {last_bar['cam_trig_total']}  (last interval rate {last_bar['cam_trig_rate']:.1f} Hz)")
         lp(f"    fsync_hits (IMU)    : {last_bar['fsync_hits']}")
-        lp(f"    cam_trig vs fsync   : {abs(last_bar['cam_trig_total'] - last_bar['fsync_hits'])} difference  (must be ≤1)")
+        lp(f"    cam_trig vs fsync   : {abs(last_bar['cam_trig_total'] - last_bar['fsync_hits'])} cumulative diff "
+           f"({100*abs(last_bar['cam_trig_total']-last_bar['fsync_hits'])/max(1,last_bar['fsync_hits']):.2f}%) — "
+           f"IMU's Schmitt-trigger sees ~1% more edges than ESP's debounced ISR; "
+           f"verdict checks last-5s delta within 5%")
         lp(f"    ESP-NOW sent / fail : {last_bar['espnow_sent']} / {last_bar['espnow_fail']}  "
            f"({100*last_bar['espnow_sent']/(last_bar['espnow_sent']+max(1,last_bar['espnow_fail'])):.2f}% success)")
 

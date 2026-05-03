@@ -13,6 +13,7 @@
 #include <librealsense2/rs.hpp>
 #include <vector>
 #include <deque>
+#include <mutex>
 #include "app/Config.h"
 
 namespace vbt {
@@ -77,7 +78,8 @@ public:
     cv::Mat get_debug_image() const;
 
 private:
-    // Detection pipeline
+    // Detection pipeline (refined from D455/cpp/ir_tracker.cpp — robust depth +
+    // morphology + score-by-area, no Kalman / no coast per user request).
     cv::Mat threshold_ir(const cv::Mat& ir);
     std::vector<MarkerDetection> find_blobs(const cv::Mat& binary, const cv::Mat& ir);
     MarkerDetection select_best_blob(const std::vector<MarkerDetection>& candidates);
@@ -89,7 +91,11 @@ private:
                             const cv::Mat& ir_right,
                             const rs2_intrinsics& ir_intrinsics);
 
-    // Prediction (for when marker is briefly lost)
+    // Robust depth: median over a (2*win+1)² patch around (cx, cy) in metres.
+    // Returns 0 if no valid samples. Suppresses single-pixel depth noise.
+    float robust_depth_median(const cv::Mat& depth_mm, int cx, int cy, int win = 5);
+
+    // Prediction (for when marker is briefly lost — uses last 1 valid detection)
     MarkerDetection predict_from_history();
 
     CameraConfig config_;

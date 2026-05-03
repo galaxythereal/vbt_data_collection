@@ -144,6 +144,18 @@ IMUStats IMUReader::get_stats() const {
     s.crc_errors     = counters_.crc_errors.load();
     s.sync_errors    = counters_.sync_errors.load();
     s.dropouts       = counters_.dropouts.load();
+    // Live rate: average packets/sec since first sample. Stays at 0 until
+    // we have at least 0.5 s of data so the readout doesn't flicker on connect.
+    s.fsync_hit_count = counters_.fsync_hits.load();
+    if (first_sample_received_ && s.valid_packets > 0) {
+        auto now = std::chrono::steady_clock::now();
+        double now_s = std::chrono::duration<double>(now.time_since_epoch()).count();
+        double elapsed = now_s - first_host_timestamp_;
+        if (elapsed > 0.5) {
+            s.measured_rate_hz = s.valid_packets / elapsed;
+            s.fsync_rate_hz   = s.fsync_hit_count / elapsed;
+        }
+    }
     s.accel_saturation_count = accel_saturation_count_.load();
     s.gyro_saturation_count  = gyro_saturation_count_.load();
     // Rolling stddev as noise floor proxy
@@ -203,6 +215,13 @@ bool IMUReader::parse_packet(const uint8_t* data, size_t len, IMUSample& sample)
     memcpy(&sample.gyro_y_raw, &data[18], 2);
     memcpy(&sample.gyro_z_raw, &data[20], 2);
     memcpy(&sample.temp_raw, &data[22], 2);
+
+    // Bar firmware tags TEMP LSB on samples that coincide with the camera's
+    // FSYNC rising edge (configured via FSYNC_UI_SEL=001 + TMST_FSYNC_EN).
+    // Mask it out of temp_raw for clean temperature, count it as a sync hit.
+    bool fsync_tagged = (sample.temp_raw & 0x0001);
+    sample.temp_raw &= ~0x0001;
+    if (fsync_tagged) counters_.fsync_hits++;
 
     // Convert to physical units
     float a_scale = config_.accel_scale();

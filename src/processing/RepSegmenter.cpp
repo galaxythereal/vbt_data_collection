@@ -152,6 +152,65 @@ void RepSegmenter::feed_accel_sample(double time_s, float accel_x_g, float accel
 }
 
 // ============================================================================
+// Manual rep boundary — finalises whatever phase is currently being built,
+// at `now_s`, and tags the segment as source="manual". Used when the auto
+// segmenter misses or under-segments (especially common with quasistatic reps).
+// ============================================================================
+void RepSegmenter::mark_rep_boundary_now(double now_s) {
+    if (!building_rep_) {
+        // No rep in progress — record an empty marker rep so the user has
+        // a timestamp anchor for later post-session editing.
+        RepAnnotation r;
+        r.concentric.phase = RepPhase::CONCENTRIC;
+        r.concentric.t_start_s = now_s;
+        r.concentric.t_end_s   = now_s;
+        r.concentric.source = "manual";
+        r.eccentric.phase = RepPhase::ECCENTRIC;
+        r.eccentric.t_start_s = now_s;
+        r.eccentric.t_end_s   = now_s;
+        r.eccentric.source = "manual";
+        r.rest.phase = RepPhase::REST;
+        r.rest.t_start_s = now_s;
+        r.rest.t_end_s   = now_s;
+        completed_reps_.push_back(r);
+        renumber_reps();
+        spdlog::info("Manual rep marker {} inserted at t={:.3f}s", completed_reps_.back().rep_id, now_s);
+        return;
+    }
+
+    // Close out the in-progress rep at `now_s` regardless of velocity criteria.
+    if (current_rep_.concentric.t_end_s == 0.0)
+        current_rep_.concentric.t_end_s = now_s;
+    current_rep_.eccentric.t_end_s = now_s;
+    current_rep_.eccentric.displacement_m = max_pos_current_ - min_pos_current_;
+    current_rep_.rest.phase = RepPhase::REST;
+    current_rep_.rest.t_start_s = now_s;
+    current_rep_.rest.t_end_s   = now_s;
+    current_rep_.peak_concentric_velocity = peak_vel_current_;
+    current_rep_.mean_concentric_velocity = peak_vel_current_ * 0.7f;
+    current_rep_.rom_m = max_pos_current_ - min_pos_current_;
+    current_rep_.concentric.source = "manual";
+    current_rep_.eccentric.source = "manual";
+    completed_reps_.push_back(current_rep_);
+    renumber_reps();
+    spdlog::info("Manual rep boundary {}: peak_vel={:.3f} m/s, ROM={:.3f} m",
+                 completed_reps_.back().rep_id, peak_vel_current_, current_rep_.rom_m);
+
+    building_rep_     = false;
+    current_phase_    = RepPhase::REST;
+    rest_start_time_  = -1.0;
+    peak_vel_current_ = 0;
+}
+
+void RepSegmenter::delete_last_rep() {
+    if (completed_reps_.empty()) return;
+    int rid = completed_reps_.back().rep_id;
+    completed_reps_.pop_back();
+    renumber_reps();
+    spdlog::info("Last rep ({}) deleted by operator", rid);
+}
+
+// ============================================================================
 // Algorithm A: Camera velocity zero-crossing (PRIMARY)
 // ============================================================================
 void RepSegmenter::feed_sample(const VelocitySample& sample) {
@@ -173,18 +232,26 @@ void RepSegmenter::feed_sample(const VelocitySample& sample) {
             current_rep_.concentric.phase = RepPhase::CONCENTRIC;
             current_rep_.concentric.t_start_s = sample.time_s;
             current_rep_.concentric.source = "camera";
-            peak_vel_current_ = std::abs(filt_vel);
+            peak_vel_current_     = std::abs(filt_vel);
+            peak_neg_vel_current_ = 0.0f;
             max_pos_current_ = sample.position_m;
             min_pos_current_ = sample.position_m;
             rest_start_time_ = -1.0;
         }
         break;
 
-    case RepPhase::CONCENTRIC:
+    case RepPhase::CONCENTRIC: {
         peak_vel_current_ = std::max(peak_vel_current_, filt_vel);
         max_pos_current_ = std::max(max_pos_current_, sample.position_m);
         min_pos_current_ = std::min(min_pos_current_, sample.position_m);
-        if (filt_vel <= 0) {
+        // Triple-guard for the down-transition:
+        //   (a) velocity past the negative threshold (hysteresis)
+        //   (b) minimum 0.10 s of concentric duration (debounce)
+        //   (c) concentric peak velocity reached at least 2× threshold —
+        //       proves the up-phase actually accelerated, not just noise.
+        double con_dur = sample.time_s - current_rep_.concentric.t_start_s;
+        bool real_concentric = (peak_vel_current_ > 2.0f * config_.velocity_start_thresh);
+        if (filt_vel < -config_.velocity_start_thresh && con_dur > 0.10 && real_concentric) {
             current_rep_.concentric.t_end_s = sample.time_s;
             current_rep_.concentric.peak_velocity_mps = peak_vel_current_;
             current_rep_.concentric.displacement_m = max_pos_current_ - min_pos_current_;
@@ -192,54 +259,82 @@ void RepSegmenter::feed_sample(const VelocitySample& sample) {
             current_rep_.eccentric.phase = RepPhase::ECCENTRIC;
             current_rep_.eccentric.t_start_s = sample.time_s;
             current_rep_.eccentric.source = "camera";
+            peak_neg_vel_current_ = filt_vel;  // start tracking eccentric peak
         }
         break;
+    }
 
-    case RepPhase::ECCENTRIC:
+    case RepPhase::ECCENTRIC: {
         min_pos_current_ = std::min(min_pos_current_, sample.position_m);
         max_pos_current_ = std::max(max_pos_current_, sample.position_m);
+        peak_neg_vel_current_ = std::min(peak_neg_vel_current_, filt_vel);
 
-        if (filt_vel > config_.velocity_start_thresh) {
-            double ecc_dur = sample.time_s - current_rep_.eccentric.t_start_s;
-            if (ecc_dur > 0.15) {
-                current_rep_.eccentric.t_end_s = sample.time_s;
-                current_rep_.eccentric.displacement_m = max_pos_current_ - min_pos_current_;
-            }
-        }
-
-        // Detect rest
+        // Triple-guard for direction reversal:
+        //   (a) velocity past the positive threshold (hysteresis past 0)
+        //   (b) ≥0.20 s of eccentric duration (debounce — was 0.15 s)
+        //   (c) eccentric peak |vel| reached at least 2× threshold (=0.10 m/s) —
+        //       proves the bar actually descended, not just oscillation noise.
+        double ecc_dur = sample.time_s - current_rep_.eccentric.t_start_s;
+        bool real_eccentric = (peak_neg_vel_current_ < -2.0f * config_.velocity_start_thresh);
+        bool direction_reversed = (filt_vel > config_.velocity_start_thresh
+                                   && ecc_dur > 0.20
+                                   && real_eccentric);
+        // ── Secondary finalize: sustained low velocity (true end-of-set) ──
+        bool sustained_rest = false;
         if (std::abs(filt_vel) < config_.velocity_rest_thresh) {
-            if (rest_start_time_ < 0) {
-                rest_start_time_ = sample.time_s;
-            } else if (sample.time_s - rest_start_time_ >= config_.rest_duration_min_s) {
-                // REST confirmed — finalize rep
-                current_rep_.eccentric.t_end_s = rest_start_time_;
-                current_rep_.eccentric.displacement_m = max_pos_current_ - min_pos_current_;
-                current_rep_.rest.phase = RepPhase::REST;
-                current_rep_.rest.t_start_s = rest_start_time_;
-                current_rep_.rest.t_end_s = sample.time_s;
-
-                float duration = (float)(rest_start_time_ - current_rep_.concentric.t_start_s);
-                float disp = max_pos_current_ - min_pos_current_;
-                if (duration >= config_.min_rep_duration_s && disp >= config_.min_rep_displacement_m) {
-                    current_rep_.mean_concentric_velocity = peak_vel_current_ * 0.7f;
-                    current_rep_.peak_concentric_velocity = peak_vel_current_;
-                    current_rep_.rom_m = disp;
-
-                    completed_reps_.push_back(current_rep_);
-                    renumber_reps();
-                    spdlog::info("Rep {} completed (camera): peak_vel={:.3f} m/s, ROM={:.3f} m, dur={:.2f}s",
-                                 completed_reps_.back().rep_id, peak_vel_current_, disp, duration);
-                }
-                current_phase_ = RepPhase::REST;
-                building_rep_ = false;
-                rest_start_time_ = -1.0;
-                peak_vel_current_ = 0;
-            }
+            if (rest_start_time_ < 0) rest_start_time_ = sample.time_s;
+            else if (sample.time_s - rest_start_time_ >= config_.rest_duration_min_s)
+                sustained_rest = true;
         } else {
             rest_start_time_ = -1.0;
         }
+
+        if (direction_reversed || sustained_rest) {
+            double end_time = sustained_rest ? rest_start_time_ : sample.time_s;
+            current_rep_.eccentric.t_end_s = end_time;
+            current_rep_.eccentric.displacement_m = max_pos_current_ - min_pos_current_;
+            current_rep_.rest.phase = RepPhase::REST;
+            current_rep_.rest.t_start_s = end_time;
+            current_rep_.rest.t_end_s = sample.time_s;
+
+            float duration = (float)(end_time - current_rep_.concentric.t_start_s);
+            float disp = max_pos_current_ - min_pos_current_;
+            if (duration >= config_.min_rep_duration_s && disp >= config_.min_rep_displacement_m) {
+                current_rep_.mean_concentric_velocity = peak_vel_current_ * 0.7f;
+                current_rep_.peak_concentric_velocity = peak_vel_current_;
+                current_rep_.rom_m = disp;
+                completed_reps_.push_back(current_rep_);
+                renumber_reps();
+                spdlog::info("Rep {} completed ({}): peak_vel={:.3f} m/s, ROM={:.3f} m, dur={:.2f}s",
+                             completed_reps_.back().rep_id,
+                             direction_reversed ? "direction-reversal" : "sustained-rest",
+                             peak_vel_current_, disp, duration);
+            }
+            building_rep_ = false;
+            rest_start_time_ = -1.0;
+            peak_vel_current_ = 0;
+
+            // ── Direction-reversal case: immediately enter the NEXT rep's concentric ──
+            // The bar is already moving upward at velocity_start_thresh — there's no
+            // gap. Quasistatic / touch-and-go reps are picked up cleanly this way.
+            if (direction_reversed) {
+                current_phase_ = RepPhase::CONCENTRIC;
+                phase_start_time_ = sample.time_s;
+                building_rep_ = true;
+                current_rep_ = {};
+                current_rep_.concentric.phase = RepPhase::CONCENTRIC;
+                current_rep_.concentric.t_start_s = sample.time_s;
+                current_rep_.concentric.source = "camera";
+                peak_vel_current_     = filt_vel;
+                peak_neg_vel_current_ = 0.0f;
+                max_pos_current_ = sample.position_m;
+                min_pos_current_ = sample.position_m;
+            } else {
+                current_phase_ = RepPhase::REST;
+            }
+        }
         break;
+    }
     }
 }
 

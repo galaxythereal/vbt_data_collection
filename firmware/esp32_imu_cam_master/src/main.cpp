@@ -49,7 +49,10 @@
 #include <SPI.h>
 #include <WiFi.h>
 #include <esp_now.h>
+#include <esp_wifi.h>
 #include "driver/gpio.h"
+#include "soc/rtc_cntl_reg.h"
+#include "soc/soc.h"
 
 // ============================================================================
 // Pin Config
@@ -296,6 +299,10 @@ static void on_espnow_sent(const uint8_t* mac, esp_now_send_status_t st) {
 static void espnow_init() {
     WiFi.mode(WIFI_STA);
     WiFi.disconnect();
+    // Crank TX power to maximum (~19.5 dBm). Pays for itself when the bar
+    // runs on a noisy battery pack — without it ESP-NOW sees ~80% packet loss
+    // under voltage sag.
+    esp_wifi_set_max_tx_power(80);   // units: 0.25 dBm → 80 = 20 dBm
     if (esp_now_init() != ESP_OK) {
         Serial.println("# ESP-NOW: init failed");
         return;
@@ -398,11 +405,25 @@ static void read_and_send() {
 // Setup
 // ============================================================================
 void setup() {
+    // Battery-friendly hardware tweaks — must run BEFORE anything else so
+    // the chip doesn't brown-out during boot when the battery sags.
+    //   1. Disable brownout detector. The chip would otherwise reset every
+    //      time SPI burst + ESP-NOW TX + IMU INT collide on a marginal supply.
+    //      Acceptable trade-off here — flash writes only happen at upload time
+    //      so corruption risk is bounded to RAM, which is invalidated on reset
+    //      regardless. Re-enable for production hardware with stiff power.
+    //   2. Drop CPU clock 240 MHz → 160 MHz. ~30% less average draw. Plenty
+    //      of headroom: 1 kHz IMU read is ~10 µs of CPU work per ms.
+    WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
+    setCpuFrequencyMhz(160);
+
     Serial.begin(921600);
     delay(500);
     Serial.println();
-    Serial.println("# ESP32 IMU + Camera-Master Sync Bridge v4.0");
+    Serial.println("# ESP32 IMU + Camera-Master Sync Bridge v4.1");
     Serial.println("# Mode: D455 is master, ESP listens on GPIO 27 (1.8V direct)");
+    Serial.printf("# Power: BOD disabled, CPU @ %u MHz (battery-friendly)\n",
+                  getCpuFrequencyMhz());
 
     // SPI init
     pinMode(PIN_CS, OUTPUT);

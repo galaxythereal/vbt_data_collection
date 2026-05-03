@@ -69,6 +69,10 @@ struct IMUStats {
     uint64_t gyro_saturation_count  = 0;  // samples at ±FSR
     double   gyro_noise_floor_dps   = 0.0;  // rolling stddev of gyro at rest
     double   accel_noise_floor_g    = 0.0;  // rolling stddev of |a|-1 at rest
+
+    // Hardware-sync health (camera FSYNC tag in TEMP LSB)
+    uint64_t fsync_hit_count = 0;    // cumulative samples with FSYNC tagged
+    double   fsync_rate_hz   = 0.0;  // live rate, should ≈ camera fps when synced
 };
 
 // Internal atomic counters (non-copyable) — private to IMUReader
@@ -78,6 +82,7 @@ struct IMUAtomicCounters {
     std::atomic<uint64_t> crc_errors{0};
     std::atomic<uint64_t> sync_errors{0};
     std::atomic<uint64_t> dropouts{0};
+    std::atomic<uint64_t> fsync_hits{0};   // FSYNC-tagged samples (TEMP LSB)
 };
 
 // ============================================================================
