@@ -211,131 +211,136 @@ void RepSegmenter::delete_last_rep() {
 }
 
 // ============================================================================
-// Algorithm A: Camera velocity zero-crossing (PRIMARY)
+// Algorithm A: POSITION-EXTREMA + PROMINENCE (literature-standard)
+// Sánchez-Medina 2010, Pueo 2021. A rep boundary is where the bar reaches an
+// extremum of its position trajectory and then moves back by ≥ `prominence`
+// metres (default = half min_rep_displacement). Position is the integral of
+// velocity, hence inherently smooth — robust to quasistatic phases and
+// velocity noise that broke the previous threshold approach.
 // ============================================================================
 void RepSegmenter::feed_sample(const VelocitySample& sample) {
     float filt_vel = filter_velocity(sample.velocity_mps);
     sample_history_.push_back(sample);
     if (sample_history_.size() > MAX_HISTORY) sample_history_.pop_front();
-
-    // Track last camera sample time (gates IMU algorithm)
     last_camera_sample_time_ = sample.time_s;
 
-    switch (current_phase_) {
-    case RepPhase::REST:
-        if (std::abs(filt_vel) > config_.velocity_start_thresh) {
-            current_phase_ = (filt_vel > 0) ? RepPhase::CONCENTRIC : RepPhase::ECCENTRIC;
-            phase_start_time_ = sample.time_s;
-            building_rep_ = true;
-            current_rep_ = {};
-            current_rep_.rep_id = 0; // Will be renumbered
-            current_rep_.concentric.phase = RepPhase::CONCENTRIC;
-            current_rep_.concentric.t_start_s = sample.time_s;
-            current_rep_.concentric.source = "camera";
-            peak_vel_current_     = std::abs(filt_vel);
-            peak_neg_vel_current_ = 0.0f;
-            max_pos_current_ = sample.position_m;
-            min_pos_current_ = sample.position_m;
-            rest_start_time_ = -1.0;
-        }
-        break;
+    const float pos = sample.position_m;
+    const float prominence = std::max(0.005f, config_.min_rep_displacement_m * 0.5f);
 
-    case RepPhase::CONCENTRIC: {
-        peak_vel_current_ = std::max(peak_vel_current_, filt_vel);
-        max_pos_current_ = std::max(max_pos_current_, sample.position_m);
-        min_pos_current_ = std::min(min_pos_current_, sample.position_m);
-        // Triple-guard for the down-transition:
-        //   (a) velocity past the negative threshold (hysteresis)
-        //   (b) minimum 0.10 s of concentric duration (debounce)
-        //   (c) concentric peak velocity reached at least 2× threshold —
-        //       proves the up-phase actually accelerated, not just noise.
-        double con_dur = sample.time_s - current_rep_.concentric.t_start_s;
-        bool real_concentric = (peak_vel_current_ > 2.0f * config_.velocity_start_thresh);
-        if (filt_vel < -config_.velocity_start_thresh && con_dur > 0.10 && real_concentric) {
-            current_rep_.concentric.t_end_s = sample.time_s;
-            current_rep_.concentric.peak_velocity_mps = peak_vel_current_;
-            current_rep_.concentric.displacement_m = max_pos_current_ - min_pos_current_;
-            current_phase_ = RepPhase::ECCENTRIC;
-            current_rep_.eccentric.phase = RepPhase::ECCENTRIC;
-            current_rep_.eccentric.t_start_s = sample.time_s;
-            current_rep_.eccentric.source = "camera";
-            peak_neg_vel_current_ = filt_vel;  // start tracking eccentric peak
-        }
-        break;
+    if (!extremum_seeded_) {
+        running_max_pos_ = running_min_pos_ = pos;
+        running_max_t_   = running_min_t_   = sample.time_s;
+        last_ext_pos_    = pos;
+        last_ext_t_      = sample.time_s;
+        extremum_seeded_ = true;
+        peak_vel_current_     = 0;
+        peak_neg_vel_current_ = 0;
+        return;
     }
 
-    case RepPhase::ECCENTRIC: {
-        min_pos_current_ = std::min(min_pos_current_, sample.position_m);
-        max_pos_current_ = std::max(max_pos_current_, sample.position_m);
-        peak_neg_vel_current_ = std::min(peak_neg_vel_current_, filt_vel);
+    if (pos > running_max_pos_) { running_max_pos_ = pos; running_max_t_ = sample.time_s; }
+    if (pos < running_min_pos_) { running_min_pos_ = pos; running_min_t_ = sample.time_s; }
+    if (filt_vel > peak_vel_current_)     peak_vel_current_     = filt_vel;
+    if (filt_vel < peak_neg_vel_current_) peak_neg_vel_current_ = filt_vel;
 
-        // Triple-guard for direction reversal:
-        //   (a) velocity past the positive threshold (hysteresis past 0)
-        //   (b) ≥0.20 s of eccentric duration (debounce — was 0.15 s)
-        //   (c) eccentric peak |vel| reached at least 2× threshold (=0.10 m/s) —
-        //       proves the bar actually descended, not just oscillation noise.
-        double ecc_dur = sample.time_s - current_rep_.eccentric.t_start_s;
-        bool real_eccentric = (peak_neg_vel_current_ < -2.0f * config_.velocity_start_thresh);
-        bool direction_reversed = (filt_vel > config_.velocity_start_thresh
-                                   && ecc_dur > 0.20
-                                   && real_eccentric);
-        // ── Secondary finalize: sustained low velocity (true end-of-set) ──
-        bool sustained_rest = false;
-        if (std::abs(filt_vel) < config_.velocity_rest_thresh) {
-            if (rest_start_time_ < 0) rest_start_time_ = sample.time_s;
-            else if (sample.time_s - rest_start_time_ >= config_.rest_duration_min_s)
-                sustained_rest = true;
-        } else {
-            rest_start_time_ = -1.0;
-        }
-
-        if (direction_reversed || sustained_rest) {
-            double end_time = sustained_rest ? rest_start_time_ : sample.time_s;
-            current_rep_.eccentric.t_end_s = end_time;
-            current_rep_.eccentric.displacement_m = max_pos_current_ - min_pos_current_;
-            current_rep_.rest.phase = RepPhase::REST;
-            current_rep_.rest.t_start_s = end_time;
-            current_rep_.rest.t_end_s = sample.time_s;
-
-            float duration = (float)(end_time - current_rep_.concentric.t_start_s);
-            float disp = max_pos_current_ - min_pos_current_;
-            if (duration >= config_.min_rep_duration_s && disp >= config_.min_rep_displacement_m) {
-                current_rep_.mean_concentric_velocity = peak_vel_current_ * 0.7f;
-                current_rep_.peak_concentric_velocity = peak_vel_current_;
-                current_rep_.rom_m = disp;
-                completed_reps_.push_back(current_rep_);
-                renumber_reps();
-                spdlog::info("Rep {} completed ({}): peak_vel={:.3f} m/s, ROM={:.3f} m, dur={:.2f}s",
-                             completed_reps_.back().rep_id,
-                             direction_reversed ? "direction-reversal" : "sustained-rest",
-                             peak_vel_current_, disp, duration);
-            }
-            building_rep_ = false;
-            rest_start_time_ = -1.0;
-            peak_vel_current_ = 0;
-
-            // ── Direction-reversal case: immediately enter the NEXT rep's concentric ──
-            // The bar is already moving upward at velocity_start_thresh — there's no
-            // gap. Quasistatic / touch-and-go reps are picked up cleanly this way.
-            if (direction_reversed) {
-                current_phase_ = RepPhase::CONCENTRIC;
-                phase_start_time_ = sample.time_s;
-                building_rep_ = true;
-                current_rep_ = {};
-                current_rep_.concentric.phase = RepPhase::CONCENTRIC;
-                current_rep_.concentric.t_start_s = sample.time_s;
-                current_rep_.concentric.source = "camera";
-                peak_vel_current_     = filt_vel;
-                peak_neg_vel_current_ = 0.0f;
-                max_pos_current_ = sample.position_m;
-                min_pos_current_ = sample.position_m;
-            } else {
-                current_phase_ = RepPhase::REST;
-            }
-        }
-        break;
+    // Confirm new extremum if position has retreated >= prominence from
+    // running max (TOP) or running min (BOTTOM).
+    ExtType new_ext = ExtType::NONE;
+    double  ext_t   = 0.0;
+    float   ext_pos = 0.0f;
+    if (last_confirmed_ext_ != ExtType::TOP && (running_max_pos_ - pos) > prominence) {
+        new_ext = ExtType::TOP;
+        ext_t   = running_max_t_;
+        ext_pos = running_max_pos_;
+        running_min_pos_ = pos; running_min_t_ = sample.time_s;
+    } else if (last_confirmed_ext_ != ExtType::BOTTOM && (pos - running_min_pos_) > prominence) {
+        new_ext = ExtType::BOTTOM;
+        ext_t   = running_min_t_;
+        ext_pos = running_min_pos_;
+        running_max_pos_ = pos; running_max_t_ = sample.time_s;
     }
+    if (new_ext == ExtType::NONE) return;
+
+    // Seed cycle on first extremum
+    if (first_confirmed_ext_ == ExtType::NONE) {
+        first_confirmed_ext_ = new_ext;
+        last_confirmed_ext_  = new_ext;
+        last_ext_pos_        = ext_pos;
+        last_ext_t_          = ext_t;
+        peak_vel_current_     = 0;
+        peak_neg_vel_current_ = 0;
+        return;
     }
+
+    // Mid-rep extremum: opposite type — phase transition, not a rep yet.
+    if (new_ext != last_confirmed_ext_) {
+        // Save previous-extremum context. We'll need it when the next
+        // same-type extremum closes the rep.
+        last_confirmed_ext_ = new_ext;
+        // Carry rep_concentric_peak_vel_ from this midpoint so the rep's
+        // concentric peak velocity is available regardless of which way the
+        // exercise starts (squat vs deadlift).
+        if (first_confirmed_ext_ == ExtType::TOP && new_ext == ExtType::BOTTOM) {
+            // Squat: just hit BOTTOM. Concentric (up) is about to start.
+            peak_vel_current_ = 0;  // reset to capture concentric peak
+        } else if (first_confirmed_ext_ == ExtType::BOTTOM && new_ext == ExtType::TOP) {
+            // Deadlift: just hit TOP. Concentric just ended; capture its peak.
+            rep_concentric_peak_vel_ = peak_vel_current_;
+        }
+        last_ext_pos_ = ext_pos;
+        last_ext_t_   = ext_t;
+        return;
+    }
+
+    // Same-type extremum returned → REP COMPLETE.
+    // Squat: TOP→BOTTOM→TOP. Concentric was last_ext_t_ (mid BOTTOM) → ext_t.
+    // Deadlift: BOTTOM→TOP→BOTTOM. Concentric peak was captured above.
+    RepAnnotation rep;
+    rep.concentric.phase = RepPhase::CONCENTRIC;
+    rep.eccentric.phase  = RepPhase::ECCENTRIC;
+    rep.rest.phase       = RepPhase::REST;
+    rep.concentric.source = "camera";
+    rep.eccentric.source  = "camera";
+
+    if (first_confirmed_ext_ == ExtType::TOP) {
+        // Squat-style: ecc was [prev_top → mid_bottom], con was [mid_bottom → cur_top]
+        rep.eccentric.t_start_s  = last_ext_t_;  // mid bottom (was set previously)
+        rep.eccentric.t_end_s    = last_ext_t_;
+        rep.concentric.t_start_s = last_ext_t_;
+        rep.concentric.t_end_s   = ext_t;
+        rep_concentric_peak_vel_ = peak_vel_current_;
+    } else {
+        rep.concentric.t_start_s = last_ext_t_;
+        rep.concentric.t_end_s   = last_ext_t_;
+        rep.eccentric.t_start_s  = last_ext_t_;
+        rep.eccentric.t_end_s    = ext_t;
+    }
+    rep.concentric.peak_velocity_mps = rep_concentric_peak_vel_;
+    float disp = std::abs(ext_pos - last_ext_pos_);
+    rep.concentric.displacement_m = disp;
+    rep.eccentric.displacement_m  = disp;
+    rep.rest.t_start_s = ext_t;
+    rep.rest.t_end_s   = ext_t;
+    rep.peak_concentric_velocity = rep_concentric_peak_vel_;
+    rep.mean_concentric_velocity = rep_concentric_peak_vel_ * 0.7f;
+    rep.rom_m = disp;
+
+    float duration = (float)(ext_t - last_ext_t_);
+    if (duration >= config_.min_rep_duration_s && disp >= config_.min_rep_displacement_m) {
+        completed_reps_.push_back(rep);
+        renumber_reps();
+        spdlog::info("Rep {} (extremum, prom={:.3f}m): peak_vel={:.3f} m/s, ROM={:.3f} m",
+                     completed_reps_.back().rep_id, prominence,
+                     rep.peak_concentric_velocity, rep.rom_m);
+    }
+
+    // The just-confirmed extremum starts the next cycle.
+    last_confirmed_ext_ = new_ext;
+    last_ext_pos_       = ext_pos;
+    last_ext_t_         = ext_t;
+    rep_concentric_peak_vel_ = 0;
+    peak_vel_current_     = 0;
+    peak_neg_vel_current_ = 0;
 }
 
 // ============================================================================
@@ -385,10 +390,20 @@ void RepSegmenter::reset() {
     completed_reps_.clear(); sample_history_.clear(); accel_history_.clear();
     current_phase_ = RepPhase::REST; building_rep_ = false;
     imu_phase_ = RepPhase::REST;
-    filter_state_ = {}; peak_vel_current_ = 0; rest_start_time_ = -1.0;
+    filter_state_ = {}; peak_vel_current_ = 0; peak_neg_vel_current_ = 0;
+    rest_start_time_ = -1.0;
     accel_sustain_count_ = 0; imu_rest_count_ = 0; imu_peak_dynamic_ = 0;
     imu_last_rep_end_time_ = 0; current_accel_variance_ = 0;
     last_camera_sample_time_ = 0;
+    // Position-extrema state
+    last_confirmed_ext_  = ExtType::NONE;
+    first_confirmed_ext_ = ExtType::NONE;
+    extremum_seeded_ = false;
+    running_max_pos_ = running_min_pos_ = 0;
+    running_max_t_ = running_min_t_ = 0;
+    last_ext_pos_ = 0; last_ext_t_ = 0;
+    prev_concentric_start_t_ = 0;
+    rep_concentric_peak_vel_ = 0; rep_concentric_disp_ = 0;
 }
 
 nlohmann::json RepAnnotation::to_json() const {
