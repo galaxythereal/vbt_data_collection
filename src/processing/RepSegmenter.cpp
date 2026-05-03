@@ -152,200 +152,95 @@ void RepSegmenter::feed_accel_sample(double time_s, float accel_x_g, float accel
 }
 
 // ============================================================================
-// Manual rep boundary — finalises whatever phase is currently being built,
-// at `now_s`, and tags the segment as source="manual". Used when the auto
-// segmenter misses or under-segments (especially common with quasistatic reps).
-// ============================================================================
-void RepSegmenter::mark_rep_boundary_now(double now_s) {
-    if (!building_rep_) {
-        // No rep in progress — record an empty marker rep so the user has
-        // a timestamp anchor for later post-session editing.
-        RepAnnotation r;
-        r.concentric.phase = RepPhase::CONCENTRIC;
-        r.concentric.t_start_s = now_s;
-        r.concentric.t_end_s   = now_s;
-        r.concentric.source = "manual";
-        r.eccentric.phase = RepPhase::ECCENTRIC;
-        r.eccentric.t_start_s = now_s;
-        r.eccentric.t_end_s   = now_s;
-        r.eccentric.source = "manual";
-        r.rest.phase = RepPhase::REST;
-        r.rest.t_start_s = now_s;
-        r.rest.t_end_s   = now_s;
-        completed_reps_.push_back(r);
-        renumber_reps();
-        spdlog::info("Manual rep marker {} inserted at t={:.3f}s", completed_reps_.back().rep_id, now_s);
-        return;
-    }
-
-    // Close out the in-progress rep at `now_s` regardless of velocity criteria.
-    if (current_rep_.concentric.t_end_s == 0.0)
-        current_rep_.concentric.t_end_s = now_s;
-    current_rep_.eccentric.t_end_s = now_s;
-    current_rep_.eccentric.displacement_m = max_pos_current_ - min_pos_current_;
-    current_rep_.rest.phase = RepPhase::REST;
-    current_rep_.rest.t_start_s = now_s;
-    current_rep_.rest.t_end_s   = now_s;
-    current_rep_.peak_concentric_velocity = peak_vel_current_;
-    current_rep_.mean_concentric_velocity = peak_vel_current_ * 0.7f;
-    current_rep_.rom_m = max_pos_current_ - min_pos_current_;
-    current_rep_.concentric.source = "manual";
-    current_rep_.eccentric.source = "manual";
-    completed_reps_.push_back(current_rep_);
-    renumber_reps();
-    spdlog::info("Manual rep boundary {}: peak_vel={:.3f} m/s, ROM={:.3f} m",
-                 completed_reps_.back().rep_id, peak_vel_current_, current_rep_.rom_m);
-
-    building_rep_     = false;
-    current_phase_    = RepPhase::REST;
-    rest_start_time_  = -1.0;
-    peak_vel_current_ = 0;
-}
-
-void RepSegmenter::delete_last_rep() {
-    if (completed_reps_.empty()) return;
-    int rid = completed_reps_.back().rep_id;
-    completed_reps_.pop_back();
-    renumber_reps();
-    spdlog::info("Last rep ({}) deleted by operator", rid);
-}
-
-// ============================================================================
-// Algorithm A: POSITION-EXTREMA + PROMINENCE (literature-standard)
-// Sánchez-Medina 2010, Pueo 2021. A rep boundary is where the bar reaches an
-// extremum of its position trajectory and then moves back by ≥ `prominence`
-// metres (default = half min_rep_displacement). Position is the integral of
-// velocity, hence inherently smooth — robust to quasistatic phases and
-// velocity noise that broke the previous threshold approach.
+// Algorithm A: Camera velocity zero-crossing (PRIMARY)
 // ============================================================================
 void RepSegmenter::feed_sample(const VelocitySample& sample) {
     float filt_vel = filter_velocity(sample.velocity_mps);
     sample_history_.push_back(sample);
     if (sample_history_.size() > MAX_HISTORY) sample_history_.pop_front();
+
+    // Track last camera sample time (gates IMU algorithm)
     last_camera_sample_time_ = sample.time_s;
 
-    const float pos = sample.position_m;
-    const float prominence = std::max(0.005f, config_.min_rep_displacement_m * 0.5f);
-
-    if (!extremum_seeded_) {
-        running_max_pos_ = running_min_pos_ = pos;
-        running_max_t_   = running_min_t_   = sample.time_s;
-        last_ext_pos_    = pos;
-        last_ext_t_      = sample.time_s;
-        extremum_seeded_ = true;
-        peak_vel_current_     = 0;
-        peak_neg_vel_current_ = 0;
-        return;
-    }
-
-    if (pos > running_max_pos_) { running_max_pos_ = pos; running_max_t_ = sample.time_s; }
-    if (pos < running_min_pos_) { running_min_pos_ = pos; running_min_t_ = sample.time_s; }
-    if (filt_vel > peak_vel_current_)     peak_vel_current_     = filt_vel;
-    if (filt_vel < peak_neg_vel_current_) peak_neg_vel_current_ = filt_vel;
-
-    // Confirm new extremum if position has retreated >= prominence from
-    // running max (TOP) or running min (BOTTOM).
-    ExtType new_ext = ExtType::NONE;
-    double  ext_t   = 0.0;
-    float   ext_pos = 0.0f;
-    if (last_confirmed_ext_ != ExtType::TOP && (running_max_pos_ - pos) > prominence) {
-        new_ext = ExtType::TOP;
-        ext_t   = running_max_t_;
-        ext_pos = running_max_pos_;
-        running_min_pos_ = pos; running_min_t_ = sample.time_s;
-    } else if (last_confirmed_ext_ != ExtType::BOTTOM && (pos - running_min_pos_) > prominence) {
-        new_ext = ExtType::BOTTOM;
-        ext_t   = running_min_t_;
-        ext_pos = running_min_pos_;
-        running_max_pos_ = pos; running_max_t_ = sample.time_s;
-    }
-    if (new_ext == ExtType::NONE) return;
-
-    // Seed cycle on first extremum. Mark its t/pos as the "start of rep 1".
-    if (first_confirmed_ext_ == ExtType::NONE) {
-        first_confirmed_ext_ = new_ext;
-        last_confirmed_ext_  = new_ext;
-        last_ext_pos_        = ext_pos;        // start-of-current-rep anchor
-        last_ext_t_          = ext_t;
-        prev_concentric_start_t_ = ext_t;
-        peak_vel_current_     = 0;
-        peak_neg_vel_current_ = 0;
-        return;
-    }
-
-    // Mid-rep extremum: opposite type to the start. Capture state but don't
-    // emit a rep yet. Extrema alternate strictly so this is just the midpoint
-    // of the rep that started at the previous same-type extremum.
-    if (new_ext != first_confirmed_ext_) {
-        last_confirmed_ext_      = new_ext;
-        prev_concentric_start_t_ = ext_t;
-        if (first_confirmed_ext_ == ExtType::TOP) {
-            // Squat: midpoint is the BOTTOM. Reset peak so we capture the
-            // upcoming concentric peak velocity correctly.
-            peak_vel_current_ = 0;
-        } else {
-            // Deadlift: midpoint is the TOP. Concentric just ended; freeze its peak.
-            rep_concentric_peak_vel_ = peak_vel_current_;
+    switch (current_phase_) {
+    case RepPhase::REST:
+        if (std::abs(filt_vel) > config_.velocity_start_thresh) {
+            current_phase_ = (filt_vel > 0) ? RepPhase::CONCENTRIC : RepPhase::ECCENTRIC;
+            phase_start_time_ = sample.time_s;
+            building_rep_ = true;
+            current_rep_ = {};
+            current_rep_.rep_id = 0; // Will be renumbered
+            current_rep_.concentric.phase = RepPhase::CONCENTRIC;
+            current_rep_.concentric.t_start_s = sample.time_s;
+            current_rep_.concentric.source = "camera";
+            peak_vel_current_ = std::abs(filt_vel);
+            max_pos_current_ = sample.position_m;
+            min_pos_current_ = sample.position_m;
+            rest_start_time_ = -1.0;
         }
-        return;
+        break;
+
+    case RepPhase::CONCENTRIC:
+        peak_vel_current_ = std::max(peak_vel_current_, filt_vel);
+        max_pos_current_ = std::max(max_pos_current_, sample.position_m);
+        min_pos_current_ = std::min(min_pos_current_, sample.position_m);
+        if (filt_vel <= 0) {
+            current_rep_.concentric.t_end_s = sample.time_s;
+            current_rep_.concentric.peak_velocity_mps = peak_vel_current_;
+            current_rep_.concentric.displacement_m = max_pos_current_ - min_pos_current_;
+            current_phase_ = RepPhase::ECCENTRIC;
+            current_rep_.eccentric.phase = RepPhase::ECCENTRIC;
+            current_rep_.eccentric.t_start_s = sample.time_s;
+            current_rep_.eccentric.source = "camera";
+        }
+        break;
+
+    case RepPhase::ECCENTRIC:
+        min_pos_current_ = std::min(min_pos_current_, sample.position_m);
+        max_pos_current_ = std::max(max_pos_current_, sample.position_m);
+
+        if (filt_vel > config_.velocity_start_thresh) {
+            double ecc_dur = sample.time_s - current_rep_.eccentric.t_start_s;
+            if (ecc_dur > 0.15) {
+                current_rep_.eccentric.t_end_s = sample.time_s;
+                current_rep_.eccentric.displacement_m = max_pos_current_ - min_pos_current_;
+            }
+        }
+
+        // Detect rest
+        if (std::abs(filt_vel) < config_.velocity_rest_thresh) {
+            if (rest_start_time_ < 0) {
+                rest_start_time_ = sample.time_s;
+            } else if (sample.time_s - rest_start_time_ >= config_.rest_duration_min_s) {
+                // REST confirmed — finalize rep
+                current_rep_.eccentric.t_end_s = rest_start_time_;
+                current_rep_.eccentric.displacement_m = max_pos_current_ - min_pos_current_;
+                current_rep_.rest.phase = RepPhase::REST;
+                current_rep_.rest.t_start_s = rest_start_time_;
+                current_rep_.rest.t_end_s = sample.time_s;
+
+                float duration = (float)(rest_start_time_ - current_rep_.concentric.t_start_s);
+                float disp = max_pos_current_ - min_pos_current_;
+                if (duration >= config_.min_rep_duration_s && disp >= config_.min_rep_displacement_m) {
+                    current_rep_.mean_concentric_velocity = peak_vel_current_ * 0.7f;
+                    current_rep_.peak_concentric_velocity = peak_vel_current_;
+                    current_rep_.rom_m = disp;
+
+                    completed_reps_.push_back(current_rep_);
+                    renumber_reps();
+                    spdlog::info("Rep {} completed (camera): peak_vel={:.3f} m/s, ROM={:.3f} m, dur={:.2f}s",
+                                 completed_reps_.back().rep_id, peak_vel_current_, disp, duration);
+                }
+                current_phase_ = RepPhase::REST;
+                building_rep_ = false;
+                rest_start_time_ = -1.0;
+                peak_vel_current_ = 0;
+            }
+        } else {
+            rest_start_time_ = -1.0;
+        }
+        break;
     }
-
-    // Returned to the same-type extremum we started from → REP COMPLETE.
-    // Squat: TOP→BOTTOM→TOP. Concentric was last_ext_t_ (mid BOTTOM) → ext_t.
-    // Deadlift: BOTTOM→TOP→BOTTOM. Concentric peak was captured above.
-    RepAnnotation rep;
-    rep.concentric.phase = RepPhase::CONCENTRIC;
-    rep.eccentric.phase  = RepPhase::ECCENTRIC;
-    rep.rest.phase       = RepPhase::REST;
-    rep.concentric.source = "camera";
-    rep.eccentric.source  = "camera";
-
-    // last_ext_t_/_pos_ holds the START of THIS rep (previous same-type extremum).
-    // prev_concentric_start_t_ holds the MID extremum (set during the midpoint branch).
-    if (first_confirmed_ext_ == ExtType::TOP) {
-        // Squat-style: ecc = (start_top → mid_bottom), con = (mid_bottom → cur_top)
-        rep.eccentric.t_start_s  = last_ext_t_;
-        rep.eccentric.t_end_s    = prev_concentric_start_t_;
-        rep.concentric.t_start_s = prev_concentric_start_t_;
-        rep.concentric.t_end_s   = ext_t;
-        rep_concentric_peak_vel_ = peak_vel_current_;  // peak captured during the up phase
-    } else {
-        // Deadlift-style: con = (start_bottom → mid_top), ecc = (mid_top → cur_bottom)
-        rep.concentric.t_start_s = last_ext_t_;
-        rep.concentric.t_end_s   = prev_concentric_start_t_;
-        rep.eccentric.t_start_s  = prev_concentric_start_t_;
-        rep.eccentric.t_end_s    = ext_t;
-        // rep_concentric_peak_vel_ already captured at the midpoint
-    }
-    float disp = std::abs(ext_pos - last_ext_pos_);
-    rep.concentric.peak_velocity_mps = rep_concentric_peak_vel_;
-    rep.concentric.displacement_m = disp;
-    rep.eccentric.displacement_m  = disp;
-    rep.rest.t_start_s = ext_t;
-    rep.rest.t_end_s   = ext_t;
-    rep.peak_concentric_velocity = rep_concentric_peak_vel_;
-    rep.mean_concentric_velocity = rep_concentric_peak_vel_ * 0.7f;
-    rep.rom_m = disp;
-
-    float duration = (float)(ext_t - last_ext_t_);
-    if (duration >= config_.min_rep_duration_s && disp >= config_.min_rep_displacement_m) {
-        completed_reps_.push_back(rep);
-        renumber_reps();
-        spdlog::info("Rep {} (extremum, prom={:.3f}m): peak_vel={:.3f} m/s, ROM={:.3f} m, dur={:.2f}s",
-                     completed_reps_.back().rep_id, prominence,
-                     rep.peak_concentric_velocity, rep.rom_m, duration);
-    } else {
-        spdlog::debug("Rep candidate rejected: dur={:.2f}s (min {:.2f}), disp={:.3f}m (min {:.3f})",
-                      duration, config_.min_rep_duration_s, disp, config_.min_rep_displacement_m);
-    }
-
-    // This same-type extremum is the START of the NEXT rep.
-    last_confirmed_ext_ = new_ext;
-    last_ext_pos_       = ext_pos;
-    last_ext_t_         = ext_t;
-    rep_concentric_peak_vel_ = 0;
-    peak_vel_current_     = 0;
-    peak_neg_vel_current_ = 0;
 }
 
 // ============================================================================
@@ -395,20 +290,64 @@ void RepSegmenter::reset() {
     completed_reps_.clear(); sample_history_.clear(); accel_history_.clear();
     current_phase_ = RepPhase::REST; building_rep_ = false;
     imu_phase_ = RepPhase::REST;
-    filter_state_ = {}; peak_vel_current_ = 0; peak_neg_vel_current_ = 0;
-    rest_start_time_ = -1.0;
+    filter_state_ = {}; peak_vel_current_ = 0; rest_start_time_ = -1.0;
     accel_sustain_count_ = 0; imu_rest_count_ = 0; imu_peak_dynamic_ = 0;
     imu_last_rep_end_time_ = 0; current_accel_variance_ = 0;
     last_camera_sample_time_ = 0;
-    // Position-extrema state
-    last_confirmed_ext_  = ExtType::NONE;
-    first_confirmed_ext_ = ExtType::NONE;
-    extremum_seeded_ = false;
-    running_max_pos_ = running_min_pos_ = 0;
-    running_max_t_ = running_min_t_ = 0;
-    last_ext_pos_ = 0; last_ext_t_ = 0;
-    prev_concentric_start_t_ = 0;
-    rep_concentric_peak_vel_ = 0; rep_concentric_disp_ = 0;
+}
+
+// ============================================================================
+// Manual rep boundary — finalises whatever phase is currently being built,
+// at `now_s`, and tags the segment as source="manual". Used when the auto
+// segmenter misses a rep.
+// ============================================================================
+void RepSegmenter::mark_rep_boundary_now(double now_s) {
+    if (!building_rep_) {
+        // No rep in progress — record an empty marker rep so the user has
+        // a timestamp anchor for later post-session editing.
+        RepAnnotation r;
+        r.concentric.phase = RepPhase::CONCENTRIC;
+        r.concentric.t_start_s = r.concentric.t_end_s = now_s;
+        r.concentric.source = "manual";
+        r.eccentric.phase  = RepPhase::ECCENTRIC;
+        r.eccentric.t_start_s = r.eccentric.t_end_s = now_s;
+        r.eccentric.source = "manual";
+        r.rest.phase = RepPhase::REST;
+        r.rest.t_start_s = r.rest.t_end_s = now_s;
+        completed_reps_.push_back(r);
+        renumber_reps();
+        spdlog::info("Manual rep marker {} inserted at t={:.3f}s",
+                     completed_reps_.back().rep_id, now_s);
+        return;
+    }
+    if (current_rep_.concentric.t_end_s == 0.0)
+        current_rep_.concentric.t_end_s = now_s;
+    current_rep_.eccentric.t_end_s = now_s;
+    current_rep_.eccentric.displacement_m = max_pos_current_ - min_pos_current_;
+    current_rep_.rest.phase = RepPhase::REST;
+    current_rep_.rest.t_start_s = now_s;
+    current_rep_.rest.t_end_s   = now_s;
+    current_rep_.peak_concentric_velocity = peak_vel_current_;
+    current_rep_.mean_concentric_velocity = peak_vel_current_ * 0.7f;
+    current_rep_.rom_m = max_pos_current_ - min_pos_current_;
+    current_rep_.concentric.source = "manual";
+    current_rep_.eccentric.source  = "manual";
+    completed_reps_.push_back(current_rep_);
+    renumber_reps();
+    spdlog::info("Manual rep boundary {}: peak_vel={:.3f} m/s, ROM={:.3f} m",
+                 completed_reps_.back().rep_id, peak_vel_current_, current_rep_.rom_m);
+    building_rep_     = false;
+    current_phase_    = RepPhase::REST;
+    rest_start_time_  = -1.0;
+    peak_vel_current_ = 0;
+}
+
+void RepSegmenter::delete_last_rep() {
+    if (completed_reps_.empty()) return;
+    int rid = completed_reps_.back().rep_id;
+    completed_reps_.pop_back();
+    renumber_reps();
+    spdlog::info("Last rep ({}) deleted by operator", rid);
 }
 
 nlohmann::json RepAnnotation::to_json() const {

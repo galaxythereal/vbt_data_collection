@@ -117,8 +117,7 @@ public:
     void delete_rep(int rep_id);
 
     /// Real-time manual rep boundary: closes the rep currently being built
-    /// (if any) at `now_s`, regardless of velocity criteria. Marked source="manual".
-    /// Used as a fallback when automatic segmentation misses a rep.
+    /// at `now_s`, regardless of velocity criteria. Marked source="manual".
     void mark_rep_boundary_now(double now_s);
 
     /// Drop the most recently completed rep — useful when auto-segmenter
@@ -150,30 +149,10 @@ private:
 
     RepAnnotation current_rep_;
     bool building_rep_ = false;
-    float peak_vel_current_     = 0.0f;   // peak +vel since last extremum
-    float peak_neg_vel_current_ = 0.0f;   // most-negative vel since last extremum
+    float peak_vel_current_ = 0.0f;
     float min_pos_current_ = 0.0f;
     float max_pos_current_ = 0.0f;
     double rest_start_time_ = 0.0;
-
-    // ── Position-extrema detector (literature-standard rep detection) ──
-    // Tracks running min/max of position. Confirms an extremum when position
-    // moves away from the running max/min by `prominence` (default = half of
-    // min_rep_displacement_m). Handles quasistatic reps and noisy velocity
-    // signals robustly — position is the integral of velocity so it's smoother.
-    enum class ExtType { NONE, TOP, BOTTOM };
-    ExtType last_confirmed_ext_      = ExtType::NONE;
-    ExtType first_confirmed_ext_     = ExtType::NONE;
-    float   running_max_pos_         = 0.0f;
-    float   running_min_pos_         = 0.0f;
-    double  running_max_t_           = 0.0;
-    double  running_min_t_           = 0.0;
-    bool    extremum_seeded_         = false;
-    float   last_ext_pos_            = 0.0f;
-    double  last_ext_t_              = 0.0;
-    double  prev_concentric_start_t_ = 0.0;   // start of the concentric in current rep
-    float   rep_concentric_peak_vel_ = 0.0f;
-    float   rep_concentric_disp_     = 0.0f;
 
     // IMU accel state machine (Algorithm B — FALLBACK, gated by camera)
     RepPhase imu_phase_ = RepPhase::REST;
