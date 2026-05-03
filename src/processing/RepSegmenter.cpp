@@ -411,16 +411,30 @@ void RepSegmenter::handle_extremum(int type_int, double t, float pos) {
     rep.rom_m = disp;
 
     const float duration = (float)(t - cycle_start_t_);
-    if (duration >= config_.min_rep_duration_s &&
-        disp     >= config_.min_rep_displacement_m) {
+
+    // Triple gate: real reps must satisfy ALL of:
+    //   (a) min duration (≥ 0.3 s)        — filters single-frame glitches
+    //   (b) min displacement (≥ 5 cm)     — filters tiny wiggles
+    //   (c) min concentric peak velocity  — filters pre-lift bar settling.
+    //                                       Real concentric peaks are 0.5+ m/s;
+    //                                       bar wobble is <0.1 m/s.
+    constexpr float MIN_PEAK_VEL_MPS = 0.25f;
+
+    bool dur_ok  = duration >= config_.min_rep_duration_s;
+    bool disp_ok = disp     >= config_.min_rep_displacement_m;
+    bool vel_ok  = rep.peak_concentric_velocity >= MIN_PEAK_VEL_MPS;
+
+    if (dur_ok && disp_ok && vel_ok) {
         completed_reps_.push_back(rep);
         renumber_reps();
         spdlog::info("Rep {} (windowed-peak): peak_vel={:.3f} m/s, ROM={:.3f} m, dur={:.2f}s",
                      completed_reps_.back().rep_id,
                      rep.peak_concentric_velocity, rep.rom_m, duration);
     } else {
-        spdlog::debug("Rep candidate rejected: dur={:.2f}s (min {:.2f}), disp={:.3f} m (min {:.3f})",
-                      duration, config_.min_rep_duration_s, disp, config_.min_rep_displacement_m);
+        spdlog::info("Rep candidate rejected: dur={:.2f}s ({}), disp={:.3f}m ({}), peak_vel={:.3f}m/s ({})",
+                      duration, dur_ok ? "ok" : "low",
+                      disp,     disp_ok ? "ok" : "low",
+                      rep.peak_concentric_velocity, vel_ok ? "ok" : "low");
     }
 
     // The just-confirmed extremum starts the next cycle.
