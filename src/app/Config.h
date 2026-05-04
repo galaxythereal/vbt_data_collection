@@ -50,7 +50,9 @@ struct CameraConfig {
     int    gain           = 16;     // Minimum gain
     bool   emitter_on     = false;  // Laser emitter OFF for IR marker tracking
     bool   enable_depth   = true;   // Enable depth for 3D deprojection
-    bool   enable_rgb     = true;   // Enable RGB for video fallback
+    bool   enable_rgb     = false;  // RGB OFF by default — clone is 1.2 MB/frame
+                                    //   and not needed for IR-marker tracking.
+                                    //   Caused 22% host-side fps drop until disabled.
     int    rgb_fps        = 30;     // RGB at 30fps (max for D455)
     float  marker_min_area = 20.0f; // Min blob area in pixels
     float  marker_max_area = 500.0f;

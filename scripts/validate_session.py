@@ -82,20 +82,49 @@ def report_imu(session_dir: Path) -> dict:
     host_t = d[:, host_idx]
     duration = float(host_t[-1] - host_t[0])
     rate = rows / duration if duration > 0 else 0.0
-    dt = np.diff(host_t)
-    jitter_us = (np.std(dt) * 1e6) if len(dt) else 0.0
-    drops = int(np.sum(dt > 0.005))    # >5 ms gap = potential drop at 1 kHz
-    zeros = int(np.sum(d[:, host_idx] == 0))
+    zeros = int(np.sum(host_t == 0))
 
-    print(f"  rows               : {rows:>10,}")
-    print(f"  duration           : {duration:>10.2f} s")
-    print(f"  rate               : {fmt_hz(rate):>10}        (target ≈ 988 Hz)")
-    print(f"  jitter (stddev dt) : {jitter_us:>10.1f} µs")
-    print(f"  gaps >5 ms         : {drops:>10,}")
-    print(f"  zero-host-ts rows  : {zeros:>10,}")
+    # IMU samples are batched 8-per-packet over ESP-NOW, so consecutive
+    # host_timestamp_s values arrive in bursts (≈0 µs within a batch, ≈8 ms
+    # between batches). Jitter measured against host time is bursty by design
+    # and is NOT a fault of the IMU. The honest measurement is against the
+    # ESP32 onboard clock (esp_timestamp_us, monotonic 1 µs counter).
+    if esp_idx is not None:
+        esp_us = d[:, esp_idx]
+        # The ESP clock occasionally rolls over / repeats at startup; use
+        # only strictly-increasing diffs.
+        d_esp = np.diff(esp_us)
+        d_esp = d_esp[d_esp > 0]
+        esp_jitter_us  = float(np.std(d_esp))  if len(d_esp) else 0.0
+        esp_median_us  = float(np.median(d_esp)) if len(d_esp) else 0.0
+        esp_drops_5ms  = int(np.sum(d_esp > 5_000))
+        esp_drops_2ms  = int(np.sum(d_esp > 2_000))
+    else:
+        esp_jitter_us = esp_median_us = 0.0
+        esp_drops_5ms = esp_drops_2ms = 0
+
+    d_host = np.diff(host_t)
+    host_jitter_us = (np.std(d_host) * 1e6) if len(d_host) else 0.0
+    host_drops_5ms = int(np.sum(d_host > 0.005))
+
+    print(f"  rows                 : {rows:>10,}")
+    print(f"  duration             : {duration:>10.2f} s")
+    print(f"  rate                 : {fmt_hz(rate):>10}        (target ≈ 988 Hz)")
+    if esp_idx is not None:
+        print(f"  ESP Δt median        : {esp_median_us:>10.1f} µs       (1/988 Hz ≈ 1012 µs)")
+        print(f"  ESP jitter (stddev)  : {esp_jitter_us:>10.1f} µs       ← THE truth (target <100 µs)")
+        print(f"  ESP gaps >2 ms       : {esp_drops_2ms:>10,}        (≈2 missed samples)")
+        print(f"  ESP gaps >5 ms       : {esp_drops_5ms:>10,}")
+    print(f"  host jitter (stddev) : {host_jitter_us:>10.1f} µs       (bursty by ESP-NOW design — 8 samples/packet)")
+    print(f"  host gaps >5 ms      : {host_drops_5ms:>10,}        (= packet boundaries, not drops)")
+    print(f"  zero-host-ts rows    : {zeros:>10,}")
 
     out = {"rows": rows, "duration_s": duration, "rate_hz": rate,
-           "jitter_us": jitter_us, "drops": drops, "zero_ts": zeros,
+           "jitter_us": esp_jitter_us if esp_idx is not None else host_jitter_us,
+           "host_jitter_us": host_jitter_us,
+           "esp_jitter_us": esp_jitter_us,
+           "drops": esp_drops_5ms if esp_idx is not None else host_drops_5ms,
+           "zero_ts": zeros,
            "host_t_first": float(host_t[0]), "host_t_last": float(host_t[-1])}
     if esp_idx is not None:
         out["esp_t_first"] = float(d[0, esp_idx])
@@ -145,6 +174,51 @@ def report_camera(session_dir: Path) -> dict:
             "jitter_ms": jitter_ms, "drops": drops,
             "detected_pct": detected_pct, "avg_confidence": avg_conf,
             "ts_first": float(ts[0]), "ts_last": float(ts[-1])}
+
+
+def report_video(session_dir: Path) -> dict:
+    """Frame-index CSV is the authoritative source for camera fps.
+    marker_positions.csv only has rows when the marker is detected; missing
+    detections look like dropped frames in that file but are not."""
+    section("IR video stream")
+    p = session_dir / "camera" / "video_frames.csv"
+    mp4 = session_dir / "camera" / "ir_video.mp4"
+    if not p.exists() or p.stat().st_size == 0:
+        print(f"  ❌ missing or empty: {p}     (older session — no video logged)")
+        return {"present": False}
+    header, d = load_csv(p)
+    rows = len(d)
+    hw_idx   = col(header, "hw_timestamp_s")
+    host_idx = col(header, "host_timestamp_s")
+    if hw_idx is None or host_idx is None:
+        print("  ❌ missing hw_timestamp_s / host_timestamp_s columns")
+        return {"rows": rows}
+
+    hw   = d[:, hw_idx]
+    host = d[:, host_idx]
+    duration = float(host[-1] - host[0])
+    fps      = rows / duration if duration > 0 else 0.0
+    d_hw     = np.diff(hw)
+    d_host   = np.diff(host)
+    hw_jitter_ms   = (np.std(d_hw)   * 1e3) if len(d_hw)   else 0.0
+    host_jitter_ms = (np.std(d_host) * 1e3) if len(d_host) else 0.0
+    drops_hw   = int(np.sum(d_hw   > 0.020))
+    drops_host = int(np.sum(d_host > 0.020))
+
+    mp4_size_mb = mp4.stat().st_size / (1024*1024) if mp4.exists() else 0.0
+    print(f"  frames logged        : {rows:>10,}")
+    print(f"  ir_video.mp4 size    : {mp4_size_mb:>10.1f} MB")
+    print(f"  duration             : {duration:>10.2f} s")
+    print(f"  rate                 : {fmt_hz(fps):>10}        (target ≈ 90 fps)")
+    print(f"  HW   jitter (stddev) : {hw_jitter_ms:>10.3f} ms       ← truth (D455 hardware clock)")
+    print(f"  HW   gaps >20 ms     : {drops_hw:>10,}")
+    print(f"  host jitter (stddev) : {host_jitter_ms:>10.3f} ms")
+    print(f"  host gaps >20 ms     : {drops_host:>10,}")
+    return {"rows": rows, "duration_s": duration, "rate_fps": fps,
+            "hw_jitter_ms": hw_jitter_ms, "host_jitter_ms": host_jitter_ms,
+            "drops_hw": drops_hw, "drops_host": drops_host,
+            "ts_first": float(host[0]), "ts_last": float(host[-1]),
+            "mp4_size_mb": mp4_size_mb}
 
 
 def report_sync(imu: dict, cam: dict):
@@ -246,6 +320,7 @@ def main():
     report_metadata(sess)
     imu = report_imu(sess) or {}
     cam = report_camera(sess) or {}
+    vid = report_video(sess) or {}
     if imu.get("rows") and cam.get("rows"):
         report_sync(imu, cam)
     report_reps(sess)

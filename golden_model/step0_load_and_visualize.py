@@ -9,7 +9,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import json, os, sys
 
-SESSION = "/home/galaxy/Desktop/data_collection/datasets/sessions/session_20260425_001844"
+SESSION = "/home/galaxy/Desktop/data_collection/datasets/sessions/session_20260504_143723"
 
 # ── Load IMU ──
 imu = pd.read_csv(f"{SESSION}/imu/raw_imu.csv")

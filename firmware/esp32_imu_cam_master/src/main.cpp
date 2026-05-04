@@ -65,6 +65,18 @@ static constexpr int PIN_INT1     = 26;
 static constexpr int PIN_CAM_TRIG = 27;   // INPUT: D455 SYNC out (1.8V) + IMU FSYNC (in parallel)
 static constexpr int PIN_LED      = 2;    // onboard LED, visual heartbeat
 
+// Camera sync input tuning.
+//
+// INPUT_PULLDOWN stopped a floating GPIO27 from hallucinating edges, but it
+// also adds a weak load to a marginal 1.8 V D455 output. For production wiring
+// where the camera actively drives SYNC and GND is tied, plain INPUT gives the
+// cleanest threshold margin. If the camera is unplugged and cam_trig_count
+// free-runs, switch this back to true.
+static constexpr bool CAM_TRIG_USE_INTERNAL_PULLDOWN = false;
+static constexpr int  CAM_TRIG_EDGE_MODE = RISING;
+static constexpr bool FSYNC_CLEAR_ON_READ = true;
+static constexpr bool FSYNC_FALLING_EDGE = false;
+
 // ============================================================================
 // ICM42688-P Registers (Bank 0)
 // ============================================================================
@@ -179,6 +191,7 @@ static uint32_t g_last_cam_trig_count = 0;
 static const uint8_t RELAY_MAC[6] = {0x68, 0x25, 0xDD, 0x32, 0x78, 0x54};
 static uint32_t g_espnow_send_count = 0;
 static uint32_t g_espnow_fail_count = 0;
+static uint32_t g_espnow_status_count = 0;
 
 // Batching: pack 8 IMU samples per ESP-NOW packet (8 × 26 = 208 bytes < 250 limit).
 // Drops radio packet rate from 988 Hz → 124 Hz, comfortably within ESP-NOW capacity.
@@ -271,13 +284,28 @@ static bool imu_init() {
     Serial.printf("# INTF_CONFIG5 readback: 0x%02X (wrote 0x02 → pin9=FSYNC)\n", pin9_rb);
 
     // ── FSYNC tagging (camera trigger sync) ──
-    writeReg(REG_FSYNC_CONFIG, 0x10);      // FSYNC_UI_SEL=001 (TEMP), rising
+    //
+    // Datasheet:
+    //   bits 6:4 = 001 -> tag TEMP LSB
+    //   bit 1    = FSYNC_UI_FLAG_CLEAR_SEL
+    //              0 -> clear when sensor register is updated
+    //              1 -> clear when UI reads tagged register LSB
+    //   bit 0    = FSYNC_POLARITY
+    //              0 -> rising edge, 1 -> falling edge
+    //
+    // Keeping the flag latched until read gives the 1 kHz host-side sampling
+    // loop the best chance of actually observing the bit instead of losing it
+    // to the next UI register update.
+    uint8_t fsync_cfg = 0x10;  // FSYNC_UI_SEL = TEMP LSB
+    if (FSYNC_CLEAR_ON_READ) fsync_cfg |= 0x02;
+    if (FSYNC_FALLING_EDGE)  fsync_cfg |= 0x01;
+    writeReg(REG_FSYNC_CONFIG, fsync_cfg);
     writeReg(REG_TMST_CONFIG, 0b00011011); // TMST_TO_REGS_EN | RESOL=1us | FSYNC_EN | TMST_EN
 
     // Read back to confirm writes stuck
     uint8_t fc_rb = readReg(REG_FSYNC_CONFIG);
     uint8_t tc_rb = readReg(REG_TMST_CONFIG);
-    Serial.printf("# FSYNC_CONFIG readback: 0x%02X (wrote 0x10)\n", fc_rb);
+    Serial.printf("# FSYNC_CONFIG readback: 0x%02X (wrote 0x%02X)\n", fc_rb, fsync_cfg);
     Serial.printf("# TMST_CONFIG  readback: 0x%02X (wrote 0x1B)\n", tc_rb);
 
     // ── Power On ──
@@ -328,14 +356,22 @@ static void espnow_init() {
 // Camera trigger INPUT (camera is master; we listen)
 // ============================================================================
 static void cam_trigger_input_init() {
-    // Pull-down anchors the line at 0V when camera isn't driving it.
-    // Without this, a floating GPIO27 picks up RF/noise and the ISR fires
-    // tens of kHz of spurious "edges". The 1.8V camera output is strong enough
-    // to cleanly overcome a 75kΩ internal pull-down.
-    pinMode(PIN_CAM_TRIG, INPUT_PULLDOWN);
+    if (CAM_TRIG_USE_INTERNAL_PULLDOWN) {
+        // Useful when the camera cable is unplugged; costs a little 1.8 V
+        // threshold margin when the D455 is actively driving the line.
+        pinMode(PIN_CAM_TRIG, INPUT_PULLDOWN);
+    } else {
+        pinMode(PIN_CAM_TRIG, INPUT);
+        gpio_pulldown_dis((gpio_num_t)PIN_CAM_TRIG);
+        gpio_pullup_dis((gpio_num_t)PIN_CAM_TRIG);
+    }
     pinMode(PIN_LED, OUTPUT);
-    attachInterrupt(digitalPinToInterrupt(PIN_CAM_TRIG), isr_cam_trigger, RISING);
-    Serial.printf("# CAM_TRIG: GPIO %d INPUT_PULLDOWN, RISING-edge ISR attached\n", PIN_CAM_TRIG);
+    attachInterrupt(digitalPinToInterrupt(PIN_CAM_TRIG), isr_cam_trigger, CAM_TRIG_EDGE_MODE);
+    Serial.printf("# CAM_TRIG: GPIO %d %s, %s-edge ISR attached\n",
+                  PIN_CAM_TRIG,
+                  CAM_TRIG_USE_INTERNAL_PULLDOWN ? "INPUT_PULLDOWN" : "INPUT(no pulls)",
+                  CAM_TRIG_EDGE_MODE == RISING ? "RISING" :
+                  CAM_TRIG_EDGE_MODE == FALLING ? "FALLING" : "CHANGE");
     Serial.println("# CAM_TRIG: counting camera FRAME_SYNC pulses (1.8V CMOS, no level shifter)");
 }
 
@@ -518,11 +554,23 @@ void loop() {
         uint32_t trig_recent = trig_total - g_last_cam_trig_count;
         float trig_rate = trig_recent / 5.0f;
         g_last_cam_trig_count = trig_total;
-        Serial.printf("# STATUS: imu=%.1fHz/%u | cam_trig=%.1fHz/%u | fsync_hits=%u | "
-                      "tmst_fsync=%u us | espnow_sent=%u fail=%u\n",
-                      rate, g_sample_count, trig_rate, trig_total,
-                      g_fsync_hits, g_last_tmst_fsync,
-                      g_espnow_send_count, g_espnow_fail_count);
+        char status[192];
+        int n = snprintf(status, sizeof(status),
+                         "# BAR: imu=%.1fHz/%u | cam_trig=%.1fHz/%u | fsync_hits=%u | "
+                         "tmst_fsync=%u us | temp0=0x%02X int_st2=0x%02X | "
+                         "espnow_sent=%u fail=%u status=%u\n",
+                         rate, g_sample_count, trig_rate, trig_total,
+                         g_fsync_hits, g_last_tmst_fsync,
+                         g_last_temp_lsb, g_last_int_status2,
+                         g_espnow_send_count, g_espnow_fail_count,
+                         g_espnow_status_count);
+        Serial.print(status);
+        if (n > 0) {
+            size_t status_len = (n < (int)sizeof(status)) ? (size_t)n : sizeof(status) - 1;
+            esp_now_send(RELAY_MAC, reinterpret_cast<const uint8_t*>(status),
+                         status_len);
+            g_espnow_status_count++;
+        }
         g_last_status_ms = now_ms;
         g_last_status_count = g_sample_count;
     }

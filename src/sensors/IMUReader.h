@@ -46,6 +46,12 @@ struct IMUSample {
     int16_t gyro_z_raw  = 0;
     int16_t temp_raw    = 0;
 
+    /// True iff this sample is the one the IMU's FSYNC pin tagged with the
+    /// most recent camera trigger edge (i.e. TEMP-LSB was set in the packet).
+    /// SyncEngine uses these markers to maintain a continuous affine mapping
+    /// between ESP timestamps and camera HW timestamps.
+    bool fsync_tagged = false;
+
     bool valid = false;
 };
 

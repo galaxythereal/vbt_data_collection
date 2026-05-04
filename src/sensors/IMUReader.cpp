@@ -218,10 +218,11 @@ bool IMUReader::parse_packet(const uint8_t* data, size_t len, IMUSample& sample)
 
     // Bar firmware tags TEMP LSB on samples that coincide with the camera's
     // FSYNC rising edge (configured via FSYNC_UI_SEL=001 + TMST_FSYNC_EN).
-    // Mask it out of temp_raw for clean temperature, count it as a sync hit.
-    bool fsync_tagged = (sample.temp_raw & 0x0001);
+    // Mask it out of temp_raw for clean temperature, surface as a per-sample
+    // flag so SyncEngine + DataLogger can use it for cross-stream alignment.
+    sample.fsync_tagged = (sample.temp_raw & 0x0001) != 0;
     sample.temp_raw &= ~0x0001;
-    if (fsync_tagged) counters_.fsync_hits++;
+    if (sample.fsync_tagged) counters_.fsync_hits++;
 
     // Convert to physical units
     float a_scale = config_.accel_scale();
@@ -310,6 +311,10 @@ void IMUReader::read_thread_func() {
                 continue;
             }
 
+            if (packet_buf_len >= sizeof(packet_buf)) {
+                memmove(packet_buf, &packet_buf[1], sizeof(packet_buf) - 1);
+                packet_buf_len = sizeof(packet_buf) - 1;
+            }
             packet_buf[packet_buf_len++] = read_buf[i];
 
             // Try to parse when we have enough bytes

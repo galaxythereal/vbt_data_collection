@@ -37,7 +37,7 @@ import matplotlib.pyplot as plt
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "vqf", "vqf"))
 from pyvqf import PyVQF  # noqa: E402
 
-SESSION = "/home/galaxy/Desktop/data_collection/datasets/sessions/session_20260426_155704"
+SESSION = "/home/galaxy/Desktop/data_collection/datasets/sessions/session_20260504_143723"
 OUT = f"{SESSION}/validation"
 os.makedirs(OUT, exist_ok=True)
 
@@ -47,16 +47,23 @@ G = 9.80665  # m/s² per g
 # Load data
 # ─────────────────────────────────────────────────────────────────────
 imu = pd.read_csv(f"{SESSION}/imu/raw_imu.csv")
-imu["t"] = imu["host_timestamp_s"] - imu["host_timestamp_s"].iloc[0]
+# IMU dt comes from esp_timestamp_us (monotonic 1 µs ESP clock). host time
+# is bursty due to 8-sample ESP-NOW batching and breaks integration.
+imu["t"] = (imu["esp_timestamp_us"].astype("int64") - int(imu["esp_timestamp_us"].iloc[0])) / 1e6
+
+vf = pd.read_csv(f"{SESSION}/camera/video_frames.csv")
+mono_to_wall = (vf["hw_timestamp_s"] - vf["host_timestamp_s"]).median()
 
 cam = pd.read_csv(f"{SESSION}/camera/marker_positions.csv")
-cam["t"] = cam["timestamp_s"] - imu["host_timestamp_s"].iloc[0]
+cam = cam.drop_duplicates(subset=["timestamp_s"]).reset_index(drop=True)
+cam = cam[cam["timestamp_s"] > 1e9].copy()
+t0_abs = imu["host_timestamp_s"].iloc[0] + mono_to_wall
+cam["t"] = cam["timestamp_s"] - t0_abs
 cam = cam[cam["detected"] == 1].copy()
 cam["pos_up"] = -cam["y_m"]
 
 with open(f"{SESSION}/annotations/rep_segments.json") as f:
     reps_all = json.load(f)
-t0_abs = imu["host_timestamp_s"].iloc[0]
 reps = []
 for r in reps_all:
     t_start = r["concentric"]["t_start"] - t0_abs

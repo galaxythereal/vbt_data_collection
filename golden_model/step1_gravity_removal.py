@@ -14,14 +14,21 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import json, os
 
-SESSION = "/home/galaxy/Desktop/data_collection/datasets/sessions/session_20260425_001844"
+SESSION = "/home/galaxy/Desktop/data_collection/datasets/sessions/session_20260504_143723"
 OUT = f"{SESSION}/validation"
 os.makedirs(OUT, exist_ok=True)
 
 # ── Load data ──
 imu = pd.read_csv(f"{SESSION}/imu/raw_imu.csv")
-imu['t'] = imu['host_timestamp_s'] - imu['host_timestamp_s'].iloc[0]
+# Use the ESP32 onboard 1-µs counter for the IMU time base. host_timestamp_s
+# arrives bursty (8 samples per ESP-NOW packet land on the host within ~9 µs,
+# then an 8 ms gap) and produces div-by-zero in np.gradient and integration.
+# esp_timestamp_us is the monotonic acquisition clock — anchor it to the
+# first IMU sample's host time so it shares the camera's wall-clock origin.
+imu['t'] = (imu['esp_timestamp_us'].astype('int64') - int(imu['esp_timestamp_us'].iloc[0])) / 1e6
 cam = pd.read_csv(f"{SESSION}/camera/marker_positions.csv")
+# Drop the rare duplicate camera timestamps that cause np.gradient div-by-zero.
+cam = cam.drop_duplicates(subset=["timestamp_s"]).reset_index(drop=True)
 cam['t'] = cam['timestamp_s'] - imu['host_timestamp_s'].iloc[0]
 cam = cam[cam['detected'] == 1].copy()
 cam['pos_up'] = -cam['y_m']

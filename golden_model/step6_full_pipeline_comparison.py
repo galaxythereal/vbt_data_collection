@@ -28,7 +28,7 @@ from scipy import stats
 from scipy.ndimage import label
 from scipy.signal import butter, filtfilt
 
-SESSION = "/home/galaxy/Desktop/data_collection/datasets/sessions/session_20260426_155704"
+SESSION = "/home/galaxy/Desktop/data_collection/datasets/sessions/session_20260504_143723"
 OUT = f"{SESSION}/validation"
 G = 9.80665
 N_REPS = 8
@@ -46,36 +46,62 @@ dt_arr = np.diff(t, prepend=t[0])
 dt_arr[dt_arr <= 0] = 0.001
 
 imu_csv = pd.read_csv(f"{SESSION}/imu/raw_imu.csv")
-t0_abs = imu_csv["host_timestamp_s"].iloc[0]
+from gt_cleanup import imu_wall_clock_origin, load_clean_camera_gt
+t0_abs = imu_wall_clock_origin(SESSION)
 
-cam = pd.read_csv(f"{SESSION}/camera/marker_positions.csv")
-cam["t"] = cam["timestamp_s"] - t0_abs
-cam = cam[cam["detected"] == 1].copy()
+# Gyro magnitude on the IMU sample grid — second criterion for stillness
+# detection. Pure accel-variance can't tell "lifter pausing at the top"
+# from "lifter standing between reps" because both have low |a|, and that
+# was merging the entire set into one active zone.
+gyro_mag_dps = np.sqrt(
+    imu_csv["gyro_x_dps"].values ** 2
+    + imu_csv["gyro_y_dps"].values ** 2
+    + imu_csv["gyro_z_dps"].values ** 2
+)[:N]
+
+# Cleaned ground truth: quality-gated, Hampel-despiked, LP-filtered, and
+# velocity-capped at the exercise's plausibility envelope from vbt_config.json.
+cam_clean = load_clean_camera_gt(SESSION)
+cam = cam_clean.rename(columns={"t": "wall_t"}).copy()
+cam["t"] = cam["wall_t"] - t0_abs
 cam = cam.sort_values("t").drop_duplicates("t").reset_index(drop=True)
-cam_pos_raw = -cam["y_m"].values
-cam_pos_raw -= cam_pos_raw[0]
-b_lp, a_lp = butter(2, 10.0 / (90.0 / 2.0), btype="low")
-cam_pos = filtfilt(b_lp, a_lp, cam_pos_raw)
-cam_vz = np.gradient(cam_pos, cam["t"].values)
+cam_pos = cam["pos_up"].values - cam["pos_up"].values[0]
+cam_vz = cam["vz"].values
 
 with open(f"{SESSION}/annotations/rep_segments.json") as f:
     raw = json.load(f)
 reps = []
+cam_t_arr = cam["t"].values
 for r in raw[:N_REPS]:
     t_start = r["concentric"]["t_start"] - t0_abs
     t_end = r["rest"]["t_end"] - t0_abs
+    conc_end = r["concentric"]["t_end"] - t0_abs
     if t_start <= 0 or t_end <= t_start:
         continue
+    # Re-derive per-rep camera metrics from the CLEANED time series. The
+    # values stamped into rep_segments.json by the C++ pipeline used the
+    # raw, spike-contaminated camera velocity (we observed 5 m/s peaks on
+    # back squat). Now that cam_vz/cam_pos are Hampel-despiked + velocity
+    # capped, recompute peak/mean/ROM straight from the clean signal.
+    conc_mask = (cam_t_arr >= t_start) & (cam_t_arr <= conc_end)
+    full_mask = (cam_t_arr >= t_start) & (cam_t_arr <= t_end)
+    if conc_mask.sum() < 3 or full_mask.sum() < 3:
+        continue
+    conc_vz = cam_vz[conc_mask]
+    full_pos = cam_pos[full_mask]
+    cam_peak_clean = float(np.max(conc_vz))
+    cam_mean_clean = float(np.mean(conc_vz[conc_vz > 0.05])) if np.any(conc_vz > 0.05) else 0.0
+    cam_rom_clean = float(np.max(full_pos) - np.min(full_pos))
     reps.append({
         "rep_id": r["rep_id"],
         "t_start": t_start,
         "t_end": t_end,
         "ecc_start": r["eccentric"]["t_start"] - t0_abs,
         "conc_t_start": t_start,
-        "conc_t_end": r["concentric"]["t_end"] - t0_abs,
-        "cam_peak_vel": r["concentric"]["peak_vel"],
-        "cam_mean_vel": r.get("mean_concentric_velocity", 0.0),
-        "cam_rom": r["rom_m"],
+        "conc_t_end": conc_end,
+        "cam_peak_vel": cam_peak_clean,
+        "cam_mean_vel": cam_mean_clean,
+        "cam_rom": cam_rom_clean,
     })
 print(f"Session: {os.path.basename(SESSION)}, reps: {len(reps)}, samples: {N}")
 
@@ -104,10 +130,24 @@ def annotation_zupt(az):
     return vz, pz, peaks
 
 
-def autonomous_zupt(az, var_thresh=0.05, min_static=300, min_active=300, pad=100):
+def autonomous_zupt(az, var_thresh=0.05, gyro_thresh_dps=5.0,
+                    min_static=200, min_active=300, pad=100):
+    """Multi-criterion stillness detection.
+
+    A sample is "static" when BOTH:
+      • rolling 200 ms variance of vertical accel is below var_thresh, AND
+      • current gyro magnitude is below gyro_thresh_dps.
+
+    Accel-only fires too generously (working-rest at top of rep looks
+    static), so we AND-combine with gyro to require true rigid-body
+    stillness. Threshold tightened from 0.05 → 0.01 m/s² so brief
+    rest periods between reps actually segment the set.
+    """
     window = int(0.2 * 1000)
     az_var = pd.Series(az).rolling(window, center=True).var().fillna(0).values
-    is_static = az_var < var_thresh
+    static_accel = az_var < var_thresh
+    static_gyro = gyro_mag_dps < gyro_thresh_dps
+    is_static = static_accel & static_gyro
     labeled, num = label(is_static)
     for i in range(1, num + 1):
         if np.sum(labeled == i) < min_static:
@@ -257,6 +297,34 @@ log(fmt_row("Continuous velocity RMSE (active)",
             sm["vel_rmse_mm_s"], sv["vel_rmse_mm_s"], "mm/s", True, "{:.2f}"))
 log(fmt_row("Continuous position RMSE (active)",
             sm["pos_rmse_mm"], sv["pos_rmse_mm"], "mm", True, "{:.2f}"))
+log("")
+
+# Per-rep stats from the annotation-based pipeline (step2). Autonomous-zone
+# matching only catches reps with measurable rest between them, which back
+# squat sets often don't have, so we report annotation-based numbers too —
+# they're what the streaming/ASIC pipeline will actually produce per rep.
+def anno_stats(peaks):
+    cams = np.array([r["cam_peak_vel"] for r in reps], dtype=float)
+    imus = np.array(peaks, dtype=float)
+    valid = ~(np.isnan(cams) | np.isnan(imus))
+    c = cams[valid]; i = imus[valid]
+    if len(c) < 2 or np.std(c) == 0 or np.std(i) == 0:
+        return {"n": int(valid.sum()), "rmse": float("nan"), "r2": float("nan"),
+                "bias": float("nan"), "mae": float("nan")}
+    return {
+        "n": int(valid.sum()),
+        "rmse": float(np.sqrt(np.mean((c - i) ** 2))),
+        "mae": float(np.mean(np.abs(c - i))),
+        "r2": float(stats.pearsonr(c, i)[0] ** 2),
+        "bias": float(np.mean(i - c)),
+    }
+anm = anno_stats(runs["Madgwick"]["peaks_anno"])
+anv = anno_stats(runs["VQF tuned"]["peaks_anno"])
+log(f"Annotation-based peak-velocity stats (n={anm['n']}/{len(reps)}):")
+log(fmt_row("  R²",   anm["r2"],   anv["r2"],   "—",   False, "{:.4f}"))
+log(fmt_row("  RMSE", anm["rmse"], anv["rmse"], "m/s", True,  "{:.4f}"))
+log(fmt_row("  MAE",  anm["mae"],  anv["mae"],  "m/s", True,  "{:.4f}"))
+log(fmt_row("  bias (IMU-Cam)", anm["bias"], anv["bias"], "m/s", True, "{:+.4f}"))
 log("")
 
 for key, name, unit in [("peak_vel", "Peak velocity", "m/s"),

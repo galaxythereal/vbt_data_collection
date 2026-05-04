@@ -7,11 +7,17 @@ auto-detected reps from rep_segments.json. Lets the operator:
 
   • LEFT-CLICK on the trace      → add a rep boundary at that time
   • LEFT-CLICK inside a rep span → select it (turns yellow)
+  • RIGHT-CLICK / SHIFT+CLICK    → scrub to that time (video preview only)
+  • LEFT / RIGHT arrows          → step ±1 frame in the video
   • DELETE / D                   → delete the selected rep
   • S                            → save edits back to rep_segments.json
   • U                            → undo last change
   • R                            → reload from disk (discard unsaved edits)
   • Q / ESC                      → quit
+
+If the session has camera/ir_video.mp4 + camera/video_frames.csv, an IR-frame
+preview is shown to the right of the trace, automatically seeked to the time
+under the cursor when scrubbing.
 
 Each rep span is drawn as a translucent rectangle on the position plot, with
 its rep number above. Auto-segmented reps are blue, manual ones are orange.
@@ -32,6 +38,11 @@ from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
+
+try:
+    import cv2  # noqa
+except ImportError:
+    cv2 = None
 
 
 def load_position_trace(session_dir: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -75,6 +86,36 @@ def save_reps(session_dir: Path, reps: list[dict]):
     print(f"  saved {len(reps)} reps → {p}")
 
 
+def load_video_index(session_dir: Path) -> tuple[np.ndarray, np.ndarray] | None:
+    """Returns (frame_idx[], host_timestamp_s[]) so we can map a marker
+    timestamp to a video frame. None if either video or index is missing."""
+    idx_p = session_dir / "camera" / "video_frames.csv"
+    mp4_p = session_dir / "camera" / "ir_video.mp4"
+    if not idx_p.exists() or not mp4_p.exists():
+        return None
+    if cv2 is None:
+        print("  ⚠ cv2 not installed — video preview disabled (pip install opencv-python)")
+        return None
+    rows = []
+    with open(idx_p) as f:
+        header = f.readline().strip().split(",")
+        try:
+            fi = header.index("frame_idx")
+            ti = header.index("host_timestamp_s")
+        except ValueError:
+            return None
+        for line in f:
+            c = line.split(",")
+            try:
+                rows.append((int(float(c[fi])), float(c[ti])))
+            except (ValueError, IndexError):
+                continue
+    if not rows:
+        return None
+    a = np.array(rows)
+    return a[:, 0].astype(int), a[:, 1]
+
+
 def latest_session(root: Path) -> Path | None:
     sessions = sorted([p for p in root.iterdir() if p.is_dir()
                        and not p.name.endswith(".partial")],
@@ -91,12 +132,43 @@ class AnnotatorUI:
         self.selected_idx: int | None = None
         self.dirty = False
 
-        self.fig, (self.ax, self.ax_v) = plt.subplots(2, 1, figsize=(14, 7),
-                                                      sharex=True, gridspec_kw={"height_ratios": [3, 1]})
+        # Video preview (optional — older sessions don't log video).
+        self._video_idx = load_video_index(session_dir)
+        self._cap = None
+        if self._video_idx is not None:
+            self._cap = cv2.VideoCapture(str(session_dir / "camera" / "ir_video.mp4"))
+            if not self._cap.isOpened():
+                print("  ⚠ failed to open ir_video.mp4 — preview disabled")
+                self._cap = None
+                self._video_idx = None
+
+        if self._cap is not None:
+            # 3-pane grid: [position+velocity stacked on left, IR frame on right]
+            self.fig = plt.figure(figsize=(18, 7))
+            gs = self.fig.add_gridspec(2, 2, width_ratios=[3, 2],
+                                       height_ratios=[3, 1])
+            self.ax    = self.fig.add_subplot(gs[0, 0])
+            self.ax_v  = self.fig.add_subplot(gs[1, 0], sharex=self.ax)
+            self.ax_im = self.fig.add_subplot(gs[:, 1])
+            self.ax_im.set_xticks([]); self.ax_im.set_yticks([])
+            self._im_artist = None
+            self._scrub_t  = float(self.t[0])
+        else:
+            self.fig, (self.ax, self.ax_v) = plt.subplots(
+                2, 1, figsize=(14, 7),
+                sharex=True, gridspec_kw={"height_ratios": [3, 1]})
+            self.ax_im = None
+
+        # Vertical cursor lines that follow the scrub timestamp.
+        self._cursor_pos = None
+        self._cursor_vel = None
+
         self.fig.canvas.manager.set_window_title(
             f"Rep Annotation — {session_dir.name}")
         self._setup_axes()
         self._render()
+        if self._cap is not None:
+            self._update_video_frame(self._scrub_t)
 
         self.fig.canvas.mpl_connect("button_press_event", self.on_click)
         self.fig.canvas.mpl_connect("key_press_event", self.on_key)
@@ -153,18 +225,64 @@ class AnnotatorUI:
                           + ("   *unsaved*" if self.dirty else ""))
         self.fig.canvas.draw_idle()
 
+    def _frame_idx_for_time(self, t: float) -> int | None:
+        if self._video_idx is None: return None
+        _, host_ts = self._video_idx
+        # marker timestamps and video host_timestamp_s are both wall-clock
+        # seconds emitted by the same host process — directly comparable.
+        i = int(np.argmin(np.abs(host_ts - t)))
+        return i
+
+    def _update_video_frame(self, t: float):
+        if self._cap is None: return
+        idx = self._frame_idx_for_time(t)
+        if idx is None: return
+        # cv2 seeking by frame index is exact for mp4v keyframe-every-frame
+        # writes; if quality drops we can fall back to PROP_POS_MSEC.
+        self._cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+        ok, frame = self._cap.read()
+        if not ok: return
+        if frame.ndim == 3:
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        if self._im_artist is None:
+            self._im_artist = self.ax_im.imshow(frame, cmap="gray", vmin=0, vmax=255)
+        else:
+            self._im_artist.set_data(frame)
+        _, host_ts = self._video_idx
+        self.ax_im.set_title(
+            f"frame #{idx} @ t={host_ts[idx]:.3f}s   |   click trace to scrub")
+        self._scrub_t = float(t)
+        self._draw_cursor(t)
+        self.fig.canvas.draw_idle()
+
+    def _draw_cursor(self, t: float):
+        for line_attr in ("_cursor_pos", "_cursor_vel"):
+            ln = getattr(self, line_attr)
+            if ln is not None:
+                try: ln.remove()
+                except Exception: pass
+        self._cursor_pos = self.ax.axvline(t, color="#33aaff", lw=1.0, alpha=0.7)
+        self._cursor_vel = self.ax_v.axvline(t, color="#33aaff", lw=1.0, alpha=0.7)
+
     def on_click(self, event):
         if event.inaxes not in (self.ax, self.ax_v): return
         t_click = event.xdata
         if t_click is None: return
 
-        # If click is inside an existing rep span → select it
+        # Right-click or shift+click → scrub video without editing reps.
+        is_scrub = (event.button == 3) or (event.key == "shift")
+        if is_scrub:
+            self._update_video_frame(t_click)
+            return
+
+        # If click is inside an existing rep span → select it (and scrub to it)
         for i, r in enumerate(self.reps):
             t0 = min(r["concentric"]["t_start"], r["eccentric"]["t_start"])
             t1 = max(r["concentric"]["t_end"],   r["eccentric"]["t_end"])
             if t0 <= t_click <= t1:
                 self.selected_idx = i
                 self._render()
+                self._update_video_frame(r["concentric"]["t_start"] or t_click)
                 print(f"  selected rep {r['rep_id']}")
                 return
 
@@ -191,9 +309,19 @@ class AnnotatorUI:
         self.dirty = True
         print(f"  + manual rep at t={t_click:.3f}s (insert position {i+1})")
         self._render()
+        self._update_video_frame(t_click)
 
     def on_key(self, event):
         k = event.key
+        # Frame-step navigation in the IR video preview.
+        if k in ("left", "right") and self._cap is not None:
+            cur = self._frame_idx_for_time(self._scrub_t)
+            if cur is None: return
+            n_frames = len(self._video_idx[0])
+            new_idx  = max(0, min(n_frames - 1, cur + (1 if k == "right" else -1)))
+            _, host_ts = self._video_idx
+            self._update_video_frame(float(host_ts[new_idx]))
+            return
         if k in ("delete", "d", "backspace"):
             if self.selected_idx is not None:
                 self._snapshot()

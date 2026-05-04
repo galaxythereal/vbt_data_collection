@@ -130,50 +130,46 @@ bool Session::start_recording() {
             imu_reader_->get_first_esp_timestamp(),
             imu_reader_->get_first_host_timestamp());
     }
+    imu_clock_registered_ = imu_reader_->is_running();
 
     imu_reader_->set_callback([this](const IMUSample& s) {
-        data_logger_->log_imu(s);
-        sync_engine_->feed_imu_sample(s);
-        double unified_t = sync_engine_->esp_to_unified(s.esp_timestamp_us);
-        if (unified_t < 1.0) unified_t = s.host_timestamp_s;
-        rep_segmenter_->feed_accel_sample(unified_t, s.accel_x_g, s.accel_y_g, s.accel_z_g);
-        sync_engine_->update_drift(s.esp_timestamp_us, s.host_timestamp_s);
+        // Auto-register on the first sample if start_recording ran before the
+        // IMU thread emitted a sample. Without this, the very first batch of
+        // samples uses esp_to_unified's "wall-clock now" fallback, which
+        // produces a small time-warp at the start of the session.
+        if (!imu_clock_registered_) {
+            sync_engine_->register_imu_clock(s.esp_timestamp_us, s.host_timestamp_s);
+            imu_clock_registered_ = true;
+        }
+        // Compute the wall-clock unified time BEFORE logging so the CSV row
+        // and the binary log carry it. Earlier the field was always 0 because
+        // log_imu(s) ran first.
+        IMUSample s2 = s;
+        // Hardware FSYNC anchor: every TEMP-LSB-tagged sample happened at the
+        // same physical instant as a camera frame. Pair them in SyncEngine
+        // for drift-free cross-stream alignment.
+        if (s2.fsync_tagged) {
+            sync_engine_->register_imu_fsync_event(s2.esp_timestamp_us, s2.host_timestamp_s);
+        }
+        s2.unified_time_s = sync_engine_->esp_to_unified(s2.esp_timestamp_us);
+        data_logger_->log_imu(s2);
+        sync_engine_->feed_imu_sample(s2);
+        rep_segmenter_->feed_accel_sample(s2.unified_time_s, s2.accel_x_g, s2.accel_y_g, s2.accel_z_g);
+        sync_engine_->update_drift(s2.esp_timestamp_us, s2.host_timestamp_s);
     });
 
     last_cam_position_ = 0.0f;
     last_cam_time_ = 0.0;
     cam_clock_registered_ = false;
+    camera_queue_drops_ = 0;
+    {
+        std::lock_guard<std::mutex> lock(camera_queue_mutex_);
+        camera_queue_.clear();
+    }
+    camera_worker_running_ = true;
+    camera_worker_thread_ = std::thread(&Session::camera_worker_loop, this);
     camera_reader_->set_callback([this](const CameraFrame& f) {
-        if (!cam_clock_registered_) {
-            sync_engine_->register_camera_clock(f.hw_timestamp_s, f.host_timestamp_s);
-            cam_clock_registered_ = true;
-        }
-        auto det = marker_tracker_->process(f.ir_left, f.ir_right, f.depth,
-                                             f.ir_intrinsics, f.depth_intrinsics);
-        double ts = sync_engine_->cam_to_unified(f.hw_timestamp_s);
-        if (ts < 1.0) ts = f.host_timestamp_s;
-        data_logger_->log_marker(ts, det);
-        if (det.detected) {
-            data_logger_->log_depth_at_marker(ts, det.z_m, det.pixel_u, det.pixel_v);
-            float pos = -det.y_m;
-            float vel = 0.0f;
-            if (last_cam_time_ > 0) {
-                double dt = ts - last_cam_time_;
-                if (dt > 0.001 && dt < 0.1) {
-                    vel = (pos - last_cam_position_) / (float)dt;
-                }
-            }
-            last_cam_position_ = pos;
-            last_cam_time_ = ts;
-
-            VelocitySample vs;
-            vs.time_s = ts;
-            vs.position_m = pos;
-            vs.velocity_mps = vel;
-            vs.source = VelocitySample::Source::CAMERA;
-            rep_segmenter_->feed_sample(vs);
-        }
-        sync_engine_->feed_camera_detection(ts, det);
+        enqueue_camera_frame(f);
     });
 
     recording_start_ = std::chrono::steady_clock::now();
@@ -186,10 +182,101 @@ bool Session::start_recording() {
 
 void Session::stop_recording() {
     if (state_ != SessionState::RECORDING) return;
+    camera_reader_->set_callback(nullptr);
+    camera_worker_running_ = false;
+    camera_queue_cv_.notify_all();
+    if (camera_worker_thread_.joinable()) camera_worker_thread_.join();
+    if (camera_queue_drops_ > 0) {
+        spdlog::warn("Camera processing queue dropped {} frame(s) during recording",
+                     camera_queue_drops_.load());
+    }
     data_logger_->close();
     state_ = SessionState::STOPPED;
     event_log_.info("session", "recording_stop", "Recording stopped");
     spdlog::info("Recording stopped");
+}
+
+void Session::enqueue_camera_frame(const CameraFrame& frame) {
+    if (!camera_worker_running_) return;
+    {
+        std::lock_guard<std::mutex> lock(camera_queue_mutex_);
+        if (camera_queue_.size() >= CAMERA_QUEUE_LIMIT) {
+            camera_queue_.pop_front();
+            camera_queue_drops_++;
+        }
+        camera_queue_.push_back(frame);
+    }
+    camera_queue_cv_.notify_one();
+}
+
+void Session::camera_worker_loop() {
+    while (camera_worker_running_ || !camera_queue_.empty()) {
+        CameraFrame frame;
+        {
+            std::unique_lock<std::mutex> lock(camera_queue_mutex_);
+            camera_queue_cv_.wait(lock, [this] {
+                return !camera_worker_running_ || !camera_queue_.empty();
+            });
+            if (camera_queue_.empty()) continue;
+            frame = camera_queue_.front();
+            camera_queue_.pop_front();
+        }
+
+        try {
+            process_camera_frame(frame);
+        } catch (const std::exception& e) {
+            spdlog::error("Camera processing error: {}", e.what());
+        } catch (...) {
+            spdlog::error("Camera processing error: unknown exception");
+        }
+    }
+}
+
+void Session::process_camera_frame(const CameraFrame& f) {
+    // Gate on a wall-clock HW timestamp. RealSense GLOBAL_TIME publishes
+    // Unix-epoch ms; until that's flowing, hw_timestamp_s can be 0 or a
+    // small startup-relative value, and stamping it as if it were wall-clock
+    // produces the "first 2 rows in monotonic time" mismatch we saw in the
+    // golden-model time alignment.
+    if (f.hw_timestamp_s < 1e9) return;
+
+    if (!cam_clock_registered_) {
+        sync_engine_->register_camera_clock(f.hw_timestamp_s, f.host_timestamp_s);
+        cam_clock_registered_ = true;
+    }
+    // Camera-side anchor for the FSYNC pair-and-fit in SyncEngine.
+    sync_engine_->register_camera_frame(f.hw_timestamp_s, f.host_timestamp_s);
+    // Stamp the frame's unified_time_s in wall-clock. We mutate a copy so
+    // log_camera_frame can write it to video_frames.csv without depending on
+    // CameraReader populating the field.
+    CameraFrame f2 = f;
+    f2.unified_time_s = sync_engine_->cam_to_unified(f.hw_timestamp_s);
+    data_logger_->log_camera_frame(f2);
+    auto det = marker_tracker_->process(f.ir_left, f.ir_right, f.depth,
+                                         f.ir_intrinsics, f.depth_intrinsics);
+    const double ts = f2.unified_time_s;
+    data_logger_->log_marker(ts, det);
+    if (det.detected) {
+        data_logger_->log_depth_at_marker(ts, det.z_m, det.pixel_u, det.pixel_v);
+        float pos = -det.y_m;
+        float vel = 0.0f;
+        if (last_cam_time_ > 0) {
+            double dt = ts - last_cam_time_;
+            if (dt > 0.001 && dt < 0.1) {
+                vel = (pos - last_cam_position_) / (float)dt;
+            }
+        }
+        last_cam_position_ = pos;
+        last_cam_time_ = ts;
+
+        VelocitySample vs;
+        vs.time_s = ts;
+        vs.position_m = pos;
+        vs.velocity_mps = vel;
+        vs.source = VelocitySample::Source::CAMERA;
+        rep_segmenter_->feed_sample(vs);
+    }
+    sync_engine_->feed_camera_detection(ts, det);
 }
 
 void Session::save() {

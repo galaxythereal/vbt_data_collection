@@ -15,7 +15,7 @@ from scipy.ndimage import label
 import json, os
 from scipy.signal import butter, filtfilt
 
-SESSION = "/home/galaxy/Desktop/data_collection/datasets/sessions/session_20260425_001844"
+SESSION = "/home/galaxy/Desktop/data_collection/datasets/sessions/session_20260504_143723"
 OUT = f"{SESSION}/validation"
 
 # ── 1. Load Data ──
@@ -23,23 +23,21 @@ data = np.load(f"{OUT}/step1_processed.npz")
 t_imu = data['t']
 az = data['linear_accel'][:, 2] * 9.80665
 
-t0_abs = pd.read_csv(f"{SESSION}/imu/raw_imu.csv")['host_timestamp_s'].iloc[0]
+import sys as _sys; _sys.path.insert(0, os.path.dirname(__file__))
+from gt_cleanup import imu_wall_clock_origin, load_clean_camera_gt
+t0_abs = imu_wall_clock_origin(SESSION)
 with open(f"{SESSION}/annotations/rep_segments.json") as f:
     cam_reps = json.load(f)[:8]
     for r in cam_reps:
         r['concentric']['t_end'] -= t0_abs
         r['concentric']['t_start'] -= t0_abs
 
-cam = pd.read_csv(f"{SESSION}/camera/marker_positions.csv")
-cam['t'] = cam['timestamp_s'] - t0_abs
-cam = cam[cam['detected'] == 1]
-cam_pos_raw = -cam['y_m'].values
-cam_pos_raw -= cam_pos_raw[0]
-
-# Smooth camera data (10Hz LP) to get ground truth velocity
-b, a = butter(2, 10 / (90 / 2), btype='low')
-cam_pos = filtfilt(b, a, cam_pos_raw)
-cam_vz = np.gradient(cam_pos, cam['t'])
+# Quality-gated + Hampel-despiked + velocity-capped GT (replaces the old
+# raw-position + butter-filtfilt path).
+cam_clean = load_clean_camera_gt(SESSION)
+cam = pd.DataFrame({"t": cam_clean["t"].values - t0_abs})
+cam_pos = cam_clean["pos_up"].values - cam_clean["pos_up"].values[0]
+cam_vz = cam_clean["vz"].values
 
 # Load IMU continuous data from Step 4
 model_out = np.load(f"{OUT}/golden_model_output.npz")

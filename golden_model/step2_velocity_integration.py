@@ -17,7 +17,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import json, os
 
-SESSION = "/home/galaxy/Desktop/data_collection/datasets/sessions/session_20260425_001844"
+SESSION = "/home/galaxy/Desktop/data_collection/datasets/sessions/session_20260504_143723"
 OUT = f"{SESSION}/validation"
 
 # ── Load data ──
@@ -27,10 +27,22 @@ la_world = data['linear_accel']  # World frame [X, Y, Z]
 az = la_world[:, 2] * 9.80665    # Z-axis acceleration in m/s^2
 
 cam = pd.read_csv(f"{SESSION}/camera/marker_positions.csv")
-t0_abs = pd.read_csv(f"{SESSION}/imu/raw_imu.csv")['host_timestamp_s'].iloc[0]
-cam['t'] = cam['timestamp_s'] - t0_abs
+# Drop the rare duplicate camera timestamps that cause np.gradient div-by-zero.
+cam = cam.drop_duplicates(subset=["timestamp_s"]).reset_index(drop=True)
+
+# Time-base alignment: IMU CSV uses host monotonic clock (~15827s since boot);
+# rep_segments.json uses wall-clock (~1.778e9, Unix epoch); marker_positions
+# is mostly wall-clock except a few stragglers in monotonic. Use video_frames
+# to compute the mono→wall offset, then express everything in wall clock.
+vf = pd.read_csv(f"{SESSION}/camera/video_frames.csv")
+mono_to_wall = (vf['hw_timestamp_s'] - vf['host_timestamp_s']).median()
+imu_first_wall = pd.read_csv(f"{SESSION}/imu/raw_imu.csv")['host_timestamp_s'].iloc[0] + mono_to_wall
+# Only keep camera rows already in wall-clock units (>1e9). Drop broken stragglers.
+cam = cam[cam['timestamp_s'] > 1e9].copy()
+cam['t'] = cam['timestamp_s'] - imu_first_wall
 cam = cam[cam['detected'] == 1].copy()
 cam['pos_up'] = -cam['y_m']
+t0_abs = imu_first_wall
 # Differentiate camera position to get camera velocity (for comparison)
 cam_vz = np.gradient(cam['pos_up'], cam['t'])
 

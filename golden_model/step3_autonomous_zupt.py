@@ -13,7 +13,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import json, os
 
-SESSION = "/home/galaxy/Desktop/data_collection/datasets/sessions/session_20260425_001844"
+SESSION = "/home/galaxy/Desktop/data_collection/datasets/sessions/session_20260504_143723"
 OUT = f"{SESSION}/validation"
 
 # ── Load Data ──
@@ -21,8 +21,11 @@ data = np.load(f"{OUT}/step1_processed.npz")
 t = data['t']
 az = data['linear_accel'][:, 2] * 9.80665
 
-# Load camera ground truth just for validation
-t0_abs = pd.read_csv(f"{SESSION}/imu/raw_imu.csv")['host_timestamp_s'].iloc[0]
+# Load camera ground truth just for validation. Convert rep wall-clock times
+# into IMU-relative seconds using the video_frames mono→wall offset.
+vf = pd.read_csv(f"{SESSION}/camera/video_frames.csv")
+mono_to_wall = (vf['hw_timestamp_s'] - vf['host_timestamp_s']).median()
+t0_abs = pd.read_csv(f"{SESSION}/imu/raw_imu.csv")['host_timestamp_s'].iloc[0] + mono_to_wall
 with open(f"{SESSION}/annotations/rep_segments.json") as f:
     reps = json.load(f)[:8]
     for r in reps:
@@ -122,7 +125,11 @@ ax.legend(loc='upper right')
 
 ax = axes[2]
 cam = pd.read_csv(f"{SESSION}/camera/marker_positions.csv")
-cam['t'] = cam['timestamp_s'] - pd.read_csv(f"{SESSION}/imu/raw_imu.csv")['host_timestamp_s'].iloc[0]
+# Drop the rare duplicate camera timestamps that cause np.gradient div-by-zero.
+cam = cam.drop_duplicates(subset=["timestamp_s"]).reset_index(drop=True)
+# Use only wall-clock-stamped rows; align to IMU origin (already in wall clock).
+cam = cam[cam['timestamp_s'] > 1e9].copy()
+cam['t'] = cam['timestamp_s'] - t0_abs
 cam = cam[cam['detected'] == 1]
 # Apply same smoothing as C++ pipeline
 from scipy.signal import butter, filtfilt

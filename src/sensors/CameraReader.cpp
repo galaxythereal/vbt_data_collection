@@ -33,7 +33,9 @@ bool CameraReader::open(const CameraConfig& config) {
                              s.get_info(RS2_CAMERA_INFO_NAME), config_.hw_sync_mode);
             }
             if (s.supports(RS2_OPTION_FRAMES_QUEUE_SIZE)) {
-                try { s.set_option(RS2_OPTION_FRAMES_QUEUE_SIZE, 16.0f); } catch (...) {}
+                // 32 frames ≈ 350 ms at 90 fps — survives a long render stall
+                // (e.g. file-system flush during recording) without dropping.
+                try { s.set_option(RS2_OPTION_FRAMES_QUEUE_SIZE, 32.0f); } catch (...) {}
             }
         }
 
@@ -141,10 +143,10 @@ void CameraReader::stream_thread_func() {
     while (is_running_) {
         try {
             rs2::frameset fs;
-            if (!pipeline_.poll_for_frames(&fs)) {
-                std::this_thread::sleep_for(std::chrono::microseconds(500));
-                continue;
-            }
+            // wait_for_frames blocks the OS thread until a frame is available
+            // (with a timeout). Far more efficient than poll-loop + sleep,
+            // which adds up to 500 µs latency per frame and ~5% CPU overhead.
+            if (!pipeline_.try_wait_for_frames(&fs, 200)) continue;
             CameraFrame frame;
             auto now = std::chrono::steady_clock::now();
             frame.host_timestamp_s = std::chrono::duration<double>(now.time_since_epoch()).count();
