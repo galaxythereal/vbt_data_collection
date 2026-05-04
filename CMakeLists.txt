@@ -165,6 +165,16 @@ set(APP_SOURCES
     src/gui/CalibrationPanel.cpp
     src/gui/AnnotationPanel.cpp
     src/gui/ValidationPanel.cpp
+    src/annotation/AnnotationStudio.cpp
+    src/annotation/SessionData.cpp
+    src/annotation/SessionLibrary.cpp
+    src/annotation/VideoCache.cpp
+    src/annotation/Persistence.cpp
+    src/annotation/TimelinePanel.cpp
+    src/annotation/VideoPanel.cpp
+    src/annotation/RepTablePanel.cpp
+    src/annotation/MetadataPanel.cpp
+    src/annotation/MarkerQualityPanel.cpp
     src/utils/SerialPort.cpp
     src/utils/Timer.cpp
     src/utils/AudioCue.cpp
