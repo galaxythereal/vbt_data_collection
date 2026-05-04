@@ -12,8 +12,10 @@
 #include <fstream>
 #include <mutex>
 #include <atomic>
+#include <opencv2/videoio.hpp>
 #include "sensors/IMUReader.h"
 #include "sensors/MarkerTracker.h"
+#include "sensors/CameraReader.h"
 
 namespace vbt {
 
@@ -30,11 +32,16 @@ public:
     void log_imu(const IMUSample& sample);
     void log_marker(double timestamp_s, const MarkerDetection& det);
     void log_depth_at_marker(double timestamp_s, float depth_m, float u, float v);
+    /// Append left-IR frame to ir_video.mp4 + index row to video_frames.csv.
+    /// Both timestamps and the camera frame number are recorded so the
+    /// annotation tool can jump from a rep's t-range back to the right frame.
+    void log_camera_frame(const CameraFrame& frame);
 
     // Statistics
     struct LogStats {
         uint64_t imu_samples_written  = 0;
         uint64_t marker_samples_written = 0;
+        uint64_t video_frames_written  = 0;
         size_t   imu_file_size_bytes  = 0;
     };
     LogStats get_stats() const;
@@ -56,6 +63,13 @@ private:
     std::ofstream marker_csv_;
     std::ofstream depth_csv_;
     std::mutex cam_mutex_;
+
+    // IR video log (open lazily on first frame so we can use the actual fps)
+    cv::VideoWriter video_writer_;
+    std::ofstream   video_index_csv_;
+    std::mutex      video_mutex_;
+    bool            video_writer_open_ = false;
+    int             video_fps_         = 90;     // overridden lazily
 
     LogStats stats_;
 };

@@ -24,7 +24,21 @@
 
 namespace vbt {
 
-SyncEngine::SyncEngine() = default;
+SyncEngine::SyncEngine() {
+    // Capture wall-clock vs monotonic offset once. Both clocks are read
+    // back-to-back so the offset is accurate to a few microseconds. Used as
+    // the canonical bridge for every conversion below — no per-conversion
+    // dependence on whether a camera frame has arrived yet, which is what
+    // produced the "first rows in monotonic clock, rest in wall clock"
+    // bug in older sessions.
+    auto sys_now    = std::chrono::system_clock::now();
+    auto steady_now = std::chrono::steady_clock::now();
+    double sys_s    = std::chrono::duration<double>(sys_now.time_since_epoch()).count();
+    double steady_s = std::chrono::duration<double>(steady_now.time_since_epoch()).count();
+    mono_to_wall_offset_ = sys_s - steady_s;
+    spdlog::info("SyncEngine: mono→wall offset = {:.6f} s (wall_now={:.3f}, mono_now={:.3f})",
+                 mono_to_wall_offset_, sys_s, steady_s);
+}
 void SyncEngine::configure(const SyncConfig& config) { config_ = config; }
 
 void SyncEngine::register_imu_clock(uint64_t first_esp_us, double first_host_s) {
@@ -55,19 +69,39 @@ void SyncEngine::register_camera_clock(double first_hw_s, double first_host_s) {
 }
 
 double SyncEngine::esp_to_unified(uint64_t esp_us) const {
-    if (!imu_registered_) return 0.0;
-    // Time since first IMU sample
+    // Hardware-FSYNC anchor (preferred): cam_hw_s = a·esp_us + b, exact and
+    // drift-free because each FSYNC pair is a same-instant ground truth.
+    // Output already wall-clock (RealSense GLOBAL_TIME).
+    if (hw_anchor_valid_) {
+        return hw_anchor_a_ * (double)esp_us + hw_anchor_b_;
+    }
+    // Fallback: project ESP delta onto host monotonic, then shift to wall.
+    if (!imu_registered_) {
+        // Truly nothing to anchor against — return wall-clock now() so the
+        // very first row still lands in the right domain.
+        auto sys_now = std::chrono::system_clock::now();
+        return std::chrono::duration<double>(sys_now.time_since_epoch()).count();
+    }
     double dt_s = (double)(esp_us - imu_base_esp_us_) / 1e6;
-    // Apply drift correction
     if (std::abs(current_drift_ppm_) > 0.01) {
         dt_s *= (1.0 - current_drift_ppm_ / 1e6);
     }
-    return imu_base_host_s_ + dt_s;
+    return imu_base_host_s_ + dt_s + mono_to_wall_offset_;
 }
 
 double SyncEngine::cam_to_unified(double cam_hw_s) const {
-    if (!cam_registered_) return 0.0;
-    return cam_base_host_s_ + (cam_hw_s - cam_base_hw_s_);
+    // RealSense GLOBAL_TIME emits Unix-epoch ms (we divide by 1000 in
+    // CameraReader). With the HW anchor or without, cam_hw_s is already
+    // wall-clock — return it unchanged. The previous fallback that mixed
+    // cam_base_host_s_ (monotonic) with hw deltas is gone.
+    if (cam_hw_s > 1e9) return cam_hw_s;
+    // Defensive: if a build ever produces non-GLOBAL_TIME stamps (camera
+    // start-relative seconds), shift by host base + wall offset so we still
+    // emit wall-clock. Required: cam_registered_ before calling.
+    if (cam_registered_) {
+        return cam_base_host_s_ + (cam_hw_s - cam_base_hw_s_) + mono_to_wall_offset_;
+    }
+    return 0.0;  // Caller must guard; should never happen in practice.
 }
 
 void SyncEngine::start_tap_test() {
@@ -161,6 +195,74 @@ void SyncEngine::update_drift(uint64_t esp_us, double host_s) {
     } else {
         rearm_excess_start_ = 0.0;
     }
+}
+
+// ============================================================================
+// Hardware-FSYNC anchor — pairs IMU FSYNC events with camera frame events
+// (same physical instant) and fits an affine map cam_hw_s = a·esp_us + b.
+// ============================================================================
+void SyncEngine::register_imu_fsync_event(uint64_t esp_us, double host_s) {
+    imu_fsync_events_.emplace_back(esp_us, host_s);
+    while (imu_fsync_events_.size() > 4 * HW_PAIR_LIMIT) imu_fsync_events_.pop_front();
+    try_pair_and_refit_();
+}
+
+void SyncEngine::register_camera_frame(double cam_hw_s, double host_s) {
+    cam_frame_events_.emplace_back(cam_hw_s, host_s);
+    while (cam_frame_events_.size() > 4 * HW_PAIR_LIMIT) cam_frame_events_.pop_front();
+    try_pair_and_refit_();
+}
+
+void SyncEngine::try_pair_and_refit_() {
+    // Match each NEW imu_fsync event with its nearest-host-time camera frame.
+    // We require the match to be within ±5 ms (one frame at 90 fps × 0.45)
+    // — anything looser than that suggests the host queue was bursty enough
+    // that the pairing is ambiguous and we should skip.
+    static constexpr double MATCH_TOL_S = 0.005;
+
+    while (!imu_fsync_events_.empty() && !cam_frame_events_.empty()) {
+        auto& imu_ev = imu_fsync_events_.front();
+        // Find closest cam frame to imu's host_s
+        size_t best = 0;
+        double best_dt = 1e9;
+        for (size_t i = 0; i < cam_frame_events_.size(); ++i) {
+            double dt = std::abs(cam_frame_events_[i].second - imu_ev.second);
+            if (dt < best_dt) { best_dt = dt; best = i; }
+            if (cam_frame_events_[i].second > imu_ev.second + MATCH_TOL_S) break;
+        }
+        if (best_dt > MATCH_TOL_S) {
+            // Camera hasn't caught up to this IMU event yet; wait.
+            if (cam_frame_events_.back().second < imu_ev.second + MATCH_TOL_S) return;
+            // Otherwise this IMU event missed its camera partner; drop it.
+            imu_fsync_events_.pop_front();
+            continue;
+        }
+        // Pair found
+        hw_pairs_.emplace_back(imu_ev.first, cam_frame_events_[best].first);
+        if (hw_pairs_.size() > HW_PAIR_LIMIT) hw_pairs_.erase(hw_pairs_.begin());
+        // Drop matched events (keep camera frames AT/BEFORE this point)
+        imu_fsync_events_.pop_front();
+        for (size_t i = 0; i <= best; ++i) cam_frame_events_.pop_front();
+    }
+
+    // Refit a, b for cam_hw_s = a·esp_us + b on the most recent pairs.
+    if (hw_pairs_.size() < 2) return;
+    long double sum_x = 0, sum_y = 0, sum_xx = 0, sum_xy = 0;
+    long double n = (long double)hw_pairs_.size();
+    for (auto& [esp, cam] : hw_pairs_) {
+        long double x = (long double)esp;
+        long double y = (long double)cam;
+        sum_x  += x;  sum_y  += y;
+        sum_xx += x*x; sum_xy += x*y;
+    }
+    long double denom = n * sum_xx - sum_x * sum_x;
+    if (std::abs((double)denom) < 1.0) return;
+    hw_anchor_a_ = (double)((n * sum_xy - sum_x * sum_y) / denom);
+    hw_anchor_b_ = (double)((sum_y - hw_anchor_a_ * sum_x) / n);
+    hw_anchor_valid_ = true;
+
+    // Update reported drift in PPM relative to ideal 1 µs / 1 µs (a = 1e-6).
+    current_drift_ppm_ = (hw_anchor_a_ - 1e-6) / 1e-6 * 1e6;
 }
 
 } // namespace vbt

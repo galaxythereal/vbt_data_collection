@@ -15,6 +15,10 @@
 #include <memory>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <deque>
+#include <mutex>
+#include <thread>
 #include <vector>
 #include "app/Config.h"
 #include "sensors/IMUReader.h"
@@ -97,6 +101,9 @@ private:
     void write_metadata();
     void write_manifest();
     std::string build_dataset_path(const std::string& root) const;
+    void enqueue_camera_frame(const CameraFrame& frame);
+    void camera_worker_loop();
+    void process_camera_frame(const CameraFrame& frame);
 
     SessionState state_ = SessionState::IDLE;
     SessionInfo  info_;
@@ -122,6 +129,18 @@ private:
     float  last_cam_position_ = 0.0f;
     double last_cam_time_ = 0.0;
     bool   cam_clock_registered_ = false;
+    bool   imu_clock_registered_ = false;
+
+    // Camera frames are received on the RealSense stream thread. Marker
+    // tracking and video encoding are intentionally moved to this worker so
+    // they cannot throttle frame receipt.
+    std::thread camera_worker_thread_;
+    std::mutex camera_queue_mutex_;
+    std::condition_variable camera_queue_cv_;
+    std::deque<CameraFrame> camera_queue_;
+    std::atomic<bool> camera_worker_running_{false};
+    std::atomic<uint64_t> camera_queue_drops_{0};
+    static constexpr size_t CAMERA_QUEUE_LIMIT = 512;
 };
 
 } // namespace vbt

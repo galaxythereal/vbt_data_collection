@@ -10,6 +10,7 @@
 
 #include <cstdint>
 #include <vector>
+#include <deque>
 #include <chrono>
 #include <atomic>
 #include "sensors/IMUReader.h"
@@ -40,12 +41,23 @@ public:
     void register_camera_clock(double first_hw_s, double first_host_s);
 
     // ========================================================================
-    // Timestamp Conversion
+    // Timestamp Conversion — always returns wall-clock seconds (Unix epoch).
+    //
+    // The host monotonic clock (steady_clock) has the property that every
+    // sensor's host_timestamp_s reads off the SAME source, but it's not a
+    // wall-clock and is not interchangeable with the camera HW clock (which
+    // RealSense GLOBAL_TIME emits as Unix epoch ms). To avoid the "first 2
+    // rows in monotonic, rest in wall-clock" failure mode that pre-dated
+    // this rewrite, every conversion below is anchored to wall-clock from
+    // the very first sample, using mono_to_wall_offset_ (captured once at
+    // SyncEngine construction from system_clock − steady_clock).
     // ========================================================================
-    // Convert ESP32 timestamp to unified time
     double esp_to_unified(uint64_t esp_us) const;
-    // Convert D455 HW timestamp to unified time
     double cam_to_unified(double cam_hw_s) const;
+
+    // Wall-clock minus host monotonic clock at process start. Stable for the
+    // lifetime of the process unless the OS adjusts the wall clock (rare).
+    double mono_to_wall_offset() const { return mono_to_wall_offset_; }
 
     // ========================================================================
     // Tap Test
@@ -66,6 +78,23 @@ public:
     // ========================================================================
     void update_drift(uint64_t esp_us, double host_s);
     double get_current_drift_ppm() const { return current_drift_ppm_; }
+
+    // ========================================================================
+    // Hardware-FSYNC anchor pairs (canonical sync)
+    // ========================================================================
+    // Every IMU sample whose TEMP-LSB is set was captured at the exact same
+    // physical instant as a camera frame trigger. Feed both sides — the
+    // engine fits a live linear model cam_hw_s = a·esp_us + b that bypasses
+    // host-clock drift entirely.
+    void register_imu_fsync_event(uint64_t esp_us, double host_s);
+    void register_camera_frame   (double cam_hw_s,   double host_s);
+
+    // True iff we have ≥2 paired FSYNC↔frame events and the affine fit is fresh.
+    bool has_hw_anchor() const { return hw_anchor_valid_; }
+    // a (slope, sec/µs ≈ 1e-6) and b (intercept, sec) for cam_hw_s = a·esp_us + b
+    double hw_anchor_a() const { return hw_anchor_a_; }
+    double hw_anchor_b() const { return hw_anchor_b_; }
+    int    hw_anchor_pair_count() const { return (int)hw_pairs_.size(); }
 
     // ========================================================================
     // Auto-rearm: monitor drift; if it exceeds auto_rearm_drift_ppm for
@@ -101,6 +130,25 @@ private:
     // Auto-rearm state
     bool   rearm_required_      = false;
     double rearm_excess_start_  = 0.0;   // host_s when |drift| first crossed threshold
+
+    // Wall-clock offset captured once at construction from
+    // system_clock::now() − steady_clock::now() so that ESP/IMU samples
+    // (whose host_timestamp_s comes from steady_clock) can be expressed in
+    // the same wall-clock domain as the camera HW timestamps.
+    double mono_to_wall_offset_ = 0.0;
+
+    // Hardware-FSYNC anchor pairs.
+    // imu_fsync_events_: (esp_us, host_s) for each FSYNC-tagged IMU sample.
+    // cam_frame_events_: (cam_hw_s, host_s) for each camera frame.
+    // Pairing is by host_s nearest neighbour. Linear fit refreshed every N pairs.
+    std::deque<std::pair<uint64_t, double>> imu_fsync_events_;
+    std::deque<std::pair<double, double>>   cam_frame_events_;
+    std::vector<std::pair<uint64_t, double>> hw_pairs_;  // (esp_us, cam_hw_s)
+    double hw_anchor_a_      = 1e-6;     // sec / µs (default = identity)
+    double hw_anchor_b_      = 0.0;
+    bool   hw_anchor_valid_  = false;
+    static constexpr size_t HW_PAIR_LIMIT = 256;
+    void try_pair_and_refit_();
 };
 
 } // namespace vbt
