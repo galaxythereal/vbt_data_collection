@@ -24,6 +24,7 @@ class OperatorView;
 class RepTimelinePanel;
 class CalibrationWizard;
 class ReplayMode;
+class AnnotationStudio;
 
 class MainWindow {
 public:
@@ -60,6 +61,7 @@ private:
     std::unique_ptr<RepTimelinePanel> rep_timeline_;
     std::unique_ptr<CalibrationWizard> calib_wizard_;
     std::unique_ptr<ReplayMode>       replay_;
+    std::unique_ptr<AnnotationStudio> studio_;
 
     bool show_demo_window_   = false;
     bool show_calib_window_  = false;

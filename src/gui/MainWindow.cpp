@@ -16,6 +16,7 @@
 #include "gui/RepTimelinePanel.h"
 #include "gui/CalibrationWizard.h"
 #include "gui/ReplayMode.h"
+#include "annotation/AnnotationStudio.h"
 #include "app/Application.h"
 #include "app/Config.h"
 #include "app/Version.h"
@@ -73,6 +74,7 @@ MainWindow::MainWindow(Application& app) : app_(app) {
     rep_timeline_     = std::make_unique<RepTimelinePanel>(app);
     calib_wizard_     = std::make_unique<CalibrationWizard>(app, shared_calib_mgr());
     replay_           = std::make_unique<ReplayMode>(app);
+    studio_           = std::make_unique<AnnotationStudio>(app);
 }
 
 MainWindow::~MainWindow() = default;
@@ -93,9 +95,13 @@ void MainWindow::process_hotkeys() {
         if (calib_wizard_->is_open()) { /* no-op, user can close via X */ }
         else calib_wizard_->open();
     }
-    // F2 — toggle replay
+    // F2 — toggle replay (legacy quick-look)
     if (ImGui::IsKeyPressed(ImGuiKey_F2, false)) {
         replay_->open();
+    }
+    // F3 — open Annotation Studio (post-recording workspace)
+    if (ImGui::IsKeyPressed(ImGuiKey_F3, false)) {
+        studio_->open();
     }
     // F5 — diagnostic export
     if (ImGui::IsKeyPressed(ImGuiKey_F5, false)) {
@@ -353,6 +359,7 @@ void MainWindow::render() {
     }
     calib_wizard_->render();
     replay_->render();
+    studio_->render();
     render_preflight_modal();
 
     if (show_demo_window_) ImGui::ShowDemoWindow(&show_demo_window_);
@@ -429,6 +436,7 @@ void MainWindow::render_menu_bar() {
             if (ImGui::MenuItem("Pre-flight Checklist...", "Space")) show_preflight_ = true;
             if (ImGui::MenuItem("Calibration Wizard...",   "F1"))  calib_wizard_->open();
             if (ImGui::MenuItem("Replay Saved Session...", "F2"))  replay_->open();
+            if (ImGui::MenuItem("Annotation Studio...", "F3"))     studio_->open();
             ImGui::Separator();
             ImGui::MenuItem("Legacy Calibration Panel", nullptr, &show_calib_window_);
             ImGui::Separator();
