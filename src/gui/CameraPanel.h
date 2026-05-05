@@ -37,12 +37,13 @@ public:
         if (!frame.empty()) {
             update_texture(frame);
             
-            // Calculate size to maintain aspect ratio
-            float avail_w = ImGui::GetContentRegionAvail().x;
-            float aspect = (float)frame.cols / (float)frame.rows;
-            float h = avail_w / aspect;
-            
-            ImGui::Image((void*)(intptr_t)texture_id_, ImVec2(avail_w, h));
+// WITH THIS:
+ImVec2 avail = ImGui::GetContentRegionAvail();
+float aspect = (float)frame.cols / (float)frame.rows;
+ImVec2 img_size = (avail.x / aspect <= avail.y)
+    ? ImVec2(avail.x, avail.x / aspect)
+    : ImVec2(avail.y * aspect, avail.y);
+ImGui::Image((void*)(intptr_t)texture_id_, img_size);
         } else {
             ImGui::TextDisabled("No frame data");
         }

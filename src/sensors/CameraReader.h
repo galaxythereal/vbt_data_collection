@@ -41,6 +41,22 @@ struct CameraFrame {
 };
 
 // ============================================================================
+// Camera-side IMU sample (D455 onboard BMI085).
+// Accel and gyro arrive on separate streams at independent rates, so
+// each sample carries its `kind` to disambiguate. Logged to a parallel
+// CSV (imu/camera_imu.csv) — never fused into the bar-IMU stream.
+// ============================================================================
+enum class CameraImuKind { Accel, Gyro };
+
+struct CameraImuSample {
+    CameraImuKind kind = CameraImuKind::Accel;
+    double  hw_timestamp_s   = 0.0; // D455 hardware clock (same domain as video frames)
+    double  host_timestamp_s = 0.0; // host steady_clock at frame receipt
+    double  unified_time_s   = 0.0; // wall-clock unified base, set by SyncEngine downstream
+    float   x = 0, y = 0, z = 0;    // accel = m/s²,  gyro = rad/s
+};
+
+// ============================================================================
 // Camera Statistics
 // ============================================================================
 // Copyable snapshot of camera statistics
@@ -63,6 +79,7 @@ struct CameraAtomicCounters {
 class CameraReader {
 public:
     using FrameCallback = std::function<void(const CameraFrame&)>;
+    using ImuCallback   = std::function<void(const CameraImuSample&)>;
 
     CameraReader();
     ~CameraReader();
@@ -85,6 +102,11 @@ public:
 
     // Register callback
     void set_callback(FrameCallback cb) { callback_ = std::move(cb); }
+    /// Register a callback fired once per accel or gyro sample from the
+    /// D455 onboard IMU. Called from the camera streaming thread —
+    /// callback should be cheap (queue / log only).
+    void set_imu_callback(ImuCallback cb) { imu_callback_ = std::move(cb); }
+    bool has_camera_imu() const { return camera_imu_active_; }
 
     // Clock sync helpers
     double get_first_hw_timestamp() const { return first_hw_timestamp_; }
@@ -138,6 +160,9 @@ private:
 
     // Callback
     FrameCallback callback_;
+    // D455 onboard IMU
+    ImuCallback   imu_callback_;
+    bool          camera_imu_active_ = false;
 };
 
 } // namespace vbt

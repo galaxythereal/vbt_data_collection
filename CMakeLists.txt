@@ -161,6 +161,7 @@ set(APP_SOURCES
     src/gui/MainWindow.cpp
     src/gui/SensorPanel.cpp
     src/gui/SessionPanel.cpp
+    src/gui/SessionInfoForm.cpp
     src/gui/PlotPanel.cpp
     src/gui/CalibrationPanel.cpp
     src/gui/AnnotationPanel.cpp
@@ -180,6 +181,7 @@ set(APP_SOURCES
     src/utils/AudioCue.cpp
     src/utils/Notifications.cpp
     src/utils/DiagnosticExport.cpp
+    src/utils/SubjectRegistry.cpp
 )
 
 add_executable(${PROJECT_NAME} ${APP_SOURCES})

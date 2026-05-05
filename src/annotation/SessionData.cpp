@@ -8,6 +8,7 @@
  * synchronously without a worker thread.
  */
 #include "annotation/SessionData.h"
+#include "utils/Uuid.h"
 #include <spdlog/spdlog.h>
 #include <fstream>
 #include <sstream>
@@ -123,15 +124,58 @@ bool SessionData::load(const fs::path& session_dir, SessionLoadDiag& diag) {
     load_events_(session_dir / "events.jsonl", diag);
 
     fixup_legacy_imu_unified_time_();
+    fixup_subject_uuid_();
+    fixup_legacy_sets_();
 
     loaded_ = any_ok && diag.ok();
     if (loaded_) {
         spdlog::info("AnnotationStudio: loaded session '{}': {} IMU rows, {} marker rows, "
-                     "{} video frames, {} reps",
+                     "{} video frames, {} reps, {} sets",
                      session_dir.string(),
-                     imu_.size(), marker_.size(), video_idx_.size(), reps_.size());
+                     imu_.size(), marker_.size(), video_idx_.size(),
+                     reps_.size(), info_.sets.size());
     }
     return loaded_;
+}
+
+void SessionData::fixup_subject_uuid_() {
+    // Mint a stable UUID once per subject. We can't reuse one across
+    // sessions automatically (we'd need a subjects.json registry), so the
+    // policy is: if blank, mint now and mark dirty so the user gets
+    // prompted to confirm/save. Operators who run the same subject again
+    // can paste the existing UUID into the metadata panel.
+    if (info_.subject_uuid.empty()) {
+        info_.subject_uuid = make_uuid_v4();
+        meta_dirty_ = true;
+    }
+}
+
+void SessionData::fixup_legacy_sets_() {
+    // Pre-v4 sessions had no `sets` vector; promote the top-level
+    // weight/RPE/target_reps fields to a single SetInfo so the studio's
+    // multi-set UI is uniform across schema versions.
+    if (info_.sets.empty()) {
+        SetInfo s;
+        s.set_id            = std::max(1, info_.set_number);
+        s.barbell_weight_kg = info_.barbell_weight_kg;
+        s.added_weight_kg   = info_.added_weight_kg;
+        s.total_weight_kg   = info_.total_weight_kg;
+        s.percent_1rm       = info_.percent_1rm;
+        s.target_reps       = info_.target_reps;
+        s.rpe               = info_.rpe;
+        s.notes             = info_.notes;
+        s.t_start_unified_s = imu_.size() ? imu_.unified_t_s.front() : 0.0;
+        s.t_end_unified_s   = imu_.size() ? imu_.unified_t_s.back()  : 0.0;
+        s.completed_reps    = (int)reps_.size();
+        info_.sets.push_back(s);
+        meta_dirty_ = true;
+    }
+    // Backfill any unset rep.set_id (legacy reps stored set_id=0 or the
+    // pre-v4 file simply didn't have the column) → first set.
+    if (!info_.sets.empty()) {
+        const int first_set_id = info_.sets.front().set_id;
+        for (auto& r : reps_) if (r.set_id <= 0) r.set_id = first_set_id;
+    }
 }
 
 bool SessionData::load_imu_csv_(const fs::path& p, SessionLoadDiag& diag) {

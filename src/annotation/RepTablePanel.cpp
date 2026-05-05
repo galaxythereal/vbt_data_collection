@@ -142,44 +142,78 @@ void RepTablePanel::render_toolbar_() {
 
 void RepTablePanel::render_metric_summary_() {
     const auto& reps = session_->reps();
+    const auto& sets = session_->info().sets;
     if (reps.empty()) {
         ImGui::TextDisabled("No reps detected. Shift+drag the timeline to annotate manually.");
         return;
     }
-    // Roll-up: mean / sd / min / max of peak velocity, ROM.
-    double sum_pv = 0, sum_pv2 = 0, sum_rom = 0, sum_rom2 = 0;
-    double minpv =  1e9, maxpv = -1e9;
-    double minrom = 1e9, maxrom = -1e9;
-    for (const auto& r : reps) {
-        sum_pv  += r.peak_concentric_velocity;
-        sum_pv2 += r.peak_concentric_velocity * r.peak_concentric_velocity;
-        sum_rom += r.rom_m;
-        sum_rom2 += r.rom_m * r.rom_m;
-        minpv  = std::min<double>(minpv,  r.peak_concentric_velocity);
-        maxpv  = std::max<double>(maxpv,  r.peak_concentric_velocity);
-        minrom = std::min<double>(minrom, r.rom_m);
-        maxrom = std::max<double>(maxrom, r.rom_m);
-    }
-    double n = (double)reps.size();
-    double mean_pv  = sum_pv / n;
-    double sd_pv    = std::sqrt(std::max(0.0, sum_pv2 / n - mean_pv * mean_pv));
-    double mean_rom = sum_rom / n;
-    double sd_rom   = std::sqrt(std::max(0.0, sum_rom2 / n - mean_rom * mean_rom));
-    // Velocity loss: drop from rep 1 peak to rep N peak.
-    double vloss_pct = 100.0 * (reps.front().peak_concentric_velocity
-                                 - reps.back().peak_concentric_velocity)
-                              / std::max(0.05f, reps.front().peak_concentric_velocity);
 
+    // ── Per-set roll-up. We honour info_.sets if it has any entries
+    // (post-v4 sessions), otherwise fall back to a single "all reps" set.
+    auto roll_up = [](const std::vector<RepAnnotation>& subset) {
+        struct Stats {
+            double n = 0, mean_pv = 0, sd_pv = 0, min_pv = 1e9, max_pv = -1e9;
+            double mean_rom = 0, sd_rom = 0, vloss_pct = 0;
+        } st;
+        if (subset.empty()) return st;
+        double sum_pv = 0, sum_pv2 = 0, sum_rom = 0, sum_rom2 = 0;
+        for (const auto& r : subset) {
+            sum_pv   += r.peak_concentric_velocity;
+            sum_pv2  += r.peak_concentric_velocity * r.peak_concentric_velocity;
+            sum_rom  += r.rom_m;
+            sum_rom2 += r.rom_m * r.rom_m;
+            st.min_pv = std::min<double>(st.min_pv, r.peak_concentric_velocity);
+            st.max_pv = std::max<double>(st.max_pv, r.peak_concentric_velocity);
+        }
+        st.n        = (double)subset.size();
+        st.mean_pv  = sum_pv / st.n;
+        st.sd_pv    = std::sqrt(std::max(0.0, sum_pv2 / st.n - st.mean_pv * st.mean_pv));
+        st.mean_rom = sum_rom / st.n;
+        st.sd_rom   = std::sqrt(std::max(0.0, sum_rom2 / st.n - st.mean_rom * st.mean_rom));
+        st.vloss_pct = 100.0 * (subset.front().peak_concentric_velocity
+                                 - subset.back().peak_concentric_velocity)
+                            / std::max(0.05f, subset.front().peak_concentric_velocity);
+        return st;
+    };
+
+    if (sets.size() <= 1) {
+        // Single-set session: show one block (preserves the v3 look).
+        auto st = roll_up(reps);
+        ImGui::TextColored(ImVec4(0.55f, 0.78f, 1, 1),
+                           "Set summary  ·  %d reps", (int)reps.size());
+        ImGui::Text("Peak vel    : %.3f ± %.3f  m/s   "
+                    "(min %.3f, max %.3f)",
+                    st.mean_pv, st.sd_pv, st.min_pv, st.max_pv);
+        ImGui::Text("ROM         : %.0f ± %.0f  mm",
+                    st.mean_rom * 1000, st.sd_rom * 1000);
+        ImGui::Text("Velocity loss (rep1 → repN): %+.1f %%", st.vloss_pct);
+        return;
+    }
+
+    // Multi-set: one summary card per set, plus a session-level total.
     ImGui::TextColored(ImVec4(0.55f, 0.78f, 1, 1),
-                       "Set summary  ·  %d reps", (int)reps.size());
-    ImGui::Text("Peak vel    : %.3f ± %.3f  m/s   "
-                "(min %.3f, max %.3f)",
-                mean_pv, sd_pv, minpv, maxpv);
-    ImGui::Text("ROM         : %.0f ± %.0f  mm    "
-                "(min %.0f, max %.0f)",
-                mean_rom * 1000, sd_rom * 1000,
-                minrom * 1000, maxrom * 1000);
-    ImGui::Text("Velocity loss (rep1 → repN): %+.1f %%", vloss_pct);
+                       "Session summary  ·  %d sets, %d reps",
+                       (int)sets.size(), (int)reps.size());
+    for (const auto& s : sets) {
+        std::vector<RepAnnotation> subset;
+        for (const auto& r : reps) if (r.set_id == s.set_id) subset.push_back(r);
+        auto st = roll_up(subset);
+        ImGui::Separator();
+        ImGui::TextColored(ImVec4(0.65f, 0.85f, 1, 1),
+                           "Set %d  ·  %.1f kg × %d reps  (target %d)",
+                           s.set_id, s.total_weight_kg,
+                           (int)subset.size(), s.target_reps);
+        if (subset.empty()) {
+            ImGui::TextDisabled("  no reps tagged for this set");
+            continue;
+        }
+        ImGui::Text("  peak vel : %.3f ± %.3f m/s  (range %.3f–%.3f)",
+                    st.mean_pv, st.sd_pv, st.min_pv, st.max_pv);
+        ImGui::Text("  ROM      : %.0f ± %.0f mm",
+                    st.mean_rom * 1000, st.sd_rom * 1000);
+        ImGui::Text("  vel loss : %+.1f %%   ·   RPE: %d",
+                    st.vloss_pct, s.rpe);
+    }
 }
 
 void RepTablePanel::render_table_() {
@@ -190,9 +224,10 @@ void RepTablePanel::render_table_() {
     // Fill the remaining vertical space — the parent BeginChild already
     // bounded us, so passing (0,0) lets the inner scroll consume whatever
     // space the user resized into.
-    if (!ImGui::BeginTable("##reptab", 9, flags, ImVec2(0, 0))) return;
+    if (!ImGui::BeginTable("##reptab", 10, flags, ImVec2(0, 0))) return;
     ImGui::TableSetupScrollFreeze(0, 1);
-    ImGui::TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, 36);
+    ImGui::TableSetupColumn("ID",  ImGuiTableColumnFlags_WidthFixed, 36);
+    ImGui::TableSetupColumn("Set", ImGuiTableColumnFlags_WidthFixed, 36);
     ImGui::TableSetupColumn("t_start (s)");
     ImGui::TableSetupColumn("t_end (s)");
     ImGui::TableSetupColumn("conc dur");
@@ -219,6 +254,16 @@ void RepTablePanel::render_table_() {
             selected_ = i;
             if (on_select_) on_select_(i);
         }
+
+        // Set column — editable inline so the operator can repair
+        // mis-tagged reps (e.g. an autosegmented rep that landed at a
+        // set boundary and ended up with the wrong set_id).
+        ImGui::TableNextColumn();
+        ImGui::PushItemWidth(-1);
+        if (ImGui::DragInt("##set", &r.set_id, 0.1f, 1, 50)) {
+            session_->mark_reps_dirty();
+        }
+        ImGui::PopItemWidth();
 
         ImGui::TableNextColumn();
         float t_start = (float)(r.concentric.t_start_s - t0);

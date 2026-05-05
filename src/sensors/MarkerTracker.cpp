@@ -25,6 +25,20 @@ cv::Mat MarkerTracker::threshold_ir(const cv::Mat& ir) {
     cv::Mat k5 = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5));
     cv::morphologyEx(binary, binary, cv::MORPH_OPEN,  k3);
     cv::morphologyEx(binary, binary, cv::MORPH_CLOSE, k5);
+
+    // Horizontal ROI mask. We zero the side margins of the binary image
+    // so contour-finding never visits them — pixel coordinates of any
+    // detected blob remain in the original frame, so depth deprojection
+    // and the debug overlay stay consistent. Stereo triangulation reuses
+    // this same path on ir_right, which is fine: the central 70 % band
+    // is far wider than the disparity for any object > 0.5 m away.
+    const int W = binary.cols;
+    int x_lo = std::clamp((int)(config_.marker_roi_x_min_frac * W), 0, W);
+    int x_hi = std::clamp((int)(config_.marker_roi_x_max_frac * W), x_lo, W);
+    if (x_lo > 0)
+        binary.colRange(0, x_lo) = cv::Scalar(0);
+    if (x_hi < W)
+        binary.colRange(x_hi, W) = cv::Scalar(0);
     return binary;
 }
 
@@ -230,6 +244,28 @@ MarkerDetection MarkerTracker::process(const cv::Mat& ir_left, const cv::Mat& ir
     {
         std::lock_guard<std::mutex> lock(debug_mutex_);
         cv::cvtColor(ir_left, debug_image_, cv::COLOR_GRAY2BGR);
+
+        // Visualise the active detection ROI: dim the side margins
+        // (so the operator can see they're being ignored) and draw a
+        // vertical line at each ROI boundary.
+        const int W = debug_image_.cols, H = debug_image_.rows;
+        int x_lo = std::clamp((int)(config_.marker_roi_x_min_frac * W), 0, W);
+        int x_hi = std::clamp((int)(config_.marker_roi_x_max_frac * W), x_lo, W);
+        if (x_lo > 0 || x_hi < W) {
+            if (x_lo > 0) {
+                cv::Mat lhs = debug_image_(cv::Rect(0, 0, x_lo, H));
+                lhs *= 0.35;   // dim, don't black out — keeps context visible
+                cv::line(debug_image_, cv::Point(x_lo, 0), cv::Point(x_lo, H),
+                          cv::Scalar(0, 200, 255), 1);
+            }
+            if (x_hi < W) {
+                cv::Mat rhs = debug_image_(cv::Rect(x_hi, 0, W - x_hi, H));
+                rhs *= 0.35;
+                cv::line(debug_image_, cv::Point(x_hi - 1, 0), cv::Point(x_hi - 1, H),
+                          cv::Scalar(0, 200, 255), 1);
+            }
+        }
+
         if (det.detected) {
             cv::circle(debug_image_, cv::Point((int)det.pixel_u, (int)det.pixel_v), 15, cv::Scalar(0, 255, 0), 2);
             cv::putText(debug_image_, cv::format("%.3fm", det.z_m),

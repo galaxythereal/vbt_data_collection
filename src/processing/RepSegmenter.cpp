@@ -28,6 +28,13 @@ void RepSegmenter::renumber_reps() {
     for (int i = 0; i < (int)completed_reps_.size(); i++) {
         completed_reps_[i].rep_id = i + 1;
     }
+    // Tag the most-recently-pushed rep with the current set_id so the
+    // segmenter's set tagging stays consistent when Session::advance_set
+    // bumps current_set_id_ between sets. Earlier reps keep whatever
+    // set_id they were stamped with at completion time.
+    if (!completed_reps_.empty()) {
+        completed_reps_.back().set_id = current_set_id_;
+    }
 }
 
 // ============================================================================
@@ -582,6 +589,7 @@ void RepSegmenter::delete_last_rep() {
 
 nlohmann::json RepAnnotation::to_json() const {
     return {{"rep_id", rep_id},
+            {"set_id", set_id},
             {"concentric", {{"t_start", concentric.t_start_s}, {"t_end", concentric.t_end_s},
                            {"peak_vel", concentric.peak_velocity_mps}, {"source", concentric.source}}},
             {"top_rest",  {{"t_start", top_rest.t_start_s}, {"t_end", top_rest.t_end_s}}},
@@ -596,6 +604,8 @@ nlohmann::json RepAnnotation::to_json() const {
 RepAnnotation RepAnnotation::from_json(const nlohmann::json& j) {
     RepAnnotation r;
     r.rep_id = j.value("rep_id", 0);
+    // set_id is new in v4 — legacy reps default to set 1.
+    r.set_id = j.value("set_id", 1);
     r.concentric.t_start_s = j["concentric"].value("t_start", 0.0);
     r.concentric.t_end_s = j["concentric"].value("t_end", 0.0);
     r.concentric.peak_velocity_mps = j["concentric"].value("peak_vel", 0.0f);

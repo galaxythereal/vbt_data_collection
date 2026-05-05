@@ -174,6 +174,12 @@ private:
     /// Detects pre-2026-05-04 sessions where the IMU CSV's unified_time_s
     /// is all zeros and back-fills it from the video_frames mono→wall offset.
     void fixup_legacy_imu_unified_time_();
+    /// Mint a UUID for the subject if blank (pre-v4 sessions).
+    void fixup_subject_uuid_();
+    /// Synthesise a single-element `sets` vector from the legacy
+    /// barbell_weight / set_number / rpe / target_reps fields if the
+    /// session was written before v4 multi-set support landed.
+    void fixup_legacy_sets_();
 
     std::filesystem::path        session_dir_;
     SessionInfo                  info_;
