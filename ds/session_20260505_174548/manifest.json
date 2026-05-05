@@ -1,33 +1,37 @@
 {
-  "created_at": "2026-05-04T16:58:04",
-  "events_sha256": "32140314228b442f61619205abcbf6ee8b614e43800bb2a73b5b87e529353aa1",
+  "created_at": "2026-05-05T17:45:48",
+  "events_sha256": "7f38339b10b9e68342305e29eb18a40a0bc8e5ca041bd6f677c6a505e4b74c6a",
   "files": [
     {
-      "bytes": 994928,
+      "bytes": 985424,
       "path": "imu/raw_imu.bin"
     },
     {
-      "bytes": 6187854,
+      "bytes": 6147370,
       "path": "imu/raw_imu.csv"
     },
     {
-      "bytes": 423982,
+      "bytes": 671625,
+      "path": "imu/camera_imu.csv"
+    },
+    {
+      "bytes": 419662,
       "path": "camera/marker_positions.csv"
     },
     {
-      "bytes": 199919,
+      "bytes": 199074,
       "path": "camera/depth_at_marker.csv"
     },
     {
-      "bytes": 242632,
+      "bytes": 242680,
       "path": "camera/video_frames.csv"
     },
     {
-      "bytes": 4373390,
+      "bytes": 5784772,
       "path": "camera/ir_video.mp4"
     },
     {
-      "bytes": 5365,
+      "bytes": 6489,
       "path": "annotations/rep_segments.json"
     },
     {
@@ -47,10 +51,10 @@
       "path": "events.jsonl"
     },
     {
-      "bytes": 1743,
+      "bytes": 4733,
       "path": "metadata.json"
     }
   ],
   "schema_version": 1,
-  "session_id": "session_20260504_165804"
+  "session_id": "session_20260505_174548"
 }

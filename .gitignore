@@ -5,7 +5,9 @@ build-*/
 datasets/*
 vbt_config.json
 __pycache__/
-
+!./ds/**
+!./ds/*
+!./ds/**/*
 # Editor / IDE
 .vscode/
 .idea/
