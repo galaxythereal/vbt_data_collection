@@ -1,0 +1,12 @@
+{
+  "bland_altman_bias": 0.0,
+  "pos_correlation": 0.0,
+  "pos_mae_m": 0.0,
+  "pos_max_error_m": 0.0,
+  "pos_rmse_m": 0.0,
+  "sync_quality": 0.0,
+  "tracking_rate": 0.0,
+  "vel_correlation": 0.0,
+  "vel_mae_mps": 0.0,
+  "vel_rmse_mps": 0.0
+}

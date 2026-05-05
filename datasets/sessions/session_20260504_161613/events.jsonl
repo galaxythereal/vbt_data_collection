@@ -1,0 +1,8 @@
+{"code":"create","host_s":1777900573.704474,"level":"info","msg":"Session created: session_20260504_161613","source":"session","wallclock":"2026-05-04T13:16:13.704463Z"}
+{"code":"build_provenance","host_s":1777900573.704527,"level":"info","msg":"build info","payload":{"build_timestamp":"2026-04-30T07:28:55Z","build_type":"Release","git_branch":"main","git_dirty":"false","git_sha":"aae3fc6","version":"1.1.0"},"source":"session","wallclock":"2026-05-04T13:16:13.704524Z"}
+{"code":"override","host_s":1777900590.107317,"level":"warning","msg":"Operator overrode pre-flight failure: operator overrode failed pre-flight","source":"preflight","wallclock":"2026-05-04T13:16:30.107304Z"}
+{"code":"recording_start","host_s":1777900590.1077647,"level":"info","msg":"Recording started","source":"session","wallclock":"2026-05-04T13:16:30.107750Z"}
+{"code":"recording_stop","host_s":1777900622.108688,"level":"info","msg":"Recording stopped","source":"session","wallclock":"2026-05-04T13:17:02.108667Z"}
+{"code":"save","host_s":1777900623.6982658,"level":"info","msg":"Session finalised; renaming .partial → final","source":"session","wallclock":"2026-05-04T13:17:03.698255Z"}
+{"code":"annotation.reps_saved","data":{"recompute_metrics":true,"rep_count":10},"level":"info","msg":"Rep edits committed","operator":"galaxy","source":"annotation_studio","wallclock":"2026-05-04T22:43:14Z"}
+{"code":"annotation.meta_saved","data":{"exercise":"back_squat","notes_len":0,"rpe":7,"subject_id":"S01","total_weight_kg":20.0},"level":"info","msg":"Metadata edited","operator":"galaxy","source":"annotation_studio","wallclock":"2026-05-04T22:43:14Z"}
