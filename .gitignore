@@ -3,7 +3,7 @@ build-*/
 .cache/
 *.log
 !datasets/sync_verification/**/*.log
-datasets/*
+# datasets/*
 !datasets/sync_verification/
 vbt_config.json
 __pycache__/

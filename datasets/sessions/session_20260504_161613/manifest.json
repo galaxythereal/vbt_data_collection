@@ -1,0 +1,58 @@
+{
+  "created_at": "2026-05-04T16:16:13",
+  "events_sha256": "ce366ad39cc7533078761efb001a7670c4c1a27599c8466d12e32b14b6d20ead",
+  "files": [
+    {
+      "bytes": 695376,
+      "path": "imu/raw_imu.bin"
+    },
+    {
+      "bytes": 4270809,
+      "path": "imu/raw_imu.csv"
+    },
+    {
+      "bytes": 295679,
+      "path": "camera/marker_positions.csv"
+    },
+    {
+      "bytes": 139109,
+      "path": "camera/depth_at_marker.csv"
+    },
+    {
+      "bytes": 170500,
+      "path": "camera/video_frames.csv"
+    },
+    {
+      "bytes": 3153803,
+      "path": "camera/ir_video.mp4"
+    },
+    {
+      "bytes": 5384,
+      "path": "annotations/rep_segments.json",
+      "sha256": "61e302c0c7659f13185042e9e5e4b1529c41fcd7a48abc38442641e8e440c71d"
+    },
+    {
+      "bytes": 241,
+      "path": "validation/validation_report.json"
+    },
+    {
+      "bytes": 30,
+      "path": "validation/position_comparison.csv"
+    },
+    {
+      "bytes": 34,
+      "path": "validation/velocity_comparison.csv"
+    },
+    {
+      "bytes": 996,
+      "path": "events.jsonl"
+    },
+    {
+      "bytes": 1745,
+      "path": "metadata.json",
+      "sha256": "64ec1375d7cfd91f5081af197a4a4b4fb84d5d42095670d5f537dc445c8f2aa9"
+    }
+  ],
+  "schema_version": 1,
+  "session_id": "session_20260504_161613"
+}

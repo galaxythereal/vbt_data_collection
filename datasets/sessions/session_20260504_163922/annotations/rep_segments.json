@@ -1,0 +1,149 @@
+[
+  {
+    "concentric": {
+      "peak_vel": 0.8364051580429077,
+      "source": "camera",
+      "t_end": 1777902011.3267322,
+      "t_start": 0.0
+    },
+    "eccentric": {
+      "source": "camera",
+      "t_end": 0.0,
+      "t_start": 1777902009.9580522
+    },
+    "mean_concentric_velocity": 0.5854836106300354,
+    "peak_concentric_velocity": 0.8364051580429077,
+    "rep_id": 1,
+    "rest": {
+      "t_end": 1777902011.3267322,
+      "t_start": 1777902011.3267322
+    },
+    "rom_m": 0.08529640734195709
+  },
+  {
+    "concentric": {
+      "peak_vel": 1.1930384635925293,
+      "source": "camera",
+      "t_end": 1777902014.1864626,
+      "t_start": 1777902013.440933
+    },
+    "eccentric": {
+      "source": "camera",
+      "t_end": 1777902013.440933,
+      "t_start": 1777902012.4172177
+    },
+    "mean_concentric_velocity": 0.8351269364356995,
+    "peak_concentric_velocity": 1.1930384635925293,
+    "rep_id": 2,
+    "rest": {
+      "t_end": 1777902014.1864626,
+      "t_start": 1777902014.1864626
+    },
+    "rom_m": 0.4063490927219391
+  },
+  {
+    "concentric": {
+      "peak_vel": 1.741424798965454,
+      "source": "camera",
+      "t_end": 1777902015.9334664,
+      "t_start": 1777902015.0543966
+    },
+    "eccentric": {
+      "source": "camera",
+      "t_end": 1777902015.0543966,
+      "t_start": 1777902014.1864626
+    },
+    "mean_concentric_velocity": 1.2189973592758179,
+    "peak_concentric_velocity": 1.741424798965454,
+    "rep_id": 3,
+    "rest": {
+      "t_end": 1777902015.9334664,
+      "t_start": 1777902015.9334664
+    },
+    "rom_m": 0.4838668406009674
+  },
+  {
+    "concentric": {
+      "peak_vel": 0.9209601879119873,
+      "source": "camera",
+      "t_end": 1777902017.647085,
+      "t_start": 1777902016.7568974
+    },
+    "eccentric": {
+      "source": "camera",
+      "t_end": 1777902016.7568974,
+      "t_start": 1777902015.9334664
+    },
+    "mean_concentric_velocity": 0.6446720957756042,
+    "peak_concentric_velocity": 0.9209601879119873,
+    "rep_id": 4,
+    "rest": {
+      "t_end": 1777902017.647085,
+      "t_start": 1777902017.647085
+    },
+    "rom_m": 0.5122602581977844
+  },
+  {
+    "concentric": {
+      "peak_vel": 0.9591598510742188,
+      "source": "camera",
+      "t_end": 1777902019.4497573,
+      "t_start": 1777902018.681954
+    },
+    "eccentric": {
+      "source": "camera",
+      "t_end": 1777902018.681954,
+      "t_start": 1777902017.647085
+    },
+    "mean_concentric_velocity": 0.6714118719100952,
+    "peak_concentric_velocity": 0.9591598510742188,
+    "rep_id": 5,
+    "rest": {
+      "t_end": 1777902019.4497573,
+      "t_start": 1777902019.4497573
+    },
+    "rom_m": 0.372591495513916
+  },
+  {
+    "concentric": {
+      "peak_vel": 1.3837789297103882,
+      "source": "camera",
+      "t_end": 1777902021.3191803,
+      "t_start": 1777902020.384474
+    },
+    "eccentric": {
+      "source": "camera",
+      "t_end": 1777902020.384474,
+      "t_start": 1777902019.4497573
+    },
+    "mean_concentric_velocity": 0.9686452150344849,
+    "peak_concentric_velocity": 1.3837789297103882,
+    "rep_id": 6,
+    "rest": {
+      "t_end": 1777902021.3191803,
+      "t_start": 1777902021.3191803
+    },
+    "rom_m": 0.4646729528903961
+  },
+  {
+    "concentric": {
+      "peak_vel": 0.0,
+      "source": "imu_accel",
+      "t_end": 1777902071.1974905,
+      "t_start": 1777902068.6529684
+    },
+    "eccentric": {
+      "source": "imu_accel",
+      "t_end": 1777902073.7420123,
+      "t_start": 1777902071.1974905
+    },
+    "mean_concentric_velocity": 11.60899829864502,
+    "peak_concentric_velocity": 16.58428382873535,
+    "rep_id": 7,
+    "rest": {
+      "t_end": 1777902073.9420123,
+      "t_start": 1777902073.7420123
+    },
+    "rom_m": 3.3810973167419434
+  }
+]
