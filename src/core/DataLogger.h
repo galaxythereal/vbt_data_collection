@@ -36,6 +36,10 @@ public:
     /// Both timestamps and the camera frame number are recorded so the
     /// annotation tool can jump from a rep's t-range back to the right frame.
     void log_camera_frame(const CameraFrame& frame);
+    /// D455 onboard IMU (BMI085) — accel + gyro samples interleaved on
+    /// imu/camera_imu.csv. Used for tripod-shake detection and
+    /// cross-stream sync validation, never for VBT measurements.
+    void log_camera_imu(const CameraImuSample& sample);
 
     // Statistics
     struct LogStats {
@@ -70,6 +74,10 @@ private:
     std::mutex      video_mutex_;
     bool            video_writer_open_ = false;
     int             video_fps_         = 90;     // overridden lazily
+
+    // D455 onboard IMU log (kept separate from bar IMU CSV).
+    std::ofstream   camera_imu_csv_;
+    std::mutex      camera_imu_mutex_;
 
     LogStats stats_;
 };

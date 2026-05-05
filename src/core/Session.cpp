@@ -4,6 +4,7 @@
  */
 #include "core/Session.h"
 #include "utils/Notifications.h"
+#include "utils/Uuid.h"
 #include <spdlog/spdlog.h>
 #include <filesystem>
 #include <fstream>
@@ -62,8 +63,28 @@ bool Session::create(const std::string& root, const SessionInfo& info, bool bids
     info_ = info;
     bids_layout_ = bids_layout;
 
-    if (info_.schema_version == 0) info_.schema_version = 2;
+    if (info_.schema_version == 0) info_.schema_version = 4;
     info_.build = BuildProvenance::current();
+
+    // Mint a UUID for the subject if the operator hasn't pasted one in.
+    // Re-recording the same person? Reuse the previous session's UUID
+    // by typing it in pre-recording — that's the cross-session join key.
+    if (info_.subject_uuid.empty()) info_.subject_uuid = make_uuid_v4();
+
+    // Ensure at least one set exists in the multi-set vector. Operators
+    // who don't pre-configure multiple sets effectively run a 1-set
+    // session; advance_set during recording grows this vector as they go.
+    if (info_.sets.empty()) {
+        SetInfo s;
+        s.set_id            = std::max(1, info_.set_number);
+        s.barbell_weight_kg = info_.barbell_weight_kg;
+        s.added_weight_kg   = info_.added_weight_kg;
+        s.total_weight_kg   = info_.total_weight_kg;
+        s.percent_1rm       = info_.percent_1rm;
+        s.target_reps       = info_.target_reps;
+        s.rpe               = info_.rpe;
+        info_.sets.push_back(s);
+    }
 
     auto now = std::chrono::system_clock::now();
     auto t = std::chrono::system_clock::to_time_t(now);
@@ -172,17 +193,78 @@ bool Session::start_recording() {
         enqueue_camera_frame(f);
     });
 
+    // D455 onboard IMU. Unified time-stamping piggy-backs on
+    // SyncEngine::cam_to_unified — accel/gyro samples share the camera
+    // hardware clock, so once that clock is registered the conversion
+    // is identical. Logged synchronously: each sample is one CSV row,
+    // ~450 Hz combined, so the cost is negligible.
+    camera_reader_->set_imu_callback([this](const CameraImuSample& s_in) {
+        if (!data_logger_->is_open()) return;
+        CameraImuSample s2 = s_in;
+        s2.unified_time_s = sync_engine_->cam_to_unified(s2.hw_timestamp_s);
+        data_logger_->log_camera_imu(s2);
+    });
+
     recording_start_ = std::chrono::steady_clock::now();
+
+    // Anchor the first SetInfo's start to the current wall-clock so the
+    // multi-set timeline is meaningful. Subsequent sets get their start
+    // stamped by advance_set.
+    if (!info_.sets.empty() && info_.sets.front().t_start_unified_s == 0.0) {
+        info_.sets.front().t_start_unified_s =
+            std::chrono::duration<double>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+    }
+    rep_segmenter_->set_current_set_id(
+        info_.sets.empty() ? 1 : info_.sets.back().set_id);
+
     state_ = SessionState::RECORDING;
     write_metadata();
     event_log_.info("session", "recording_start", "Recording started");
-    spdlog::info("Recording started");
+    spdlog::info("Recording started (set {})", rep_segmenter_->get_current_set_id());
     return true;
+}
+
+int Session::advance_set(const SetInfo& next_template) {
+    if (state_ != SessionState::RECORDING) return -1;
+    double now_wall = std::chrono::duration<double>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+
+    // Close out the active set: timestamp + count its reps
+    if (!info_.sets.empty()) {
+        auto& cur = info_.sets.back();
+        cur.t_end_unified_s = now_wall;
+        int reps_in_set = 0;
+        for (const auto& r : rep_segmenter_->get_reps())
+            if (r.set_id == cur.set_id) ++reps_in_set;
+        cur.completed_reps = reps_in_set;
+    }
+
+    // Append the new set, inheriting timing.
+    SetInfo s         = next_template;
+    s.set_id          = info_.sets.empty() ? 1 : info_.sets.back().set_id + 1;
+    s.t_start_unified_s = now_wall;
+    s.t_end_unified_s   = 0.0;
+    s.completed_reps    = 0;
+    info_.sets.push_back(s);
+
+    rep_segmenter_->set_current_set_id(s.set_id);
+    write_metadata();
+    event_log_.info("session", "set_advanced",
+                     "Advanced to set " + std::to_string(s.set_id));
+    spdlog::info("Advanced to set {} (weight={:.1f} kg, target_reps={})",
+                 s.set_id, s.total_weight_kg, s.target_reps);
+    return s.set_id;
+}
+
+int Session::current_set_id() const {
+    return info_.sets.empty() ? 1 : info_.sets.back().set_id;
 }
 
 void Session::stop_recording() {
     if (state_ != SessionState::RECORDING) return;
     camera_reader_->set_callback(nullptr);
+    camera_reader_->set_imu_callback(nullptr);
     camera_worker_running_ = false;
     camera_queue_cv_.notify_all();
     if (camera_worker_thread_.joinable()) camera_worker_thread_.join();
@@ -191,6 +273,19 @@ void Session::stop_recording() {
                      camera_queue_drops_.load());
     }
     data_logger_->close();
+
+    // Close out the active set so the on-disk SetInfo carries its end
+    // time + final completed-rep count.
+    if (!info_.sets.empty()) {
+        auto& cur = info_.sets.back();
+        cur.t_end_unified_s = std::chrono::duration<double>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        int reps_in_set = 0;
+        for (const auto& r : rep_segmenter_->get_reps())
+            if (r.set_id == cur.set_id) ++reps_in_set;
+        cur.completed_reps = reps_in_set;
+    }
+
     state_ = SessionState::STOPPED;
     event_log_.info("session", "recording_stop", "Recording stopped");
     spdlog::info("Recording stopped");

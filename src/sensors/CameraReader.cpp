@@ -57,6 +57,18 @@ bool CameraReader::open(const CameraConfig& config) {
                 if (config_.enable_rgb)
                     cfg.enable_stream(RS2_STREAM_COLOR, 848, 480, RS2_FORMAT_BGR8,
                                       std::min(config_.rgb_fps, fps));
+                // D455 onboard IMU (BMI085). Accel + gyro are independent
+                // streams that arrive interleaved through pipeline.try_wait_for_frames.
+                // We keep the request optional — if librealsense rejects it
+                // we fall back to a video-only configuration and continue.
+                if (config_.enable_camera_imu) {
+                    try {
+                        cfg.enable_stream(RS2_STREAM_ACCEL, RS2_FORMAT_MOTION_XYZ32F,
+                                           config_.accel_fps);
+                        cfg.enable_stream(RS2_STREAM_GYRO,  RS2_FORMAT_MOTION_XYZ32F,
+                                           config_.gyro_fps);
+                    } catch (...) { /* device w/o IMU; ignore */ }
+                }
                 profile_ = pipeline_.start(cfg);
                 rs_config_ = cfg;
                 effective_fps = fps;
@@ -95,8 +107,22 @@ bool CameraReader::open(const CameraConfig& config) {
             auto d_s = profile_.get_stream(RS2_STREAM_DEPTH).as<rs2::video_stream_profile>();
             depth_intrinsics_ = d_s.get_intrinsics();
         }
+        // Verify which streams actually started (the pipeline may silently
+        // drop a stream the firmware can't honour at this rate).
+        camera_imu_active_ = false;
+        for (auto& sp : profile_.get_streams()) {
+            auto t = sp.stream_type();
+            if (t == RS2_STREAM_ACCEL || t == RS2_STREAM_GYRO) {
+                camera_imu_active_ = true;
+                spdlog::info("D455 IMU stream active: {} @ {} Hz",
+                             rs2_stream_to_string(t), sp.fps());
+            }
+        }
+
         is_open_ = true;
-        spdlog::info("D455 opened: {}x{}@{}fps, emitter={}", config_.width, config_.height, config_.fps, config_.emitter_on);
+        spdlog::info("D455 opened: {}x{}@{}fps, emitter={}, camera_imu={}",
+                     config_.width, config_.height, config_.fps,
+                     config_.emitter_on, camera_imu_active_ ? "on" : "off");
         return true;
     } catch (const rs2::error& e) {
         spdlog::error("RealSense error: {}", e.what()); return false;
@@ -147,18 +173,44 @@ void CameraReader::stream_thread_func() {
             // (with a timeout). Far more efficient than poll-loop + sleep,
             // which adds up to 500 µs latency per frame and ~5% CPU overhead.
             if (!pipeline_.try_wait_for_frames(&fs, 200)) continue;
+            // ── D455 onboard IMU dispatch ───────────────────────────
+            // Motion frames arrive interleaved with video framesets.
+            // Iterate every frame in the bundle and emit any accel/gyro
+            // samples *before* the video-frame branch — this way the
+            // bar-IMU sync engine sees them as soon as possible.
+            if (camera_imu_active_ && imu_callback_) {
+                auto host_now_s = std::chrono::duration<double>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count();
+                for (rs2::frame f : fs) {
+                    if (auto mf = f.as<rs2::motion_frame>()) {
+                        auto t = mf.get_profile().stream_type();
+                        rs2_vector v = mf.get_motion_data();
+                        CameraImuSample s;
+                        s.kind = (t == RS2_STREAM_GYRO) ? CameraImuKind::Gyro
+                                                         : CameraImuKind::Accel;
+                        s.hw_timestamp_s   = mf.get_timestamp() / 1000.0;
+                        s.host_timestamp_s = host_now_s;
+                        s.x = v.x; s.y = v.y; s.z = v.z;
+                        imu_callback_(s);
+                    }
+                }
+            }
+
             CameraFrame frame;
             auto now = std::chrono::steady_clock::now();
             frame.host_timestamp_s = std::chrono::duration<double>(now.time_since_epoch()).count();
 
             auto ir_l = fs.get_infrared_frame(1);
-            if (ir_l) {
-                frame.hw_timestamp_s = ir_l.get_timestamp() / 1000.0;
-                frame.frame_number = ir_l.get_frame_number();
-                frame.ir_left = cv::Mat(config_.height, config_.width, CV_8UC1,
-                    const_cast<void*>(ir_l.get_data())).clone();
-                frame.ir_intrinsics = ir_intrinsics_;
-            }
+            // With camera-IMU enabled, fs may contain ONLY motion frames
+            // (accel/gyro arrive ~3× faster than video). Skip the video
+            // path entirely for motion-only bundles so the stats don't
+            // get polluted with empty frames.
+            if (!ir_l) continue;
+            frame.hw_timestamp_s = ir_l.get_timestamp() / 1000.0;
+            frame.frame_number = ir_l.get_frame_number();
+            frame.ir_left = cv::Mat(config_.height, config_.width, CV_8UC1,
+                const_cast<void*>(ir_l.get_data())).clone();
+            frame.ir_intrinsics = ir_intrinsics_;
             auto ir_r = fs.get_infrared_frame(2);
             if (ir_r) frame.ir_right = cv::Mat(config_.height, config_.width, CV_8UC1,
                 const_cast<void*>(ir_r.get_data())).clone();

@@ -59,10 +59,32 @@ struct CameraConfig {
     int    marker_threshold = 200;  // Binary threshold for IR marker detection
     int    hw_sync_mode    = 1;     // 1 = master
 
+    // Horizontal ROI for marker detection — fraction of the frame width
+    // [0..1]. Pixels with column < x_min*W or column ≥ x_max*W are
+    // zeroed before contour finding, so doors / windows / spectators in
+    // the side margins can't generate spurious blobs. Vertical extent is
+    // not clipped (lifters move along Y by design). Defaults to a 70%
+    // central band; set 0.0 / 1.0 to disable.
+    float  marker_roi_x_min_frac = 0.15f;
+    float  marker_roi_x_max_frac = 0.85f;
+
+    // D455 onboard BMI085 IMU. The camera body's accel/gyro are largely
+    // stationary (camera sits on a tripod), so we don't use this stream
+    // for VBT — but logging it gives us:
+    //   • tripod-shake / bump detection (rejects sets where the camera
+    //     moved during the lift)
+    //   • free cross-stream sync validation against the bar-mounted IMU
+    //   • camera-relative pose for future research
+    bool   enable_camera_imu = true;
+    int    accel_fps        = 250;   // 63 / 250 Hz on D455 (250 default)
+    int    gyro_fps         = 200;   // 200 / 400 Hz on D455 (200 default)
+
     NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(CameraConfig, width, height, fps, exposure_us,
                                    gain, emitter_on, enable_depth, enable_rgb,
                                    rgb_fps, marker_min_area, marker_max_area,
-                                   marker_threshold, hw_sync_mode)
+                                   marker_threshold, hw_sync_mode,
+                                   enable_camera_imu, accel_fps, gyro_fps,
+                                   marker_roi_x_min_frac, marker_roi_x_max_frac)
 };
 
 // ============================================================================
@@ -200,6 +222,41 @@ struct CalibrationProvenance {
                                    camera_extrinsic_path, camera_extrinsic_timestamp,
                                    sync_offset_us, sync_drift_ppm, sync_correlation,
                                    allan_variance_path)
+};
+
+// ============================================================================
+// One set within a multi-set session. A "session_dir" holds N sets in
+// chronological order; each set is a contiguous time-slice tagged with
+// its own loading/RPE/target_reps. Reps reference their parent set by
+// `set_id` (1-indexed). Backward-compat: legacy sessions with no
+// `sets` vector are auto-promoted at load time to a single-element
+// vector synthesised from the top-level barbell_weight_kg / set_number /
+// rpe / target_reps fields, so old code keeps working.
+// ============================================================================
+struct SetInfo {
+    int          set_id              = 1;       // 1-indexed within the session
+    double       t_start_unified_s   = 0.0;     // wall-clock; 0 → unknown
+    double       t_end_unified_s     = 0.0;     // wall-clock; 0 → unknown
+    float        barbell_weight_kg   = 20.0f;
+    float        added_weight_kg     = 0.0f;
+    float        total_weight_kg     = 20.0f;
+    float        percent_1rm         = 0.0f;
+    int          target_reps         = 5;
+    int          completed_reps      = 0;       // filled post-recording from rep_segments
+    int          rpe                 = 0;
+    int          actual_rir          = 0;
+    bool         to_failure          = false;
+    bool         drop_set            = false;
+    bool         cluster_set         = false;
+    bool         pause_set           = false;
+    bool         tempo_set           = false;
+    std::string  notes;
+
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(SetInfo,
+        set_id, t_start_unified_s, t_end_unified_s,
+        barbell_weight_kg, added_weight_kg, total_weight_kg, percent_1rm,
+        target_reps, completed_reps, rpe, actual_rir,
+        to_failure, drop_set, cluster_set, pause_set, tempo_set, notes)
 };
 
 // ============================================================================
@@ -406,7 +463,10 @@ struct SessionInfo {
     // detect mismatches. v3 added the SubjectDaySnapshot, TrainingContext,
     // GearAndImplements, LoadProvenance, SafetySetup, EnvironmentDetails,
     // SubjectiveQuality blocks for PhD-grade analysis.
-    int         schema_version = 3;
+    // v4 added subject_uuid / subject_name and multi-set support
+    // (`sets` vector). Single-set legacy sessions auto-promote to a
+    // 1-element sets vector on load.
+    int         schema_version = 4;
 
     // identity
     std::string session_id;
@@ -414,7 +474,14 @@ struct SessionInfo {
     std::string time_of_day = "";     // "morning" / "afternoon" / "evening"
     std::string operator_id = "";     // who ran the session
 
-    // subject reference (subject details live in subjects/<hash>.json)
+    // subject identity. `subject_uuid` is a stable RFC4122-v4 string,
+    // generated once at session creation and reused for every future
+    // session of the same person — primary key for cross-session joins.
+    // `subject_name` is the human-readable display name (NOT anonymous;
+    // strip before public release). `subject_id` is the short
+    // anonymised handle used for filenames/folders ("S01", etc.).
+    std::string subject_uuid;
+    std::string subject_name;
     std::string subject_id;
 
     // exercise & loading
@@ -460,12 +527,18 @@ struct SessionInfo {
     EnvironmentDetails    environment;
     SubjectiveQuality     quality;
 
+    // Multi-set session: every working set the operator recorded into
+    // this session_dir, in chronological order. Legacy single-set
+    // sessions populate this with one synthesised entry on load.
+    std::vector<SetInfo>  sets;
+
     // pre-flight override audit trail
     std::vector<std::string> preflight_overrides;
 
     NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(SessionInfo,
         schema_version, session_id, date, time_of_day, operator_id,
-        subject_id, exercise, exercise_variant, equipment,
+        subject_uuid, subject_name, subject_id,
+        exercise, exercise_variant, equipment,
         barbell_weight_kg, added_weight_kg, total_weight_kg, percent_1rm,
         target_reps, set_number, total_sets_planned, rpe,
         depth_criterion, tempo_prescription, rest_prescription_s,
@@ -473,7 +546,7 @@ struct SessionInfo {
         equipment_info, calibration, build,
         subject_snapshot, training_context, gear, load_provenance,
         safety, environment, quality,
-        preflight_overrides)
+        sets, preflight_overrides)
 };
 
 // ============================================================================

@@ -46,6 +46,12 @@ bool DataLogger::open(const std::string& session_dir) {
     video_index_csv_.open(session_dir + "/camera/video_frames.csv");
     video_index_csv_ << "frame_idx,host_timestamp_s,hw_timestamp_s,unified_time_s,frame_number\n";
 
+    // D455 onboard IMU log — accel + gyro on one row each, kind column
+    // disambiguates. unified_time_s is back-filled by the SyncEngine
+    // before write so we can join against the bar IMU CSV.
+    camera_imu_csv_.open(session_dir + "/imu/camera_imu.csv");
+    camera_imu_csv_ << "kind,hw_timestamp_s,host_timestamp_s,unified_time_s,x,y,z\n";
+
     is_open_ = true;
     spdlog::info("DataLogger opened: {}", session_dir);
     return true;
@@ -60,7 +66,22 @@ void DataLogger::close() {
     marker_csv_.close(); depth_csv_.close();
     if (video_writer_open_) { video_writer_.release(); video_writer_open_ = false; }
     video_index_csv_.close();
+    {
+        std::lock_guard<std::mutex> l4(camera_imu_mutex_);
+        camera_imu_csv_.close();
+    }
     is_open_ = false;
+}
+
+void DataLogger::log_camera_imu(const CameraImuSample& s) {
+    if (!is_open_) return;
+    std::lock_guard<std::mutex> lock(camera_imu_mutex_);
+    camera_imu_csv_ << (s.kind == CameraImuKind::Accel ? "accel" : "gyro") << ","
+                     << std::fixed << std::setprecision(6)
+                     << s.hw_timestamp_s   << ","
+                     << s.host_timestamp_s << ","
+                     << s.unified_time_s   << ","
+                     << s.x << "," << s.y << "," << s.z << "\n";
 }
 
 void DataLogger::log_imu(const IMUSample& s) {

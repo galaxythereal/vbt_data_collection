@@ -58,6 +58,17 @@ public:
     void save();
     void discard();    // delete current .partial directory
 
+    /// Multi-set support during continuous recording. Closes the
+    /// currently-active SetInfo (stamps t_end_unified_s + completed_reps),
+    /// appends a new SetInfo to info_.sets, and tells the rep segmenter
+    /// to tag every subsequent rep with the new set_id. The new set
+    /// inherits weight/RPE/target_reps from `next` (caller-supplied).
+    /// Returns the new set_id, or -1 if not recording.
+    int  advance_set(const SetInfo& next);
+
+    /// Number of working sets configured/recorded so far in this session.
+    int  current_set_id() const;
+
     /// On startup, scan dataset_root for orphaned .partial sessions and return
     /// their absolute paths. The GUI can offer recover/discard/inspect.
     static std::vector<std::string> find_orphaned_partials(const std::string& dataset_root);

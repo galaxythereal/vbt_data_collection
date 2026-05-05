@@ -47,6 +47,9 @@ struct PhaseSegment {
 
 struct RepAnnotation {
     int rep_id = 0;
+    /// Which set within the session this rep belongs to (1-indexed).
+    /// 0 = legacy / unset → studio treats as belonging to the only set.
+    int set_id = 1;
     /// Rep phases in chronological order:
     ///   concentric → top_rest → eccentric → rest (bottom / inter-rep)
     /// The two rest phases formalize the brief pauses lifters take at the
@@ -133,6 +136,12 @@ public:
     /// double-counts or reports a spurious rep.
     void delete_last_rep();
 
+    /// Multi-set support — every rep completed by the segmenter from now
+    /// on is tagged with this set_id. Session calls this whenever the
+    /// operator advances to the next set during a continuous recording.
+    void set_current_set_id(int sid) { current_set_id_ = sid; }
+    int  get_current_set_id() const  { return current_set_id_; }
+
     // ========================================================================
     // Serialization
     // ========================================================================
@@ -202,6 +211,10 @@ private:
 
     // Completed reps
     std::vector<RepAnnotation> completed_reps_;
+    /// Tag applied to every newly-completed rep (multi-set support).
+    /// Bumped by Session::advance_set when the operator marks a new set
+    /// during recording.
+    int current_set_id_ = 1;
 
     // Velocity sample history
     std::deque<VelocitySample> sample_history_;
