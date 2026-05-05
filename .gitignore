@@ -8,7 +8,9 @@ build-*/
 vbt_config.json
 __pycache__/
 
-!datasets/sessions/session_20260504_165804
+!datasets/sessions/session_20260504_165804/*
+!datasets/sessions/session_20260504_165804/**/*
+!datasets/sessions/session_20260504_165804/**
 # Editor / IDE
 .vscode/
 .idea/
