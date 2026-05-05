@@ -496,6 +496,50 @@ void SessionData::recompute_clean_signal(const MarkerCleanConfig& cfg) {
 
     marker_.pos_up_clean_m = std::move(pos_up);
     marker_.vz_clean_mps   = std::move(vz);
+
+    // ── Detection: zero-crossings and local extrema ──────────────────
+    // Anything below this magnitude isn't a real rep — kills jitter.
+    constexpr float vz_min_extremum = 0.15f;
+    marker_.zero_crossings.clear();
+    marker_.peak_vel_pos_idx.clear();
+    marker_.peak_vel_neg_idx.clear();
+    marker_.pos_max_idx.clear();
+    marker_.pos_min_idx.clear();
+    const auto& vc = marker_.vz_clean_mps;
+    const auto& pc = marker_.pos_up_clean_m;
+    for (size_t i = 1; i < vc.size(); ++i) {
+        if ((vc[i - 1] < 0 && vc[i] >= 0) || (vc[i - 1] > 0 && vc[i] <= 0)) {
+            // Zero crossing — pick the index whose vz is smallest in mag.
+            int idx = (std::fabs(vc[i - 1]) < std::fabs(vc[i])) ? (int)i - 1 : (int)i;
+            marker_.zero_crossings.push_back(idx);
+        }
+    }
+    // Peak detection between consecutive zero-crossings.
+    int prev_zc = 0;
+    for (size_t k = 0; k < marker_.zero_crossings.size(); ++k) {
+        int zc = marker_.zero_crossings[k];
+        int lo = prev_zc, hi = zc;
+        if (hi > lo + 5) {
+            int peak_pos = lo, peak_neg = lo;
+            for (int j = lo; j < hi; ++j) {
+                if (vc[j] > vc[peak_pos]) peak_pos = j;
+                if (vc[j] < vc[peak_neg]) peak_neg = j;
+                if (pc[j] > pc[lo]) peak_pos = peak_pos;  // (placeholder)
+            }
+            if (vc[peak_pos] >  vz_min_extremum) marker_.peak_vel_pos_idx.push_back(peak_pos);
+            if (vc[peak_neg] < -vz_min_extremum) marker_.peak_vel_neg_idx.push_back(peak_neg);
+        }
+        prev_zc = zc;
+    }
+    // Position extrema between zero-crossings: at zero-crossing of vz, by
+    // definition position is at a turning point (top or bottom).
+    for (int zc : marker_.zero_crossings) {
+        if (zc <= 0 || zc + 1 >= (int)pc.size()) continue;
+        bool falling_then_rising = vc[zc - 1] < 0 && (zc + 1 < (int)vc.size() ? vc[zc + 1] > 0 : false);
+        bool rising_then_falling = vc[zc - 1] > 0 && (zc + 1 < (int)vc.size() ? vc[zc + 1] < 0 : false);
+        if (rising_then_falling) marker_.pos_max_idx.push_back(zc);
+        if (falling_then_rising) marker_.pos_min_idx.push_back(zc);
+    }
     marker_.clean_dirty = false;
 }
 

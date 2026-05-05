@@ -122,6 +122,12 @@ void RepSegmenter::feed_accel_sample(double time_s, float accel_x_g, float accel
                     rep.concentric.t_start_s = imu_rep_start_time_;
                     rep.concentric.t_end_s = imu_rep_start_time_ + duration * 0.5;
                     rep.concentric.source = "imu_accel";
+                    // Zero-width top_rest at concentric.t_end so the new
+                    // schema's invariants hold even when the segmenter
+                    // doesn't measure a top-of-rep pause.
+                    rep.top_rest.phase = RepPhase::REST;
+                    rep.top_rest.t_start_s = rep.concentric.t_end_s;
+                    rep.top_rest.t_end_s   = rep.concentric.t_end_s;
                     rep.eccentric.phase = RepPhase::ECCENTRIC;
                     rep.eccentric.t_start_s = rep.concentric.t_end_s;
                     rep.eccentric.t_end_s = imu_rep_start_time_ + duration;
@@ -281,6 +287,13 @@ void RepSegmenter::feed_sample_legacy(const VelocitySample& sample) {
             current_rep_.concentric.t_end_s = sample.time_s;
             current_rep_.concentric.peak_velocity_mps = peak_vel_current_;
             current_rep_.concentric.displacement_m = max_pos_current_ - min_pos_current_;
+            // Open a zero-width top_rest at the concentric→eccentric pivot.
+            // Keeps the schema invariant when the lifter doesn't pause at
+            // the top — the studio user can drag this band wider in
+            // post-processing if a real pause was visible.
+            current_rep_.top_rest.phase = RepPhase::REST;
+            current_rep_.top_rest.t_start_s = sample.time_s;
+            current_rep_.top_rest.t_end_s   = sample.time_s;
             current_phase_ = RepPhase::ECCENTRIC;
             current_rep_.eccentric.phase = RepPhase::ECCENTRIC;
             current_rep_.eccentric.t_start_s = sample.time_s;
@@ -385,6 +398,7 @@ void RepSegmenter::handle_extremum(int type_int, double t, float pos) {
     }
     RepAnnotation rep;
     rep.concentric.phase  = RepPhase::CONCENTRIC;
+    rep.top_rest.phase    = RepPhase::REST;
     rep.eccentric.phase   = RepPhase::ECCENTRIC;
     rep.rest.phase        = RepPhase::REST;
     rep.concentric.source = "camera";
@@ -400,6 +414,9 @@ void RepSegmenter::handle_extremum(int type_int, double t, float pos) {
         rep.eccentric.t_start_s  = midpoint_t_;
         rep.eccentric.t_end_s    = t;
     }
+    // Default top-rest = zero-width band at the concentric→eccentric pivot.
+    rep.top_rest.t_start_s = rep.concentric.t_end_s;
+    rep.top_rest.t_end_s   = rep.eccentric.t_start_s;
     const float disp = std::abs(midpoint_pos_ - cycle_start_pos_);
     rep.concentric.peak_velocity_mps = rep_concentric_peak_vel_;
     rep.concentric.displacement_m = disp;
@@ -567,6 +584,7 @@ nlohmann::json RepAnnotation::to_json() const {
     return {{"rep_id", rep_id},
             {"concentric", {{"t_start", concentric.t_start_s}, {"t_end", concentric.t_end_s},
                            {"peak_vel", concentric.peak_velocity_mps}, {"source", concentric.source}}},
+            {"top_rest",  {{"t_start", top_rest.t_start_s}, {"t_end", top_rest.t_end_s}}},
             {"eccentric", {{"t_start", eccentric.t_start_s}, {"t_end", eccentric.t_end_s},
                           {"source", eccentric.source}}},
             {"rest", {{"t_start", rest.t_start_s}, {"t_end", rest.t_end_s}}},
@@ -587,6 +605,16 @@ RepAnnotation RepAnnotation::from_json(const nlohmann::json& j) {
     r.eccentric.source = j["eccentric"].value("source", "auto");
     r.rest.t_start_s = j["rest"].value("t_start", 0.0);
     r.rest.t_end_s = j["rest"].value("t_end", 0.0);
+    // top_rest is optional for backward compat with pre-2026-05-05 sessions.
+    // Default to a zero-width segment at concentric.t_end so downstream
+    // code never sees an inverted interval.
+    if (j.contains("top_rest") && j["top_rest"].is_object()) {
+        r.top_rest.t_start_s = j["top_rest"].value("t_start", r.concentric.t_end_s);
+        r.top_rest.t_end_s   = j["top_rest"].value("t_end",   r.concentric.t_end_s);
+    } else {
+        r.top_rest.t_start_s = r.concentric.t_end_s;
+        r.top_rest.t_end_s   = r.eccentric.t_start_s;
+    }
     r.mean_concentric_velocity = j.value("mean_concentric_velocity", 0.0f);
     r.peak_concentric_velocity = j.value("peak_concentric_velocity", 0.0f);
     r.rom_m = j.value("rom_m", 0.0f);

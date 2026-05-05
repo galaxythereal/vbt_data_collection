@@ -203,6 +203,180 @@ struct CalibrationProvenance {
 };
 
 // ============================================================================
+// Subject day-of snapshot — captured per session, separate from the
+// long-lived SubjectInfo. We snapshot anthropometrics + acute readiness
+// here so a session is self-contained for replay / dataset publication
+// without needing to dereference subjects/<id>.json (which may be edited
+// or anonymised independently).
+// ============================================================================
+struct SubjectDaySnapshot {
+    // Anthropometrics on the day (may differ from baseline SubjectInfo)
+    std::string  sex            = "unspecified"; // male/female/other/decline/unspecified
+    int          age_years      = 0;
+    float        body_mass_kg   = 0.0f;
+    float        height_cm      = 0.0f;
+    int          training_experience_years = 0;
+    std::string  dominant_side  = "right";       // left/right/ambidextrous
+    float        baseline_1rm_kg = 0.0f;          // for THIS lift, day-of best estimate
+
+    // Acute readiness (drives noise floor of every kinematic feature)
+    float        sleep_hours_last_night = 7.0f;
+    int          sleep_quality_1to5 = 3;
+    int          stress_level_1to5  = 3;
+    int          motivation_1to5    = 3;
+    int          soreness_1to10     = 0;
+    std::string  soreness_locations;              // free-form, e.g. "lower back, hams"
+    int          fatigue_1to5       = 2;
+
+    // Nutrition / stimulants — modulate force output
+    float        caffeine_mg            = 0.0f;
+    int          last_meal_minutes_ago  = 120;
+    float        hydration_ml_today     = 0.0f;
+    bool         pre_workout_taken      = false;
+    std::string  pre_workout_brand;
+
+    // Health
+    std::string  injury_status   = "none";        // none/minor/managed/major
+    std::string  injury_notes;
+    std::string  medication_status;
+    std::string  menstrual_phase = "n/a";         // n/a/decline/follicular/ovulatory/luteal/menstrual
+
+    // Consent / governance — versioned per session
+    std::string  consent_version;
+    std::string  ethics_protocol;
+    std::string  data_sharing_tier = "lab_only";  // public/restricted/lab_only
+
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(SubjectDaySnapshot,
+        sex, age_years, body_mass_kg, height_cm, training_experience_years,
+        dominant_side, baseline_1rm_kg,
+        sleep_hours_last_night, sleep_quality_1to5, stress_level_1to5,
+        motivation_1to5, soreness_1to10, soreness_locations, fatigue_1to5,
+        caffeine_mg, last_meal_minutes_ago, hydration_ml_today,
+        pre_workout_taken, pre_workout_brand,
+        injury_status, injury_notes, medication_status, menstrual_phase,
+        consent_version, ethics_protocol, data_sharing_tier)
+};
+
+// ============================================================================
+// Periodisation / training-context — required for stratified analysis
+// ("did velocity track block phase?") and for fair RPE calibration.
+// ============================================================================
+struct TrainingContext {
+    std::string  goal              = "strength";      // strength/hypertrophy/power/endurance/peaking/deload
+    std::string  block_phase       = "accumulation";  // accumulation/intensification/realization/deload/test
+    int          mesocycle_week    = 1;
+    int          microcycle_day    = 1;
+    int          days_since_last_session            = 1;
+    int          days_since_last_session_same_lift  = 7;
+    int          working_sets_completed_today = 0;
+    int          warmup_sets_completed_today  = 0;
+    float        prior_session_volume_kg      = 0.0f; // tonnage on prior session of this lift
+    bool         to_failure  = false;
+    bool         drop_set    = false;
+    bool         cluster_set = false;
+    bool         pause_set   = false;
+    bool         tempo_set   = false;
+
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(TrainingContext, goal, block_phase,
+        mesocycle_week, microcycle_day, days_since_last_session,
+        days_since_last_session_same_lift, working_sets_completed_today,
+        warmup_sets_completed_today, prior_session_volume_kg,
+        to_failure, drop_set, cluster_set, pause_set, tempo_set)
+};
+
+// ============================================================================
+// Implements / equipment worn during the lift. Belt/wraps materially shift
+// peak velocity & force trajectories, so always log them.
+// ============================================================================
+struct GearAndImplements {
+    bool         belt           = false;
+    std::string  belt_type;            // lever/prong/velcro
+    bool         wrist_wraps    = false;
+    bool         knee_sleeves   = false;
+    bool         knee_wraps     = false;
+    bool         lifting_straps = false;
+    bool         chalk          = false;
+    bool         lifting_shoes  = false;
+    std::string  shoe_type;            // flats/heeled_lifters/deadlift_slippers/cross_trainers
+    bool         spotter_present = false;
+    bool         coach_present   = false;
+
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(GearAndImplements, belt, belt_type,
+        wrist_wraps, knee_sleeves, knee_wraps, lifting_straps, chalk,
+        lifting_shoes, shoe_type, spotter_present, coach_present)
+};
+
+// ============================================================================
+// Loading provenance — auditable trail for the displayed total weight.
+// Plate breakdown lets us cross-check rounded values; calibration flag
+// flags whether the gym scale verified the plates.
+// ============================================================================
+struct LoadProvenance {
+    std::vector<float>  plates_per_side_kg;   // e.g. [20, 10, 5, 2.5]
+    float        collar_mass_kg_each = 0.0f;
+    bool         plates_calibrated = false;
+    std::string  plate_calibration_method;    // manufacturer/scale_verified/unknown
+    float        bar_mass_measured_kg = 0.0f; // 0 → use bar default
+    bool         asymmetric_loading = false;
+    std::string  loading_notes;
+
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(LoadProvenance, plates_per_side_kg,
+        collar_mass_kg_each, plates_calibrated, plate_calibration_method,
+        bar_mass_measured_kg, asymmetric_loading, loading_notes)
+};
+
+// ============================================================================
+// Safety / rack setup
+// ============================================================================
+struct SafetySetup {
+    std::string  rack_type;            // squat_rack/half_rack/power_cage/smith/free
+    bool         safety_pins_set    = false;
+    float        safety_pin_height_m = 0.0f;
+    bool         safety_arms_used   = false;
+    bool         bumper_plates      = false;
+    bool         platform_used      = false;
+    std::string  flooring;             // rubber/wood/concrete/dropped_lifting_platform
+
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(SafetySetup, rack_type, safety_pins_set,
+        safety_pin_height_m, safety_arms_used, bumper_plates, platform_used, flooring)
+};
+
+// ============================================================================
+// Environmental factors that influence lift execution (lighting, music, etc.)
+// ============================================================================
+struct EnvironmentDetails {
+    std::string  ambient_lighting    = "indoor_fluorescent";
+    int          ambient_lux         = 0;     // 0 = unmeasured
+    int          music_bpm           = 0;     // 0 = no music
+    bool         distractions_present = false;
+    std::string  distraction_notes;
+    int          gym_busyness_1to5   = 2;
+
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(EnvironmentDetails, ambient_lighting,
+        ambient_lux, music_bpm, distractions_present, distraction_notes,
+        gym_busyness_1to5)
+};
+
+// ============================================================================
+// Subject's self-report on lift quality, captured retrospectively
+// post-set in the annotation studio.
+// ============================================================================
+struct SubjectiveQuality {
+    std::string  rpe_scale             = "rpe_1to10";  // rpe_1to10/rir/borg_6to20
+    int          actual_rir            = 0;
+    int          form_quality_1to5     = 4;
+    int          felt_difficulty_1to5  = 3;
+    int          confidence_1to5       = 4;
+    std::string  technique_breakdown_notes;            // "lower back rounded on rep 4"
+    std::string  performance_anomalies;                // "miscount", "slipped"
+    int          session_quality_1to5  = 4;
+
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(SubjectiveQuality, rpe_scale, actual_rir,
+        form_quality_1to5, felt_difficulty_1to5, confidence_1to5,
+        technique_breakdown_notes, performance_anomalies, session_quality_1to5)
+};
+
+// ============================================================================
 // Build / software provenance
 // ============================================================================
 struct BuildProvenance {
@@ -228,8 +402,11 @@ struct BuildProvenance {
 // Session Information (vastly expanded vs v1)
 // ============================================================================
 struct SessionInfo {
-    // schema
-    int         schema_version = 2;
+    // schema — bump on every schema-altering change so old loaders can
+    // detect mismatches. v3 added the SubjectDaySnapshot, TrainingContext,
+    // GearAndImplements, LoadProvenance, SafetySetup, EnvironmentDetails,
+    // SubjectiveQuality blocks for PhD-grade analysis.
+    int         schema_version = 3;
 
     // identity
     std::string session_id;
@@ -271,6 +448,18 @@ struct SessionInfo {
     CalibrationProvenance calibration;
     BuildProvenance       build;
 
+    // PhD-grade per-session blocks. Each carries sane defaults so loading
+    // a v2 session leaves these structs at their default-constructed
+    // values (NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT skips fields
+    // missing from the JSON).
+    SubjectDaySnapshot    subject_snapshot;
+    TrainingContext       training_context;
+    GearAndImplements     gear;
+    LoadProvenance        load_provenance;
+    SafetySetup           safety;
+    EnvironmentDetails    environment;
+    SubjectiveQuality     quality;
+
     // pre-flight override audit trail
     std::vector<std::string> preflight_overrides;
 
@@ -281,7 +470,10 @@ struct SessionInfo {
         target_reps, set_number, total_sets_planned, rpe,
         depth_criterion, tempo_prescription, rest_prescription_s,
         location, temperature_c, humidity_pct, freshness_1to5, warmup_completed, notes,
-        equipment_info, calibration, build, preflight_overrides)
+        equipment_info, calibration, build,
+        subject_snapshot, training_context, gear, load_provenance,
+        safety, environment, quality,
+        preflight_overrides)
 };
 
 // ============================================================================

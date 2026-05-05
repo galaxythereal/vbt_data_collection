@@ -32,6 +32,15 @@ public:
     /// session->reps().
     void set_select_cb(std::function<void(int)> cb) { on_select_ = std::move(cb); }
 
+    /// Studio supplies the live playhead time so the table's
+    /// "Set ... at playhead" buttons know what to write.
+    void set_playhead(double t_unified_s) { playhead_t_s_ = t_unified_s; }
+
+    /// Studio passes a "push undo snapshot" callback; we call it the
+    /// first frame of a DragFloat / button click so Ctrl+Z reverts the
+    /// whole edit in one step.
+    void set_edit_begin_cb(std::function<void()> cb) { on_edit_begin_ = std::move(cb); }
+
     void render();
 
     int selected_index() const { return selected_; }
@@ -40,10 +49,13 @@ private:
     void render_toolbar_();
     void render_table_();
     void render_metric_summary_();
+    void render_selected_rep_editor_();
 
     SessionData* session_ = nullptr;
     int          selected_ = -1;
+    double       playhead_t_s_ = 0.0;
     std::function<void(int)> on_select_;
+    std::function<void()>    on_edit_begin_;
 };
 
 } // namespace vbt

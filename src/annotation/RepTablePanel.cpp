@@ -15,8 +15,91 @@ void RepTablePanel::render() {
     render_toolbar_();
     ImGui::Separator();
     render_metric_summary_();
+    if (selected_ >= 0 && selected_ < (int)session_->reps().size()) {
+        ImGui::Separator();
+        render_selected_rep_editor_();
+    }
     ImGui::Separator();
     render_table_();
+}
+
+void RepTablePanel::render_selected_rep_editor_() {
+    auto& r = session_->mutable_reps()[selected_];
+    double t0 = session_->t0_unified_s();
+    ImGui::TextColored(ImVec4(0.55f, 0.78f, 1, 1),
+                        "Editing R%d  ·  playhead t = %.3f s",
+                        r.rep_id, playhead_t_s_ - t0);
+    auto big_drag = [&](const char* lbl, double& v_unified,
+                         double t0, double lo, double hi) {
+        float v = (float)(v_unified - t0);
+        ImGui::PushItemWidth(120);
+        bool ed = ImGui::DragFloat(lbl, &v, 0.005f, (float)lo, (float)hi,
+                                    "%.3f s",
+                                    ImGuiSliderFlags_AlwaysClamp);
+        if (ImGui::IsItemActivated() && on_edit_begin_) on_edit_begin_();
+        ImGui::PopItemWidth();
+        if (ed) v_unified = t0 + v;
+        return ed;
+    };
+    bool ed = false;
+    ed |= big_drag("conc start##e", r.concentric.t_start_s, t0,
+                    -10000, r.concentric.t_end_s - 0.05 - t0);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("← set @ playhead##cs")) {
+        if (playhead_t_s_ < r.concentric.t_end_s - 0.05) {
+            r.concentric.t_start_s = playhead_t_s_;
+            ed = true;
+        }
+    }
+    ed |= big_drag("conc end##e",   r.concentric.t_end_s, t0,
+                    r.concentric.t_start_s + 0.05 - t0,
+                    r.top_rest.t_end_s - 0.001 - t0);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("← set @ playhead##ce")) {
+        if (playhead_t_s_ > r.concentric.t_start_s + 0.05
+            && playhead_t_s_ < r.top_rest.t_end_s - 0.001) {
+            r.concentric.t_end_s = playhead_t_s_;
+            r.top_rest.t_start_s = playhead_t_s_;
+            ed = true;
+        }
+    }
+    ed |= big_drag("top-rest end##e", r.top_rest.t_end_s, t0,
+                    r.top_rest.t_start_s + 0.001 - t0,
+                    r.eccentric.t_end_s - 0.05 - t0);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("← set @ playhead##tre")) {
+        if (playhead_t_s_ > r.top_rest.t_start_s + 0.001
+            && playhead_t_s_ < r.eccentric.t_end_s - 0.05) {
+            r.top_rest.t_end_s = playhead_t_s_;
+            r.eccentric.t_start_s = playhead_t_s_;
+            ed = true;
+        }
+    }
+    ed |= big_drag("ecc end##e",    r.eccentric.t_end_s, t0,
+                    r.eccentric.t_start_s + 0.05 - t0,
+                    r.rest.t_end_s - 0.001 - t0);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("← set @ playhead##ee")) {
+        if (playhead_t_s_ > r.eccentric.t_start_s + 0.05
+            && playhead_t_s_ < r.rest.t_end_s - 0.001) {
+            r.eccentric.t_end_s = playhead_t_s_;
+            r.rest.t_start_s = playhead_t_s_;
+            ed = true;
+        }
+    }
+    ed |= big_drag("rest end##e",   r.rest.t_end_s, t0,
+                    r.rest.t_start_s + 0.001 - t0, 1e6);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("← set @ playhead##re")) {
+        if (playhead_t_s_ > r.rest.t_start_s + 0.001) {
+            r.rest.t_end_s = playhead_t_s_;
+            ed = true;
+        }
+    }
+    if (ed) {
+        session_->recompute_rep_metrics(selected_);
+        session_->mark_reps_dirty();
+    }
 }
 
 void RepTablePanel::render_toolbar_() {
@@ -104,7 +187,10 @@ void RepTablePanel::render_table_() {
         ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders
         | ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY
         | ImGuiTableFlags_SizingFixedFit;
-    if (!ImGui::BeginTable("##reptab", 9, flags, ImVec2(-1, 280))) return;
+    // Fill the remaining vertical space — the parent BeginChild already
+    // bounded us, so passing (0,0) lets the inner scroll consume whatever
+    // space the user resized into.
+    if (!ImGui::BeginTable("##reptab", 9, flags, ImVec2(0, 0))) return;
     ImGui::TableSetupScrollFreeze(0, 1);
     ImGui::TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, 36);
     ImGui::TableSetupColumn("t_start (s)");
