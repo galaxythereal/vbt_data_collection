@@ -54,6 +54,9 @@ private:
     // ── Layout helpers ─────────────────────────────────────────────
     void render_session_browser_();
     void render_workspace_();
+    /// Per-rep tile grid that sits next to the video. Each tile shows
+    /// rep id + peak velocity + ROM and is clickable to seek/centre.
+    void render_summary_cards_();
     void render_save_dialog_();
     void render_unsaved_warning_();
 
@@ -86,6 +89,45 @@ private:
     SessionLoadDiag  last_diag_;
     bool             show_save_dialog_ = false;
     std::string      save_note_;
+
+    // ── UX state ──────────────────────────────────────────────────
+    /// Show/hide the side panels. When both are off the timeline takes
+    /// the entire window width, which is what users want during heavy
+    /// annotation passes.
+    bool show_library_  = true;
+    bool show_metadata_ = true;
+    /// Focus mode: when ON the workspace centres on the selected rep —
+    /// the video, the timeline view-range, and the rep editor all bind
+    /// to that one rep so nothing else clutters the screen.
+    bool focus_mode_    = false;
+
+    // ── Undo / redo ───────────────────────────────────────────────
+    /// Snapshot of the rep-list pre-edit. We push one before any
+    /// mutation operation (drag commit, button press, table edit) and
+    /// pop on Ctrl+Z. Capped at 50 entries.
+    std::vector<std::vector<RepAnnotation>> undo_stack_;
+    std::vector<std::vector<RepAnnotation>> redo_stack_;
+    void push_undo_();
+    void undo_();
+    void redo_();
+    /// Top-level toolbar with collapse toggles, undo / redo, save,
+    /// validate, and quick rep insert/delete.
+    void render_top_toolbar_();
+    /// Validation pass — flags overlapping reps, zero-duration phases,
+    /// out-of-envelope peak velocities. Results live in this vector
+    /// and are surfaced in the "Validate" tab.
+    struct ValidationIssue {
+        int    rep_id    = -1;
+        std::string severity;   // "warning" | "error"
+        std::string code;
+        std::string message;
+        double t_unified_s = 0.0;
+    };
+    std::vector<ValidationIssue> validation_issues_;
+    void run_validation_();
+    void render_validation_tab_();
+    /// Insert a new rep at `seed_t` with sensible default phases.
+    void insert_rep_at_(double seed_t);
 };
 
 } // namespace vbt

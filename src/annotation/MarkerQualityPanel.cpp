@@ -89,17 +89,20 @@ void MarkerQualityPanel::render_quality_histograms_() {
                           const std::vector<float>& acc,
                           const std::vector<float>& rej,
                           float lo, float hi) {
-        if (ImPlot::BeginPlot(title, ImVec2(-1, 140),
-                               ImPlotFlags_NoLegend | ImPlotFlags_NoTitle)) {
-            ImPlot::SetupAxes(title, "count", ImPlotAxisFlags_None,
+        if (ImPlot::BeginPlot(title, ImVec2(-1, 150),
+                               ImPlotFlags_None)) {
+            ImPlot::SetupAxes(title, "count",
+                               ImPlotAxisFlags_None,
                                ImPlotAxisFlags_AutoFit);
             ImPlot::SetupAxisLimits(ImAxis_X1, lo, hi, ImGuiCond_Always);
-            ImPlot::PushStyleColor(ImPlotCol_Fill, ImVec4(0.55f, 0.78f, 1, 0.8f));
+            ImPlot::SetupLegend(ImPlotLocation_NorthEast,
+                                ImPlotLegendFlags_Outside);
+            ImPlot::PushStyleColor(ImPlotCol_Fill, ImVec4(0.30f, 0.85f, 1.0f, 0.85f));
             if (!acc.empty())
                 ImPlot::PlotHistogram("accepted", acc.data(), (int)acc.size(),
                                        40, 1.0, ImPlotRange(lo, hi));
             ImPlot::PopStyleColor();
-            ImPlot::PushStyleColor(ImPlotCol_Fill, ImVec4(1, 0.40f, 0.25f, 0.8f));
+            ImPlot::PushStyleColor(ImPlotCol_Fill, ImVec4(1.0f, 0.45f, 0.30f, 0.85f));
             if (!rej.empty())
                 ImPlot::PlotHistogram("rejected", rej.data(), (int)rej.size(),
                                        40, 1.0, ImPlotRange(lo, hi));
@@ -137,21 +140,39 @@ void MarkerQualityPanel::render_outlier_scatter_() {
         }
     }
     ImGui::Text("Outliers above v_max: %d frames", (int)t_outlier.size());
-    if (ImPlot::BeginPlot("##outliers", ImVec2(-1, 220), ImPlotFlags_None)) {
-        ImPlot::SetupAxes("t (s)", "vz (m/s)",
+    if (ImPlot::BeginPlot("Outlier inspection (raw vs cleaned vz)",
+                           ImVec2(-1, 240), ImPlotFlags_None)) {
+        ImPlot::SetupAxes("time (s, since session start)", "vz (m/s)",
                            ImPlotAxisFlags_None, ImPlotAxisFlags_AutoFit);
-        ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(0.50f, 0.95f, 0.50f, 1));
-        ImPlot::PlotLine("clean", tx.data(), vy_clean.data(), N);
-        ImPlot::PopStyleColor();
-        ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(0.55f, 0.55f, 0.55f, 0.4f));
+        ImPlot::SetupAxisFormat(ImAxis_X1, "%.1f s");
+        ImPlot::SetupAxisFormat(ImAxis_Y1, "%.2f m/s");
+        ImPlot::SetupLegend(ImPlotLocation_NorthEast,
+                            ImPlotLegendFlags_Outside);
+        // Raw drawn first (faded grey), clean on top (bright lime), then
+        // outliers as bold red markers.
+        ImPlot::PushStyleColor(ImPlotCol_Line,
+                                ImVec4(0.65f, 0.65f, 0.65f, 0.55f));
+        ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 1.2f);
         ImPlot::PlotLine("raw",   tx.data(), vy_raw.data(), N);
+        ImPlot::PopStyleVar();
+        ImPlot::PopStyleColor();
+        ImPlot::PushStyleColor(ImPlotCol_Line,
+                                ImVec4(0.40f, 0.95f, 0.40f, 1));
+        ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 2.4f);
+        ImPlot::PlotLine("cleaned", tx.data(), vy_clean.data(), N);
+        ImPlot::PopStyleVar();
         ImPlot::PopStyleColor();
         if (!t_outlier.empty()) {
-            ImPlot::PushStyleColor(ImPlotCol_MarkerOutline, ImVec4(1, 0.4f, 0.3f, 1));
-            ImPlot::PushStyleColor(ImPlotCol_MarkerFill,    ImVec4(1, 0.4f, 0.3f, 1));
-            ImPlot::PlotScatter("outliers",
+            ImPlot::PushStyleColor(ImPlotCol_MarkerOutline,
+                                    ImVec4(1, 0.4f, 0.3f, 1));
+            ImPlot::PushStyleColor(ImPlotCol_MarkerFill,
+                                    ImVec4(1, 0.4f, 0.3f, 1));
+            ImPlot::PushStyleVar(ImPlotStyleVar_MarkerSize, 5.5f);
+            ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle);
+            ImPlot::PlotScatter("outliers (double-click to seek)",
                                  t_outlier.data(), v_outlier.data(),
                                  (int)t_outlier.size());
+            ImPlot::PopStyleVar();
             ImPlot::PopStyleColor(2);
         }
         // Double-click handler on the plot — seek to the closest outlier.

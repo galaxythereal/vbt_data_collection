@@ -61,6 +61,18 @@ struct MarkerStream {
     std::vector<float>   pos_up_clean_m;
     std::vector<float>   vz_clean_mps;
     bool                 clean_dirty = true;
+    /// Indices into the marker arrays where the cleaned vz crosses zero.
+    /// These are candidate rep boundaries — top and bottom of every rep.
+    /// Filled by recompute_clean_signal().
+    std::vector<int>     zero_crossings;
+    /// Indices of significant local extrema in cleaned vz: peak concentric
+    /// (positive) and peak eccentric (negative) per cycle. Used to draw
+    /// the per-rep peak markers in the timeline.
+    std::vector<int>     peak_vel_pos_idx;     // local max of vz
+    std::vector<int>     peak_vel_neg_idx;     // local min of vz
+    /// Indices of position extrema (top/bottom of each rep cycle).
+    std::vector<int>     pos_max_idx;
+    std::vector<int>     pos_min_idx;
     size_t size() const { return unified_t_s.size(); }
 };
 

@@ -47,7 +47,16 @@ struct PhaseSegment {
 
 struct RepAnnotation {
     int rep_id = 0;
+    /// Rep phases in chronological order:
+    ///   concentric → top_rest → eccentric → rest (bottom / inter-rep)
+    /// The two rest phases formalize the brief pauses lifters take at the
+    /// extreme positions (top of squat lockout, bottom of bench pause,
+    /// etc.). Either rest may have zero duration for fast continuous reps,
+    /// in which case it appears as a degenerate band the studio hides
+    /// from the drag-handle view. Legacy JSON without `top_rest` is
+    /// loaded with a zero-width segment at concentric.t_end.
     PhaseSegment concentric;
+    PhaseSegment top_rest;
     PhaseSegment eccentric;
     PhaseSegment rest;
     float mean_concentric_velocity = 0.0f;
