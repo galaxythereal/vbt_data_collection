@@ -1,0 +1,6 @@
+{"code":"create","host_s":1777992348.8737464,"level":"info","msg":"Session created: session_20260505_174548","source":"session","wallclock":"2026-05-05T14:45:48.873734Z"}
+{"code":"build_provenance","host_s":1777992348.8738046,"level":"info","msg":"build info","payload":{"build_timestamp":"2026-05-05T12:58:58Z","build_type":"Release","git_branch":"main","git_dirty":"true","git_sha":"0a10455","version":"1.1.0"},"source":"session","wallclock":"2026-05-05T14:45:48.873802Z"}
+{"code":"override","host_s":1777992358.0290608,"level":"warning","msg":"Operator overrode pre-flight failure: operator overrode failed pre-flight","source":"preflight","wallclock":"2026-05-05T14:45:58.029047Z"}
+{"code":"recording_start","host_s":1777992358.0295732,"level":"info","msg":"Recording started","source":"session","wallclock":"2026-05-05T14:45:58.029569Z"}
+{"code":"recording_stop","host_s":1777992403.3761036,"level":"info","msg":"Recording stopped","source":"session","wallclock":"2026-05-05T14:46:43.376082Z"}
+{"code":"save","host_s":1777992427.6084764,"level":"info","msg":"Session finalised; renaming .partial → final","source":"session","wallclock":"2026-05-05T14:47:07.608467Z"}
