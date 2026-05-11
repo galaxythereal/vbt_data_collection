@@ -30,6 +30,7 @@
 #include "processing/RepSegmenter.h"
 #include "processing/Validator.h"
 #include "processing/Autoregulation.h"
+#include "processing/StillnessGate.h"
 
 namespace vbt {
 
@@ -74,6 +75,27 @@ public:
     static std::vector<std::string> find_orphaned_partials(const std::string& dataset_root);
 
     // ========================================================================
+    // Stillness / calibration intervals
+    // ========================================================================
+    /// Stillness gate fed by every IMU sample seen during recording. UIs that
+    /// need a pre-recording or post-recording gate can keep their own gate
+    /// instance (see StillnessGate) and call `commit_calibration_interval`
+    /// once they've collected a clean window.
+    StillnessGate& stillness_gate() { return stillness_gate_; }
+
+    /// Append a CalibrationInterval to info_.calibration_intervals and emit
+    /// an event-log entry. Caller fills in the snapshot from a passing gate.
+    void commit_calibration_interval(const CalibrationInterval& iv);
+
+    /// Convenience: build a CalibrationInterval from `gate` (typically the
+    /// caller's own StillnessGate that has been collecting a known-still
+    /// window) and append it. `t_start` / `t_end` come from the gate's
+    /// pass_started_at / last sample time. Returns the committed interval.
+    CalibrationInterval commit_calibration_interval(const StillnessGate& gate,
+                                                     const std::string& type,
+                                                     int linked_set_id);
+
+    // ========================================================================
     // State
     // ========================================================================
     SessionState get_state() const { return state_; }
@@ -81,6 +103,13 @@ public:
     std::string  get_session_dir() const { return session_dir_; }
     const SessionInfo& get_info() const { return info_; }
     SessionInfo&       mutable_info() { return info_; }
+    bool has_passed_calibration_interval(const std::string& type) const;
+    bool has_pre_session_calibration() const {
+        return has_passed_calibration_interval("pre_session");
+    }
+    bool has_post_session_calibration() const {
+        return has_passed_calibration_interval("post_session");
+    }
 
     // ========================================================================
     // Recording Statistics
@@ -111,6 +140,21 @@ private:
     void create_directory_structure();
     void write_metadata();
     void write_manifest();
+    /// Read video_frames.csv and populate info_.time_sync_check with the
+    /// hw - host offset distribution. No-op if the CSV is missing or empty.
+    void compute_time_sync_check_();
+
+    /// Populate info_.imu_snapshot with post-recording derived fields:
+    ///   - odr_hz_measured (from raw_imu.csv dt distribution)
+    ///   - first / last esp_timestamp_us
+    /// Called from save() after the IMU CSV is closed.
+    void compute_imu_snapshot_post_();
+
+    /// Compare gravity vectors of the pre_session and post_session
+    /// calibration intervals; if the angle between them exceeds 5° emit
+    /// a "mount_shift" event with the angle, so post-hoc tools can flag
+    /// sessions where the device migrated on the bar mid-session.
+    void detect_mount_shift_();
     std::string build_dataset_path(const std::string& root) const;
     void enqueue_camera_frame(const CameraFrame& frame);
     void camera_worker_loop();
@@ -132,6 +176,31 @@ private:
     std::unique_ptr<Validator>      validator_;
     EventLog                        event_log_;
     Autoregulation                  autoreg_;
+    StillnessGate                   stillness_gate_;
+
+    // IMU stream-quality bookkeeping. Drives event-log emission for
+    // poll-loop gaps and per-sample saturation. Thresholds are derived
+    // empirically from the dataset distribution (see audit notes).
+    double   last_imu_unified_t_   = 0.0;
+    uint64_t imu_gap_event_count_  = 0;
+    uint64_t imu_sat_event_count_  = 0;
+    /// Throttle: only emit an IMU-quality event every N samples after the
+    /// first one of each type (otherwise a single bad burst floods the log).
+    static constexpr uint64_t IMU_EVENT_THROTTLE_SAMPLES = 200;
+    /// Skip gap detection on the first N samples after recording start.
+    /// At 988 Hz, 50 samples ≈ 50 ms — plenty for the recorder to settle
+    /// and the previously-polled timestamp to become irrelevant.
+    static constexpr uint64_t IMU_GAP_WARMUP = 50;
+    uint64_t imu_samples_since_gap_event_ = 0;
+    uint64_t imu_samples_since_sat_event_ = 0;
+    uint64_t imu_warmup_samples_          = 0;
+    /// First / last ESP timestamp seen during recording. Written to
+    /// metadata.json so a post-hoc tool can detect 32-bit-counter rollover
+    /// independent of the host clock. (We use the chip's 64-bit
+    /// esp_timer_get_time, so rollover should never happen, but the
+    /// belt-and-braces field is cheap.)
+    uint64_t imu_first_esp_ts_us_ = 0;
+    uint64_t imu_last_esp_ts_us_  = 0;
 
     // Recording time
     std::chrono::steady_clock::time_point recording_start_;

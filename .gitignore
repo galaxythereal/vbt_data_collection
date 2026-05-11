@@ -12,9 +12,12 @@ __pycache__/
 .vscode/
 .idea/
 .DS_Store
-
+datasets/*
+datasets/
+./datasets/*
+./datasets/
 # Tooling
-.claude/
+# .claude/
 .codex/
 diagnostics/
 

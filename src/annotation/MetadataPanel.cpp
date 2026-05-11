@@ -35,9 +35,15 @@ void MetadataPanel::render() {
     // The form mutates the session's SessionInfo in place; we just
     // forward the "anything changed?" bit to mark_meta_dirty so the
     // unsaved indicator and Ctrl+S workflow keep working.
+    // Studio has no AppConfig handle, but the exercise dropdown is purely a
+    // UI affordance — feeding it the built-in default list gives the same
+    // selection experience as the recording panel without coupling the
+    // studio to runtime config.
+    static const auto kProfiles = default_exercise_profiles();
     if (session_info_form::render_full_form(session_->mutable_info(),
                                               session_->t0_unified_s(),
-                                              expand_all_)) {
+                                              expand_all_,
+                                              kProfiles)) {
         session_->mark_meta_dirty();
     }
 }

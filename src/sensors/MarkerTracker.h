@@ -28,6 +28,9 @@ struct MarkerDetection {
     float blob_area    = 0.0f;   // Blob area in pixels
     float circularity  = 0.0f;   // 0-1, how circular the blob is
     float snr          = 0.0f;   // Signal-to-noise ratio
+    float centrality   = 1.0f;   // 0-1 Gaussian-weighted distance from frame centre
+                                 // (1.0 at exact centre, falling off with σ from
+                                 // CameraConfig::marker_center_bias_sigma_frac)
 
     // 3D position in camera frame (meters)
     float x_m = 0.0f;

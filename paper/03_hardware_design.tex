@@ -1,0 +1,195 @@
+% ════════════════════════════════════════════════════════════════════
+% Chapter 3 — Hardware Design and Configuration
+% ════════════════════════════════════════════════════════════════════
+\section{Hardware Design and Configuration}\label{sec:hw}
+
+This section details the register-level configuration of each sensor, the electrical interconnections, and the design rationale for every parameter choice.
+
+
+\subsection{Inertial Measurement Unit: ICM-42688-P}
+
+\subsubsection{Device Overview}
+The TDK InvenSense ICM-42688-P is a 6-axis MEMS MotionTracking device integrating a 3-axis accelerometer and a 3-axis gyroscope on a single silicon die.
+Key performance specifications relevant to the VBT application are summarised in \cref{tab:imu_specs}.
+
+\begin{table}[H]
+  \centering
+  \caption{ICM-42688-P key performance specifications (from datasheet DS-000347 Rev.~1.7).}
+  \label{tab:imu_specs}
+  \begin{tabular}{lll}
+    \toprule
+    \textbf{Parameter} & \textbf{Accelerometer} & \textbf{Gyroscope} \\
+    \midrule
+    Full-Scale Range            & $\pm 2/4/8/\mathbf{16}$\,\si{\g}         & $\pm 15.625$--$\mathbf{\pm 2000}$\,\si{\degree\per\second} \\
+    Output Data Rate (ODR)      & \SI{1.5625}{}--\SI{32}{\kilo\hertz}       & \SI{12.5}{}--\SI{32}{\kilo\hertz} \\
+    Noise Density               & \SI{70}{\micro\g}/$\sqrt{\text{Hz}}$        & \SI{2.8}{\milli\degree\per\second}/$\sqrt{\text{Hz}}$ \\
+    Non-Linearity               & $\pm 0.1$\,\%\,FS                        & $\pm 0.05$\,\%\,FS \\
+    Cross-Axis Sensitivity      & $\pm 1$\,\%                               & $\pm 1$\,\% \\
+    Zero-g Offset (typical)     & $\pm\SI{20}{\milli\g}$                    & $\pm\SI{1}{\degree\per\second}$ \\
+    Digital Interface            & \multicolumn{2}{c}{SPI (up to \SI{24}{\mega\hertz}) / I\textsuperscript{2}C (\SI{1}{\mega\hertz})} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsubsection{Full-Scale Range Selection}
+
+The accelerometer full-scale range is set to the maximum $\pm\SI{16}{\g}$.
+This choice is driven by the extreme shock environment of weightlifting.
+During a power clean, the barbell experiences peak accelerations exceeding \SI{8}{\g} at the ``catch'' phase, and when the barbell is dropped onto the platform (as is standard practice in Olympic weightlifting), transient shocks can exceed \SI{15}{\g}.
+If these transients clip the ADC, the affected samples are irrecoverably corrupted---and because they occur precisely at the biomechanically most interesting moments, no amount of post-hoc interpolation can recover the lost information.
+
+The gyroscope full-scale range is set to $\pm\SI{2000}{\degree\per\second}$.
+During explosive lifts, the barbell can undergo angular rates exceeding \SI{500}{\degree\per\second} during the turnover phase of a snatch.
+The $\pm\SI{2000}{\degree\per\second}$ range provides a $4\times$ safety margin against clipping, at the cost of a proportional increase in quantisation noise (resolution per LSB).
+At 16-bit ADC resolution, the gyroscope LSB is:
+\begin{equation}
+  \text{LSB}_\text{gyro} = \frac{2 \times 2000}{2^{16}} = \SI{0.061}{\degree\per\second\per\text{LSB}}
+\end{equation}
+This resolution is more than sufficient for the angular dynamics of barbell movements, which typically exhibit angular rates above \SI{5}{\degree\per\second} during active phases.
+
+\subsubsection{Output Data Rate and Anti-Aliasing Filters}
+
+The ODR is set to \SI{1}{\kilo\hertz} for both the accelerometer and gyroscope.
+This rate satisfies the Nyquist criterion for the highest-frequency kinematic content of interest (barbell vibration modes at \SI{30}{}--\SI{50}{\hertz} for a standard \SI{20}{\kilogram} Olympic barbell~\cite{mcguigan2004}) with a generous oversampling factor of $>10\times$.
+
+The ICM-42688-P provides configurable digital anti-aliasing filters with selectable order (1st, 2nd, or 3rd) and bandwidth (expressed as a fraction of the ODR).
+We select the \textbf{3rd-order} filter with a bandwidth of \textbf{ODR/4 = \SI{250}{\hertz}}.
+This configuration provides a sharp roll-off above \SI{250}{\hertz}, attenuating aliased high-frequency content from the \SI{32}{\kilo\hertz} internal sampling clock, while preserving the full kinematic bandwidth of human movement ($0$--\SI{10}{\hertz} for gross kinematics, up to \SI{50}{\hertz} for barbell vibration modes).
+
+\subsubsection{Register Map}
+
+\Cref{tab:imu_regs} provides the exhaustive register configuration applied during initialisation.
+
+\begin{table}[H]
+  \centering
+  \caption{Complete ICM-42688-P register configuration (Bank~0 unless noted).}
+  \label{tab:imu_regs}
+  \begin{tabular}{lllp{5.5cm}}
+    \toprule
+    \textbf{Register} & \textbf{Address} & \textbf{Value} & \textbf{Description} \\
+    \midrule
+    \reg{DEVICE\_CONFIG}     & \code{0x11} & \code{0x01} & Soft reset (1\,ms recovery) \\
+    \reg{GYRO\_CONFIG0}      & \code{0x4F} & \code{0x06} & FS: $\pm$2000\,\si{\degree/s}, ODR: \SI{1}{\kilo\hertz} \\
+    \reg{ACCEL\_CONFIG0}     & \code{0x50} & \code{0x06} & FS: $\pm$16\,\si{\g}, ODR: \SI{1}{\kilo\hertz} \\
+    \reg{GYRO\_CONFIG1}      & \code{0x51} & \code{0x08} & Filter order: 3rd ($\code{0x02} \ll 2$) \\
+    \reg{ACCEL\_CONFIG1}     & \code{0x53} & \code{0x08} & Filter order: 3rd ($\code{0x02} \ll 2$) \\
+    \reg{GYRO\_ACCEL\_CFG0}  & \code{0x52} & \code{0x11} & BW = ODR/4 (both axes) \\
+    \reg{FIFO\_CONFIG}       & \code{0x16} & \code{0x00} & FIFO bypassed (direct read) \\
+    \reg{INT\_CONFIG}        & \code{0x14} & \code{0x03} & INT1: push-pull, active HIGH, pulsed \\
+    \reg{INT\_CONFIG1}       & \code{0x64} & \code{0x00} & Async reset (clear on read) \\
+    \reg{INT\_SOURCE0}       & \code{0x65} & \code{0x08} & Data-ready $\rightarrow$ INT1 \\
+    \reg{FSYNC\_CONFIG}      & \code{0x62} & \code{0x12} & Tag TEMP LSB; clear-on-read \\
+    \reg{TMST\_CONFIG}       & \code{0x54} & \code{0x1B} & FSYNC\_EN + TMST\_EN + 1\,\si{\micro s} \\
+    \reg{PWR\_MGMT0}         & \code{0x4E} & \code{0x0F} & Accel + Gyro Low-Noise mode \\
+    \midrule
+    \multicolumn{4}{l}{\textit{Bank 1}} \\
+    \reg{INTF\_CONFIG5}      & \code{0x7B} & \code{0x02} & Pin\,9 function $=$ FSYNC input \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsubsection{FIFO Bypass Rationale}
+The ICM-42688-P includes a 2\,KB internal FIFO for batch reads.
+We deliberately bypass the FIFO (\reg{FIFO\_CONFIG}~$=$~\code{0x00}) for two reasons:
+\begin{enumerate}[nosep]
+  \item \textbf{Latency:} The FIFO introduces variable read latency (up to the FIFO watermark threshold), which is unacceptable for real-time GUI feedback.
+  \item \textbf{FSYNC tagging:} When the FIFO is active, the FSYNC tag is embedded in the FIFO packet header rather than the sensor register, complicating the parsing logic. Direct register reads guarantee a deterministic, flat packet format.
+\end{enumerate}
+
+\subsubsection{Scale Factors}
+The host-side software applies the following conversions from raw 16-bit integers to physical units:
+\begin{align}
+  a\;[\si{\g}]              &= \text{raw}_{16} \times \frac{16.0}{32768.0} \label{eq:accel_scale}\\
+  \omega\;[\si{\degree/s}]  &= \text{raw}_{16} \times \frac{2000.0}{32768.0} \label{eq:gyro_scale}\\
+  T\;[\si{\celsius}]        &= \text{raw}_{16} / 132.48 + 25.0 \label{eq:temp_scale}
+\end{align}
+
+
+\subsection{Optical Tracking Sensor: Intel RealSense D455}
+
+\subsubsection{Streaming Configuration}
+
+\Cref{tab:cam_config} presents the complete camera configuration as applied via the \texttt{librealsense2} API.
+
+\begin{table}[H]
+  \centering
+  \caption{D455 streaming configuration.}
+  \label{tab:cam_config}
+  \begin{tabular}{llp{6cm}}
+    \toprule
+    \textbf{Parameter} & \textbf{Value} & \textbf{Rationale} \\
+    \midrule
+    IR Resolution           & $848 \times 480$          & Optimal balance of spatial resolution and USB bandwidth. \\
+    Frame Rate              & \SI{90}{fps}              & Maximum supported; captures \SI{11.1}{\milli\second} transients. \\
+    Exposure                & \SI{1758}{\micro\second}  & Fast enough to limit motion blur to $<\SI{3.5}{\milli\metre}$ at \SI{2}{\metre\per\second}. \\
+    Gain                    & 164                       & Compensates for the short exposure under indoor lighting. \\
+    IR Emitter              & OFF                       & Prevents the structured-light dot pattern from confusing the blob detector. \\
+    Depth Stream            & Enabled                   & Required for 3D deprojection of detected markers. \\
+    RGB Stream              & \textbf{Disabled}         & The $848\times480\times3$\,B @ \SI{30}{fps} ($\sim$\SI{36}{\mega\byte\per\second}) payload saturated the USB~3.0 bus, causing intermittent frame drops. \\
+    Hardware Sync Mode      & 1 (Master)                & Configures Pin~5 to output the \SI{1.8}{\volt} \texttt{FRAME\_SYNC} pulse. \\
+    \midrule
+    \multicolumn{3}{l}{\textit{Onboard IMU (Bosch BMI085)}} \\
+    Accelerometer Rate      & \SI{250}{\hertz}          & Used for tripod-shake detection; not for VBT kinematics. \\
+    Gyroscope Rate          & \SI{200}{\hertz}          & Logged to \file{camera\_imu.csv} for cross-stream sync validation. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsubsection{IR Marker Tracking Strategy}
+Rather than using the D455's active structured-light projector, our tracking pipeline relies on \textbf{passive retroreflective IR markers} affixed to the barbell collar.
+With the emitter disabled, these markers appear as high-contrast bright blobs against the dark background of the gym in the left IR image.
+The marker detection pipeline performs:
+\begin{enumerate}[nosep]
+  \item Binary thresholding at a configurable threshold (currently 169).
+  \item Horizontal ROI masking (15\%--85\% of frame width) to reject door frames, windows, and spectators.
+  \item Morphological opening to remove single-pixel noise.
+  \item Connected-component (blob) analysis with area filtering (5--2000 pixels).
+  \item Circularity scoring and Signal-to-Noise Ratio (SNR) computation.
+  \item Selection of the best-scoring blob as the tracked marker.
+  \item 3D deprojection using the aligned depth frame and the camera intrinsics via \code{rs2\_deproject\_pixel\_to\_point()}.
+  \item Robust depth estimation using a median filter over a $(2w+1)^2$ patch (default $w=5$) to suppress single-pixel depth noise.
+\end{enumerate}
+
+The marker tracker (\class{MarkerTracker}) maintains a 10-frame detection history for temporal consistency.
+When the marker is briefly lost (e.g., occluded by the lifter's body at the bottom of a squat), the tracker uses the last valid detection for prediction rather than coasting with a Kalman filter, avoiding the introduction of model-dependent artefacts into the ground-truth signal.
+
+
+\subsection{Barbell Sensor Node: Electrical Design}
+
+\subsubsection{SPI Wiring}
+The ICM-42688-P communicates with the ESP32 via a 4-wire SPI bus at \SI{8}{\mega\hertz}.
+The pin mapping is:
+
+\begin{table}[H]
+  \centering
+  \caption{SPI wiring between ESP32 and ICM-42688-P.}
+  \label{tab:spi_wiring}
+  \begin{tabular}{lll}
+    \toprule
+    \textbf{Function} & \textbf{ESP32 GPIO} & \textbf{ICM-42688-P Pin} \\
+    \midrule
+    SCK (Clock)      & GPIO\,18 & Pin 7 (SCLK) \\
+    MISO (SDO)       & GPIO\,19 & Pin 5 (SDO) \\
+    MOSI (SDI)       & GPIO\,23 & Pin 6 (SDI) \\
+    CS (Chip Select)  & GPIO\,5  & Pin 8 (nCS) \\
+    INT1 (Data Ready) & GPIO\,26 & Pin 4 (INT1) \\
+    FSYNC             & \multicolumn{2}{l}{Direct from level shifter output (see \cref{sec:sync})} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsubsection{Power Management}
+The barbell node is powered by a \SI{3.7}{\volt}, \SI{500}{\milli\ampere\hour} lithium-polymer cell housed in the 3D-printed collar mount.
+To prevent nuisance resets during the voltage sags caused by simultaneous SPI burst reads, ESP-NOW radio transmissions, and mechanical shocks from barbell drops, two power-management measures are implemented:
+\begin{enumerate}[nosep]
+  \item \textbf{Brown-Out Detector (BOD) disabled:} The ESP32's brownout threshold ($\sim$\SI{2.43}{\volt}) is too aggressive for marginal battery conditions. Disabling the BOD via \code{WRITE\_PERI\_REG(RTC\_CNTL\_BROWN\_OUT\_REG, 0)} allows the system to survive brief sags without resetting. The risk of flash corruption is bounded because flash writes occur only during firmware upload, never during data collection.
+  \item \textbf{CPU frequency reduction:} The clock is reduced from \SI{240}{\mega\hertz} to \SI{160}{\mega\hertz} via \code{setCpuFrequencyMhz(160)}. Profiling shows that the complete SPI read, packet assembly, and CRC computation require $<\SI{10}{\micro\second}$ per \SI{1}{\milli\second} cycle---a $<1\%$ CPU utilisation. The remaining 99\% is idle, and the frequency reduction saves approximately 30\% average current draw, extending battery life to $>12$~hours of continuous operation.
+\end{enumerate}
+
+\subsubsection{ESP-NOW Radio Configuration}
+The ESP-NOW transmitter is configured for maximum reliability:
+\begin{itemize}[nosep]
+  \item \textbf{Unicast addressing:} The relay node's MAC address (\code{68:25:DD:32:78:54}) is hardcoded as a peer. Unicast provides hardware-level ACK and automatic retry, unlike broadcast which is rate-limited to $\sim$\SI{100}{\hertz} on ESP32 and drops $>99\%$ of packets at the IMU's \SI{988}{\hertz} native rate.
+  \item \textbf{Maximum TX power:} \code{esp\_wifi\_set\_max\_tx\_power(80)} sets the output to 20\,dBm (\SI{100}{\milli\watt}), overcoming the Faraday-cage shielding effect of the metal barbell and potential body occlusion during lifts.
+  \item \textbf{Station mode:} The WiFi radio is set to \code{WIFI\_STA} mode with no active connection, ensuring the radio hardware is available exclusively for ESP-NOW.
+\end{itemize}

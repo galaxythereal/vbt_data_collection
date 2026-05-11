@@ -179,7 +179,14 @@ bool render_sets_block(SessionInfo& info, double t0_unified_s) {
             ImGui::Text("Total: %.1f kg", st.total_weight_kg);
             ed |= ImGui::DragFloat("%% 1RM", &st.percent_1rm, 0.5f, 0, 110);
             ed |= ImGui::DragInt("Target reps",    &st.target_reps, 1, 1, 30);
-            ed |= ImGui::DragInt("Completed reps", &st.completed_reps, 1, 0, 30);
+            ed |= ImGui::DragInt("Completed reps (auto)", &st.completed_reps, 1, 0, 30);
+            ed |= ImGui::DragInt("Actual reps (operator)", &st.actual_reps, 1, 0, 30);
+            if (st.actual_reps != 0 && st.completed_reps != 0
+                && st.actual_reps != st.completed_reps) {
+                ImGui::TextColored(ImVec4(1, 0.85f, 0.30f, 1),
+                    "  ⚠ segmenter saw %d, operator says %d — segmenter miscount",
+                    st.completed_reps, st.actual_reps);
+            }
             ed |= ImGui::SliderInt("RPE",          &st.rpe, 0, 10);
             ed |= ImGui::DragInt("Actual RIR",     &st.actual_rir, 1, 0, 15);
             ed |= ImGui::Checkbox("To failure",  &st.to_failure);
@@ -226,9 +233,33 @@ bool render_sets_block(SessionInfo& info, double t0_unified_s) {
     return ed;
 }
 
-bool render_loading_block(SessionInfo& s) {
+bool render_loading_block(SessionInfo& s, const std::vector<ExerciseProfile>& profiles) {
     bool ed = false;
-    ed |= input_string("Exercise",         s.exercise);
+    if (!profiles.empty()) {
+        // Find current selection by canonical name; fall back to "other" if
+        // a legacy session references an exercise no longer in the profile
+        // list (still preserves the legacy string in s.exercise).
+        int cur = -1;
+        for (int i = 0; i < (int)profiles.size(); ++i) {
+            if (profiles[i].name == s.exercise) { cur = i; break; }
+        }
+        const char* preview = (cur >= 0)
+            ? profiles[cur].display_name.c_str()
+            : (s.exercise.empty() ? "(select exercise)" : s.exercise.c_str());
+        if (ImGui::BeginCombo("Exercise", preview)) {
+            for (int i = 0; i < (int)profiles.size(); ++i) {
+                bool sel = (i == cur);
+                if (ImGui::Selectable(profiles[i].display_name.c_str(), sel)) {
+                    s.exercise = profiles[i].name;
+                    ed = true;
+                }
+                if (sel) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+    } else {
+        ed |= input_string("Exercise",     s.exercise);
+    }
     ed |= input_string("Variant",          s.exercise_variant);
     ed |= input_string("Equipment",        s.equipment);
     ed |= ImGui::DragFloat("Bar mass (kg)",     &s.barbell_weight_kg, 0.1f);
@@ -449,7 +480,8 @@ void render_overrides_block(const SessionInfo& s) {
     }
 }
 
-bool render_full_form(SessionInfo& s, double t0_unified_s, bool expand_all) {
+bool render_full_form(SessionInfo& s, double t0_unified_s, bool expand_all,
+                       const std::vector<ExerciseProfile>& profiles) {
     bool ed = false;
     auto hf = [expand_all](bool default_open) {
         return (expand_all || default_open) ? ImGuiTreeNodeFlags_DefaultOpen : 0;
@@ -458,14 +490,19 @@ bool render_full_form(SessionInfo& s, double t0_unified_s, bool expand_all) {
     if (render_subject_pinned(s)) ed = true;
     ImGui::Spacing();
 
+    // Default-open: just the two sections an operator actually fills before
+    // hitting RECORD. Everything else (readiness diary, gear, safety setup,
+    // ambient lighting, governance) collapses behind a header — operators who
+    // need them tick the "Expand all sections" box at the panel root.
+    if (ImGui::CollapsingHeader("Loading & exercise", hf(true)))
+        ed |= render_loading_block(s, profiles);
     if (ImGui::CollapsingHeader("Sets in this session", hf(true)))
         ed |= render_sets_block(s, t0_unified_s);
-    if (ImGui::CollapsingHeader("Subject — readiness & history", hf(true)))
+
+    if (ImGui::CollapsingHeader("Subject — readiness & history", hf(false)))
         ed |= render_subject_day_snapshot(s.subject_snapshot);
     if (ImGui::CollapsingHeader("Session identity", hf(false)))
         ed |= render_subject_identity(s);
-    if (ImGui::CollapsingHeader("Loading & exercise", hf(true)))
-        ed |= render_loading_block(s);
     if (ImGui::CollapsingHeader("Load provenance (plates, collars)", hf(false)))
         ed |= render_load_provenance(s.load_provenance);
     if (ImGui::CollapsingHeader("Technique", hf(false)))

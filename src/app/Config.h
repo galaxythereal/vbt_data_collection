@@ -79,12 +79,18 @@ struct CameraConfig {
     int    accel_fps        = 250;   // 63 / 250 Hz on D455 (250 default)
     int    gyro_fps         = 200;   // 200 / 400 Hz on D455 (200 default)
 
+    // Soft centre bias for blob selection. Each candidate gets a Gaussian
+    // centrality score based on horizontal distance from frame centre,
+    // σ = sigma_frac × frame_width. Lower values bias harder; 0 disables.
+    float  marker_center_bias_sigma_frac = 0.25f;
+
     NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(CameraConfig, width, height, fps, exposure_us,
                                    gain, emitter_on, enable_depth, enable_rgb,
                                    rgb_fps, marker_min_area, marker_max_area,
                                    marker_threshold, hw_sync_mode,
                                    enable_camera_imu, accel_fps, gyro_fps,
-                                   marker_roi_x_min_frac, marker_roi_x_max_frac)
+                                   marker_roi_x_min_frac, marker_roi_x_max_frac,
+                                   marker_center_bias_sigma_frac)
 };
 
 // ============================================================================
@@ -113,10 +119,20 @@ struct RepSegConfig {
     float min_rep_displacement_m  = 0.05f;
     float min_rep_duration_s      = 0.3f;
     float lowpass_cutoff_hz       = 10.0f;
+    // The fields below are stored and displayed by SessionPanel but are NOT
+    // read by the current windowed peak-detector (which uses PEAK_WINDOW_N=20
+    // and a hardcoded 0.4× prominence factor). They exist for forward-compat
+    // with per-exercise profile transfer via "Create Set".
+    float peak_window_s           = 0.22f;
+    float prominence_fraction     = 0.25f;
+    float min_concentric_peak_mps = 0.25f;
+    float setup_ignore_s          = 1.0f;
 
     NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(RepSegConfig, velocity_start_thresh, velocity_rest_thresh,
                                    rest_duration_min_s, min_rep_displacement_m,
-                                   min_rep_duration_s, lowpass_cutoff_hz)
+                                   min_rep_duration_s, lowpass_cutoff_hz,
+                                   peak_window_s, prominence_fraction,
+                                   min_concentric_peak_mps, setup_ignore_s)
 };
 
 // ============================================================================
@@ -148,12 +164,20 @@ struct ExerciseProfile {
     float        expected_peak_v_mps = 1.5f;
     float        expected_peak_v_max_mps = 3.0f;
     float        velocity_loss_threshold_pct = 20.0f;  // stop-set recommendation
+    // Transferred to RepSegConfig via SessionPanel "Create Set"; not used
+    // by the current algorithm (see RepSegConfig comment above).
+    float        peak_window_s           = 0.22f;
+    float        prominence_fraction     = 0.25f;
+    float        min_concentric_peak_mps = 0.25f;
+    float        setup_ignore_s          = 1.0f;
 
     NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(ExerciseProfile, name, display_name,
                                    lowpass_cutoff_hz, velocity_start_thresh,
                                    velocity_rest_thresh, min_rep_displacement_m,
                                    expected_peak_v_mps, expected_peak_v_max_mps,
-                                   velocity_loss_threshold_pct)
+                                   velocity_loss_threshold_pct,
+                                   peak_window_s, prominence_fraction,
+                                   min_concentric_peak_mps, setup_ignore_s)
 };
 
 // ============================================================================
@@ -242,7 +266,8 @@ struct SetInfo {
     float        total_weight_kg     = 20.0f;
     float        percent_1rm         = 0.0f;
     int          target_reps         = 5;
-    int          completed_reps      = 0;       // filled post-recording from rep_segments
+    int          completed_reps      = 0;       // auto: filled post-recording from rep_segments
+    int          actual_reps         = 0;       // operator ground-truth count
     int          rpe                 = 0;
     int          actual_rir          = 0;
     bool         to_failure          = false;
@@ -255,7 +280,7 @@ struct SetInfo {
     NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(SetInfo,
         set_id, t_start_unified_s, t_end_unified_s,
         barbell_weight_kg, added_weight_kg, total_weight_kg, percent_1rm,
-        target_reps, completed_reps, rpe, actual_rir,
+        target_reps, completed_reps, actual_reps, rpe, actual_rir,
         to_failure, drop_set, cluster_set, pause_set, tempo_set, notes)
 };
 
@@ -456,6 +481,88 @@ struct BuildProvenance {
 };
 
 // ============================================================================
+// Hardware-config snapshot — written into metadata.json at session save.
+// ============================================================================
+struct IMUDeviceSnapshot {
+    std::string model            = "ICM-42688-P";
+    std::string esp_mac;
+    std::string firmware_version;
+    float       accel_range_g    = 16.0f;
+    float       gyro_range_dps   = 2000.0f;
+    int         odr_hz_nominal   = 1000;
+    float       odr_hz_measured  = 0.0f;
+    int         aaf_order        = 3;
+    float       aaf_bw_hz        = 500.0f;
+    bool        fifo_enabled     = false;
+    bool        emitter_used_for_fsync = true;
+    uint64_t    first_esp_timestamp_us = 0;
+    uint64_t    last_esp_timestamp_us  = 0;
+
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(IMUDeviceSnapshot, model, esp_mac, firmware_version,
+                                   accel_range_g, gyro_range_dps,
+                                   odr_hz_nominal, odr_hz_measured,
+                                   aaf_order, aaf_bw_hz,
+                                   fifo_enabled, emitter_used_for_fsync,
+                                   first_esp_timestamp_us, last_esp_timestamp_us)
+};
+
+struct CameraDeviceSnapshot {
+    std::string serial;
+    int         ir_width  = 848;
+    int         ir_height = 480;
+    int         fps       = 90;
+    bool        emitter_on    = true;
+    int         hw_sync_mode  = 1;
+    std::string librealsense_version;
+
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(CameraDeviceSnapshot, serial,
+                                   ir_width, ir_height, fps,
+                                   emitter_on, hw_sync_mode, librealsense_version)
+};
+
+struct CalibrationInterval {
+    std::string type;              // "pre_session" / "inter_set" / "post_session"
+    int         linked_set_id  = 0;
+    double      t_start_unified_s = 0.0;
+    double      t_end_unified_s   = 0.0;
+    double      duration_s        = 0.0;
+    bool        passed_gate       = false;
+    int         n_samples         = 0;
+    float       gravity_x_g       = 0.0f;
+    float       gravity_y_g       = 0.0f;
+    float       gravity_z_g       = 0.0f;
+    float       gyro_bias_x_dps   = 0.0f;
+    float       gyro_bias_y_dps   = 0.0f;
+    float       gyro_bias_z_dps   = 0.0f;
+    float       accel_mag_std_g   = 0.0f;
+    float       gyro_mag_mean_dps = 0.0f;
+
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(CalibrationInterval,
+                                   type, linked_set_id,
+                                   t_start_unified_s, t_end_unified_s, duration_s,
+                                   passed_gate, n_samples,
+                                   gravity_x_g, gravity_y_g, gravity_z_g,
+                                   gyro_bias_x_dps, gyro_bias_y_dps, gyro_bias_z_dps,
+                                   accel_mag_std_g, gyro_mag_mean_dps)
+};
+
+struct TimeSyncCheck {
+    bool   hw_sync_active                = false;
+    double wall_to_mono_offset_ms_median = 0.0;
+    double sync_residual_std_ms          = 0.0;
+    double sync_residual_min_ms          = 0.0;
+    double sync_residual_max_ms          = 0.0;
+    size_t n_frames_used                 = 0;
+
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(TimeSyncCheck,
+                                   hw_sync_active,
+                                   wall_to_mono_offset_ms_median,
+                                   sync_residual_std_ms,
+                                   sync_residual_min_ms, sync_residual_max_ms,
+                                   n_frames_used)
+};
+
+// ============================================================================
 // Session Information (vastly expanded vs v1)
 // ============================================================================
 struct SessionInfo {
@@ -466,7 +573,9 @@ struct SessionInfo {
     // v4 added subject_uuid / subject_name and multi-set support
     // (`sets` vector). Single-set legacy sessions auto-promote to a
     // 1-element sets vector on load.
-    int         schema_version = 4;
+    // v5 added imu_snapshot, camera_snapshot, calibration_intervals,
+    // time_sync_check.
+    int         schema_version = 5;
 
     // identity
     std::string session_id;
@@ -535,6 +644,12 @@ struct SessionInfo {
     // pre-flight override audit trail
     std::vector<std::string> preflight_overrides;
 
+    // v5 additions: hardware snapshots + calibration intervals + sync check
+    IMUDeviceSnapshot                imu_snapshot;
+    CameraDeviceSnapshot             camera_snapshot;
+    std::vector<CalibrationInterval> calibration_intervals;
+    TimeSyncCheck                    time_sync_check;
+
     NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(SessionInfo,
         schema_version, session_id, date, time_of_day, operator_id,
         subject_uuid, subject_name, subject_id,
@@ -546,7 +661,8 @@ struct SessionInfo {
         equipment_info, calibration, build,
         subject_snapshot, training_context, gear, load_provenance,
         safety, environment, quality,
-        sets, preflight_overrides)
+        sets, preflight_overrides,
+        imu_snapshot, camera_snapshot, calibration_intervals, time_sync_check)
 };
 
 // ============================================================================

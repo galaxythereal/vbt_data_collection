@@ -22,7 +22,7 @@ public:
 
         if (reps.empty()) {
             ImGui::TextDisabled("No reps detected yet.");
-            ImGui::TextDisabled("Connect IMU → Create Session → Start Recording");
+            ImGui::TextDisabled("Connect IMU -> Create Set -> Start Set");
             ImGui::TextDisabled("Then move the barbell to detect reps.");
             return;
         }

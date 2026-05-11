@@ -37,7 +37,10 @@ bool render_subject_day_snapshot(SubjectDaySnapshot& s);
 bool render_sets_block(SessionInfo& s, double t0_unified_s);
 // Top-level loading & RPE & target-rep fields. These are kept for
 // backward-compat; multi-set sessions should drive these from sets[0].
-bool render_loading_block(SessionInfo& s);
+// `profiles` populates the Exercise dropdown; pass an empty span for a
+// freeform text input fallback.
+bool render_loading_block(SessionInfo& s,
+                           const std::vector<ExerciseProfile>& profiles = {});
 bool render_load_provenance(LoadProvenance& s);
 bool render_technique_block(SessionInfo& s);
 bool render_training_context(TrainingContext& s);
@@ -57,6 +60,7 @@ void render_overrides_block(const SessionInfo& s);
 /// was edited this frame.
 bool render_full_form(SessionInfo& s,
                        double t0_unified_s = 0.0,
-                       bool expand_all = false);
+                       bool expand_all = false,
+                       const std::vector<ExerciseProfile>& profiles = {});
 
 } // namespace vbt::session_info_form

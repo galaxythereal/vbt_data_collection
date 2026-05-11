@@ -111,7 +111,9 @@ void MainWindow::process_hotkeys() {
     if (ImGui::IsKeyPressed(ImGuiKey_Space, false)) {
         if (sess.get_state() == SessionState::CONFIGURED ||
             sess.get_state() == SessionState::READY) {
-            if (show_preflight_) {
+            if (!sess.has_pre_session_calibration()) {
+                Notifications::get().warn("Capture pre-set calibration before recording.");
+            } else if (show_preflight_) {
                 // already gated
             } else {
                 // open the pre-flight modal first
@@ -139,7 +141,13 @@ void MainWindow::process_hotkeys() {
 
     // Ctrl+S — save session if stopped
     if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false)) {
-        if (sess.get_state() == SessionState::STOPPED) sess.save();
+        if (sess.get_state() == SessionState::STOPPED) {
+            if (!sess.has_post_session_calibration()) {
+                Notifications::get().warn("Capture post-set calibration before saving.");
+            } else {
+                sess.save();
+            }
+        }
     }
     // Ctrl+Q — quit
     if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Q, false)) {
@@ -154,7 +162,7 @@ void MainWindow::check_orphaned_partials_once() {
     if (!orphans.empty()) {
         Notifications::get().warn(
             std::to_string(orphans.size()) +
-            " unfinalised session(s) found. Tools → Recovery to inspect.");
+            " unfinalised set recording(s) found. Tools -> Recovery to inspect.");
         for (const auto& p : orphans) ImGui::OpenPopup("##recovery");
     }
 }
@@ -179,12 +187,12 @@ void MainWindow::render() {
     float W = io.DisplaySize.x;
     float H = io.DisplaySize.y;
     float menu_h    = ImGui::GetFrameHeight();
-    float header_h  = 96.0f;   // hero header band (title + session + record button)
+    float header_h  = 70.0f;   // compact header band
     float status_h  = ImGui::GetFrameHeightWithSpacing();
 
     // Hero header band — branding, session context, primary CTAs, live status
     ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.07f, 0.08f, 0.11f, 1.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20, 12));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16, 8));
     ImGui::SetNextWindowPos(ImVec2(0, menu_h));
     ImGui::SetNextWindowSize(ImVec2(W, header_h));
     ImGui::Begin("##HeroHeader", nullptr,
@@ -217,7 +225,7 @@ void MainWindow::render() {
     ImGui::End();
 
     // CENTER (plots + reps timeline/table)
-    float plot_h = body_h * 0.58f;
+    float plot_h = body_h * 0.72f;
     float annot_h = body_h - plot_h;
 
     ImGui::SetNextWindowPos(ImVec2(left_w, body_y));
@@ -279,9 +287,9 @@ void MainWindow::render() {
         step(3, hw_sync_live ? "Hardware sync receiving FSYNC ✓"
                              : "Waiting for camera FSYNC pulses…", hw_sync_live);
         ImGui::Dummy(ImVec2(0, 6));
-        step(4, "Configure session metadata  (right panel)", false);
+        step(4, "Configure set details  (right panel)", false);
         ImGui::Dummy(ImVec2(0, 6));
-        step(5, "Press START RECORDING  (top toolbar)", false);
+        step(5, "Press START SET  (top toolbar)", false);
 
         ImGui::Dummy(ImVec2(0, 24));
         const char* hint = "Tip: F1 calibration  ·  F2 replay  ·  F12 operator view  ·  Space start/stop";
@@ -319,14 +327,14 @@ void MainWindow::render() {
     else                   annotation_panel_->render_content();
     ImGui::End();
 
-    // RIGHT — Session + Metrics tabs (Camera moved to center-bottom)
+    // RIGHT — Set + Metrics tabs (Camera moved to center-bottom)
     ImGui::SetNextWindowPos(ImVec2(left_w + center_w, body_y));
     ImGui::SetNextWindowSize(ImVec2(right_w, body_h));
     ImGui::Begin("##RightColumn", nullptr,
                  ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                  ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse);
     if (ImGui::BeginTabBar("##right_tabs", ImGuiTabBarFlags_FittingPolicyResizeDown)) {
-        if (ImGui::BeginTabItem("Session")) {
+        if (ImGui::BeginTabItem("Set")) {
             session_panel_->render_content();
             if (session_panel_->consume_preflight_request()) show_preflight_ = true;
             ImGui::EndTabItem();
@@ -394,11 +402,16 @@ void MainWindow::render_preflight_modal() {
     if (ImGui::BeginPopupModal("Pre-flight Checklist", &show_preflight_,
                                ImGuiWindowFlags_NoSavedSettings)) {
         bool ok = preflight_->render_and_check_blocking();
+        bool calibrated = app_.session().has_pre_session_calibration();
 
         ImGui::Spacing();
         ImGui::Separator();
-        ImGui::BeginDisabled(!ok);
-        if (ImGui::Button("Start Recording", ImVec2(180, 32))) {
+        if (!calibrated) {
+            ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.25f, 1.0f),
+                "Pre-set calibration is required before recording.");
+        }
+        ImGui::BeginDisabled(!ok || !calibrated);
+        if (ImGui::Button("Start Set", ImVec2(180, 32))) {
             app_.session().start_recording();
             AudioCue::play(Cue::StartRecord);
             show_preflight_ = false;
@@ -406,6 +419,7 @@ void MainWindow::render_preflight_modal() {
         }
         ImGui::EndDisabled();
         ImGui::SameLine();
+        ImGui::BeginDisabled(!calibrated);
         if (ImGui::Button("Override + Start", ImVec2(160, 32))) {
             preflight_->record_override("operator overrode failed pre-flight");
             app_.session().start_recording();
@@ -413,6 +427,7 @@ void MainWindow::render_preflight_modal() {
             show_preflight_ = false;
             ImGui::CloseCurrentPopup();
         }
+        ImGui::EndDisabled();
         ImGui::SameLine();
         if (ImGui::Button("Cancel", ImVec2(120, 32))) {
             show_preflight_ = false;
@@ -435,7 +450,7 @@ void MainWindow::render_menu_bar() {
         if (ImGui::BeginMenu("Tools")) {
             if (ImGui::MenuItem("Pre-flight Checklist...", "Space")) show_preflight_ = true;
             if (ImGui::MenuItem("Calibration Wizard...",   "F1"))  calib_wizard_->open();
-            if (ImGui::MenuItem("Replay Saved Session...", "F2"))  replay_->open();
+            if (ImGui::MenuItem("Replay Saved Set...", "F2"))  replay_->open();
             if (ImGui::MenuItem("Annotation Studio...", "F3"))     studio_->open();
             ImGui::Separator();
             ImGui::MenuItem("Legacy Calibration Panel", nullptr, &show_calib_window_);
@@ -509,7 +524,7 @@ void MainWindow::render_top_toolbar() {
     auto trk_st   = session.tracker().get_stats();
     auto sync_r   = sync.get_sync_result();
 
-    // ─────── LEFT: brand title + session context ───────
+    // ─────── LEFT: brand title + set context ───────
     if (g_font_title) ImGui::PushFont(g_font_title);
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.85f, 1.0f, 1.0f));
     ImGui::TextUnformatted("VBT");
@@ -519,15 +534,15 @@ void MainWindow::render_top_toolbar() {
     ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 8);
     ImGui::TextDisabled("Data Collection  v%s", kAppVersion);
 
-    // Session context line (subject / exercise / set / rep)
+    // Set context line (subject / exercise / rep)
     ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 4);
     const auto& sinfo = session.get_info();
     auto reps = session.segmenter().get_reps();
     char ctx[160];
     std::string subj = sinfo.subject_id.empty() ? "(no subject)" : sinfo.subject_id;
     std::string ex   = sinfo.exercise.empty()   ? "(no exercise)"  : sinfo.exercise;
-    snprintf(ctx, sizeof(ctx), "subject %s   ·   %s   ·   set %d   ·   reps %d",
-             subj.c_str(), ex.c_str(), sinfo.set_number, (int)reps.size());
+    snprintf(ctx, sizeof(ctx), "subject %s   ·   %s   ·   reps %d",
+             subj.c_str(), ex.c_str(), (int)reps.size());
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.70f, 0.72f, 0.78f, 1.0f));
     ImGui::TextUnformatted(ctx);
     ImGui::PopStyleColor();
@@ -540,15 +555,15 @@ void MainWindow::render_top_toolbar() {
     ImVec4 rec_col = is_recording ? kPillRed
                    : can_record   ? kPillGreen
                                   : kPillGray;
-    float rec_w = 240, rec_h = 56;
-    ImGui::SetCursorPos(ImVec2(ImGui::GetWindowWidth() - rec_w - 24, 8));
+    float rec_w = 190, rec_h = 42;
+    ImGui::SetCursorPos(ImVec2(ImGui::GetWindowWidth() - rec_w - 16, 8));
     ImGui::PushStyleColor(ImGuiCol_Button,        rec_col);
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(rec_col.x*1.18f, rec_col.y*1.18f, rec_col.z*1.18f, 1));
     ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(rec_col.x*0.82f, rec_col.y*0.82f, rec_col.z*0.82f, 1));
     ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 10.0f);
     if (g_font_metric) ImGui::PushFont(g_font_metric);
     const char* rec_label = is_recording ? "■  STOP"
-                          : can_record   ? "●  START RECORDING"
+                          : can_record   ? "●  START SET"
                                          : "●  Hardware not ready";
     ImGui::BeginDisabled(!can_record && !is_recording);
     if (ImGui::Button(rec_label, ImVec2(rec_w, rec_h))) {
@@ -566,7 +581,7 @@ void MainWindow::render_top_toolbar() {
 
     // ─────── MIDDLE row of bottom: connect/tap buttons ───────
     // Continue inline below the title
-    ImGui::SetCursorPos(ImVec2(110, 56));
+    ImGui::SetCursorPos(ImVec2(110, 42));
 
     // Quick connect — single button when both offline, individual when one is up
     auto try_connect_imu = [&]() {
@@ -600,7 +615,7 @@ void MainWindow::render_top_toolbar() {
         ImGui::PushStyleColor(ImGuiCol_Button, kPillBlue);
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.60f, 0.95f, 1));
         ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.10f, 0.40f, 0.75f, 1));
-        if (ImGui::Button("Connect All Hardware", ImVec2(220, 44))) {
+        if (ImGui::Button("Connect All Hardware", ImVec2(180, 28))) {
             try_connect_imu();
             try_connect_cam();
         }
@@ -611,7 +626,7 @@ void MainWindow::render_top_toolbar() {
             ImGui::PushStyleColor(ImGuiCol_Button, kPillBlue);
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.60f, 0.95f, 1));
             ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.10f, 0.40f, 0.75f, 1));
-            if (ImGui::Button("Connect IMU", ImVec2(140, 44))) try_connect_imu();
+            if (ImGui::Button("Connect IMU", ImVec2(120, 28))) try_connect_imu();
             ImGui::PopStyleColor(3);
             ImGui::SameLine();
         }
@@ -619,7 +634,7 @@ void MainWindow::render_top_toolbar() {
             ImGui::PushStyleColor(ImGuiCol_Button, kPillBlue);
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.60f, 0.95f, 1));
             ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.10f, 0.40f, 0.75f, 1));
-            if (ImGui::Button("Connect Camera", ImVec2(160, 44))) try_connect_cam();
+            if (ImGui::Button("Connect Camera", ImVec2(130, 28))) try_connect_cam();
             ImGui::PopStyleColor(3);
             ImGui::SameLine();
         }
@@ -628,7 +643,7 @@ void MainWindow::render_top_toolbar() {
         ImGui::PushStyleColor(ImGuiCol_Button, kPillRed);
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.85f, 0.25f, 0.25f, 1));
         ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.65f, 0.18f, 0.18f, 1));
-        if (ImGui::Button("⚠  Re-run Tap Test", ImVec2(180, 44))) {
+        if (ImGui::Button("⚠  Re-run Tap Test", ImVec2(150, 28))) {
             sync.start_tap_test();
             Notifications::get().info("Tap test running — tap the bar sharply");
         }
@@ -641,7 +656,7 @@ void MainWindow::render_top_toolbar() {
     // need a manual boundary. M = mark, U = undo last rep.
     if (st == SessionState::RECORDING) {
         ImGui::PushStyleColor(ImGuiCol_Button, kPillBlue);
-        if (ImGui::Button("Mark Rep [M]", ImVec2(120, 44))) {
+        if (ImGui::Button("Mark Rep [M]", ImVec2(110, 28))) {
             double now_s = std::chrono::duration<double>(
                 std::chrono::steady_clock::now().time_since_epoch()).count();
             session.segmenter().mark_rep_boundary_now(now_s);
@@ -651,7 +666,7 @@ void MainWindow::render_top_toolbar() {
         ImGui::PopStyleColor();
         ImGui::SameLine();
         ImGui::PushStyleColor(ImGuiCol_Button, kPillAmber);
-        if (ImGui::Button("Undo Rep [U]", ImVec2(120, 44))) {
+        if (ImGui::Button("Undo Rep [U]", ImVec2(110, 28))) {
             session.segmenter().delete_last_rep();
             Notifications::get().warn("Last rep deleted");
         }
@@ -663,7 +678,7 @@ void MainWindow::render_top_toolbar() {
     float right_x = ImGui::GetWindowWidth() - 720;
     if (right_x < ImGui::GetCursorPosX() + 20) right_x = ImGui::GetCursorPosX() + 20;
     ImGui::SetCursorPosX(right_x);
-    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 8);  // vertical center
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 2);  // vertical center
 
     char buf[64];
     if (imu.is_running()) {
