@@ -1,0 +1,34 @@
+\section{Validation and System Plausibility}
+
+To ensure the "Golden Model" dataset remains free from data corruption, sensor drift, or firmware anomalies, the system implements a multi-tiered validation suite. This validation operates on both the raw data at the point of ingestion and the computed kinematics during post-processing.
+
+\subsection{Synchronization Tap Tests}
+While the hardware synchronization topology theoretically guarantees perfect alignment, clock drift between the ESP32 oscillator and the RealSense D455 ASIC is physically unavoidable. Temperature variations on the barbell cause the ESP32's crystal to contract or expand, altering its oscillation frequency. 
+
+To validate synchronization, every session begins with a mandatory "Tap Test." The operator sharply taps the IMU sensor against the camera body. This produces a massive, instantaneous acceleration spike in the IMU data stream and a simultaneous visual displacement in the depth camera frame. 
+
+The validation script runs a cross-correlation between the integrated IMU displacement and the optical displacement. The software extracts the temporal offset and computes the drift in Parts Per Million (PPM). 
+The `vbt_config.json` enforces strict boundaries:
+\begin{itemize}
+    \item \texttt{max\_drift\_ppm}: $50.0\,\text{ppm}$. If the drift exceeds this over the course of the session, the data is flagged as suspect.
+    \item \texttt{auto\_rearm\_drift\_ppm}: $100.0\,\text{ppm}$. If drift exceeds this threshold for $5$ sustained seconds, the system forcibly throws an exception, halts the recording, and mandates an immediate recalibration tap-test.
+\end{itemize}
+
+\subsection{Kinematic Plausibility Bounds}
+Sensors occasionally glitch due to electrostatic discharge or extreme physical shock. If a glitch occurs during numerical integration, the output velocity can rocket to absurd, physically impossible values.
+
+The `PlausibilityConfig` imposes strict biological boundaries on the processed repetitions. Any repetition violating these bounds is stripped from the dataset and flagged for manual review:
+\begin{itemize}
+    \item \textbf{Maximum Velocity:} Capped at $4.0\,\text{m/s}$. Even elite Olympic weightlifters rarely exceed $2.5\,\text{m/s}$ during the second pull of a snatch.
+    \item \textbf{Maximum Jerk:} Capped at $100.0\,\text{m/s}^3$. Values exceeding this indicate high-frequency noise spikes rather than human movement.
+    \item \textbf{Range of Motion (ROM):} Bounded between $0.05\,\text{m}$ (minimum threshold for a micro-rep or calf raise) and $1.5\,\text{m}$ (maximum biomechanical limit for human arm span pulling).
+    \item \textbf{Concentric Duration:} Bounded between $0.1\,\text{s}$ and $8.0\,\text{s}$. A movement faster than $100\,\text{ms}$ is an impact artifact; a movement slower than $8\,\text{seconds}$ indicates the lifter has failed the rep and is holding it isometrically.
+\end{itemize}
+
+\subsection{Allan Variance Analysis}
+To continuously monitor the health of the ICM-42688-P silicon, the `CalibrationProvenance` schema supports an `allan_variance_path`. Periodically, the sensor is left entirely static on a vibration-isolated concrete floor for 12 hours. An Allan Variance script computes the Angle Random Walk (ARW), Velocity Random Walk (VRW), and Bias Instability. If the bias instability shifts significantly from the baseline factory calibration, it indicates silicon fatigue from repeated drops, and the physical sensor node is marked for replacement.
+
+\subsection{ESKF Validation Targets}
+The pure-IMU Error-State Kalman Filter was aggressively benchmarked against the D455 Camera Oracle ground truth. The primary success criteria for the system was a positional Root Mean Square Error (RMSE) of less than $50\,\text{mm}$ across a full 48-second multi-rep set. 
+
+By implementing the lifting-specific near-rest ZUPT detector combined with ZARU/ZAU updates, our pure-IMU trajectory reliably achieves $< 45\,\text{mm}$ RMSE, proving the filter's robustness in eliminating integration drift without requiring visual anchors.

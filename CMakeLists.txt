@@ -158,6 +158,7 @@ set(APP_SOURCES
     src/processing/OrientationFilter.cpp
     src/processing/Validator.cpp
     src/processing/Autoregulation.cpp
+    src/processing/StillnessGate.cpp
     src/gui/MainWindow.cpp
     src/gui/SensorPanel.cpp
     src/gui/SessionPanel.cpp

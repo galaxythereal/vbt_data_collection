@@ -48,6 +48,16 @@ public:
         changed |= ImGui::SliderFloat("Min Blob Area", &cam_config.marker_min_area, 5, 100);
         changed |= ImGui::SliderFloat("Max Blob Area", &cam_config.marker_max_area, 50, 2000);
 
+        // Soft centre bias: lower σ → stronger preference for central markers.
+        // The two green guide-lines in the IR view show ±1σ and ±2σ.
+        changed |= ImGui::SliderFloat("Centre Bias σ", &cam_config.marker_center_bias_sigma_frac,
+                                      0.05f, 1.0f, "%.2f");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("off##bias")) {
+            cam_config.marker_center_bias_sigma_frac = 0.0f;
+            changed = true;
+        }
+
         if (changed) {
             ImGui::TextColored(ImVec4(1, 1, 0, 1), "Settings changed — restart camera to apply exposure/gain");
             session.tracker().configure(cam_config);

@@ -12,6 +12,8 @@
 #include <iomanip>
 #include <sstream>
 #include <system_error>
+#include <algorithm>
+#include <cmath>
 namespace fs = std::filesystem;
 
 namespace vbt {
@@ -63,8 +65,28 @@ bool Session::create(const std::string& root, const SessionInfo& info, bool bids
     info_ = info;
     bids_layout_ = bids_layout;
 
-    if (info_.schema_version == 0) info_.schema_version = 4;
+    if (info_.schema_version == 0) info_.schema_version = 5;
     info_.build = BuildProvenance::current();
+
+    // Freeze the hardware-config snapshot into the session. Pulled live so
+    // a future analyst can replay this session knowing exactly what range,
+    // ODR, filter cutoff, camera resolution, sync mode, and emitter state
+    // produced the data — without grepping the codebase. Defaults in
+    // CameraConfig / IMUDeviceSnapshot already reflect the current firmware
+    // and host-side settings; we override anything we can read at runtime.
+    if (camera_reader_) {
+        const auto& cc = camera_reader_->get_config();
+        info_.camera_snapshot.serial       = camera_reader_->get_serial();
+        info_.camera_snapshot.ir_width     = cc.width;
+        info_.camera_snapshot.ir_height    = cc.height;
+        info_.camera_snapshot.fps          = cc.fps;
+        info_.camera_snapshot.emitter_on   = cc.emitter_on;
+        info_.camera_snapshot.hw_sync_mode = cc.hw_sync_mode;
+        info_.camera_snapshot.librealsense_version = RS2_API_VERSION_STR;
+    }
+    // IMUDeviceSnapshot defaults already match firmware; nothing to override
+    // at session-create time (esp_mac/firmware_version come back from the ESP
+    // via a future status message, not used yet).
 
     // Mint a UUID for the subject if the operator hasn't pasted one in.
     // Re-recording the same person? Reuse the previous session's UUID
@@ -139,6 +161,11 @@ void Session::create_directory_structure() {
 
 bool Session::start_recording() {
     if (state_ != SessionState::CONFIGURED && state_ != SessionState::READY) return false;
+    if (!has_pre_session_calibration()) {
+        Notifications::get().warn("Capture pre-set calibration before recording.");
+        spdlog::warn("Recording blocked: missing passed pre-session calibration interval");
+        return false;
+    }
 
     if (!data_logger_->open(session_dir_)) {
         spdlog::error("DataLogger failed to open session dir '{}'", session_dir_);
@@ -152,6 +179,22 @@ bool Session::start_recording() {
             imu_reader_->get_first_host_timestamp());
     }
     imu_clock_registered_ = imu_reader_->is_running();
+
+    // Reset stream-quality counters so each recording starts with a clean
+    // slate. The gate itself is reset too — we want pre-recording stillness
+    // history irrelevant to the inter-set checks. Also reset the first-
+    // sample warmup counter so the recording-start gap suppression fires
+    // for the first IMU_GAP_WARMUP samples of THIS recording, not a stale
+    // count from a previous one.
+    last_imu_unified_t_ = 0.0;
+    imu_gap_event_count_ = 0;
+    imu_sat_event_count_ = 0;
+    imu_samples_since_gap_event_ = 0;
+    imu_samples_since_sat_event_ = 0;
+    imu_warmup_samples_ = 0;
+    imu_first_esp_ts_us_ = 0;
+    imu_last_esp_ts_us_  = 0;
+    stillness_gate_.reset();
 
     imu_reader_->set_callback([this](const IMUSample& s) {
         // Auto-register on the first sample if start_recording ran before the
@@ -173,10 +216,72 @@ bool Session::start_recording() {
             sync_engine_->register_imu_fsync_event(s2.esp_timestamp_us, s2.host_timestamp_s);
         }
         s2.unified_time_s = sync_engine_->esp_to_unified(s2.esp_timestamp_us);
+        if (imu_first_esp_ts_us_ == 0) imu_first_esp_ts_us_ = s2.esp_timestamp_us;
+        imu_last_esp_ts_us_ = s2.esp_timestamp_us;
         data_logger_->log_imu(s2);
         sync_engine_->feed_imu_sample(s2);
         rep_segmenter_->feed_accel_sample(s2.unified_time_s, s2.accel_x_g, s2.accel_y_g, s2.accel_z_g);
         sync_engine_->update_drift(s2.esp_timestamp_us, s2.host_timestamp_s);
+
+        // Stream-quality monitoring (poll-loop gap + per-sample saturation).
+        // Both events go to events.jsonl with payload so post-hoc tools can
+        // count incidents without scanning the raw CSV.
+        constexpr double EXPECTED_DT_S        = 1.0 / 988.0;            // measured median
+        constexpr double GAP_THRESHOLD_S      = 1.5 * EXPECTED_DT_S;    // ~1.5 ms
+        constexpr float  SAT_FRACTION         = 0.95f;                  // 95 % of full-scale
+        // First-sample suppression. Recording-start arms the IMU callback
+        // mid-stream, so the first dt the gap detector sees is "time since
+        // the last poll before the recorder armed" — which can be seconds.
+        // It always fires on session 1 regardless of stream health and is
+        // not real data loss; skip until we have a well-defined baseline.
+        if (last_imu_unified_t_ > 0.0 && imu_warmup_samples_ >= IMU_GAP_WARMUP) {
+            const double dt = s2.unified_time_s - last_imu_unified_t_;
+            if (dt > GAP_THRESHOLD_S) {
+                imu_samples_since_gap_event_++;
+                if (imu_gap_event_count_ == 0
+                    || imu_samples_since_gap_event_ >= IMU_EVENT_THROTTLE_SAMPLES) {
+                    event_log_.log("imu", "warning", "imu.gap",
+                        "Polling-loop gap (no FIFO) — sample missed",
+                        {{"dt_s", dt}, {"expected_dt_s", EXPECTED_DT_S}},
+                        s2.unified_time_s);
+                    imu_samples_since_gap_event_ = 0;
+                }
+                imu_gap_event_count_++;
+            }
+        }
+        if (imu_warmup_samples_ < IMU_GAP_WARMUP) ++imu_warmup_samples_;
+        last_imu_unified_t_ = s2.unified_time_s;
+
+        const float a_thresh = info_.imu_snapshot.accel_range_g  * SAT_FRACTION;
+        const float g_thresh = info_.imu_snapshot.gyro_range_dps * SAT_FRACTION;
+        const bool a_sat = std::abs(s2.accel_x_g)  >= a_thresh
+                        || std::abs(s2.accel_y_g)  >= a_thresh
+                        || std::abs(s2.accel_z_g)  >= a_thresh;
+        const bool g_sat = std::abs(s2.gyro_x_dps) >= g_thresh
+                        || std::abs(s2.gyro_y_dps) >= g_thresh
+                        || std::abs(s2.gyro_z_dps) >= g_thresh;
+        if (a_sat || g_sat) {
+            imu_samples_since_sat_event_++;
+            if (imu_sat_event_count_ == 0
+                || imu_samples_since_sat_event_ >= IMU_EVENT_THROTTLE_SAMPLES) {
+                event_log_.log("imu", "warning", "imu.saturation",
+                    "Sample within 95% of configured range — widen FSR or expect clipping",
+                    {{"accel_g_xyz", {s2.accel_x_g,  s2.accel_y_g,  s2.accel_z_g}},
+                     {"gyro_dps_xyz", {s2.gyro_x_dps, s2.gyro_y_dps, s2.gyro_z_dps}},
+                     {"accel_range_g",  info_.imu_snapshot.accel_range_g},
+                     {"gyro_range_dps", info_.imu_snapshot.gyro_range_dps}},
+                    s2.unified_time_s);
+                imu_samples_since_sat_event_ = 0;
+            }
+            imu_sat_event_count_++;
+        }
+
+        // Always feed the per-session stillness gate. Inter-set calibration
+        // commits a CalibrationInterval directly from this gate when the UI
+        // calls Session::commit_calibration_interval.
+        stillness_gate_.feed(s2.unified_time_s,
+                              s2.accel_x_g,  s2.accel_y_g,  s2.accel_z_g,
+                              s2.gyro_x_dps, s2.gyro_y_dps, s2.gyro_z_dps);
     });
 
     last_cam_position_ = 0.0f;
@@ -231,6 +336,7 @@ int Session::advance_set(const SetInfo& next_template) {
         std::chrono::system_clock::now().time_since_epoch()).count();
 
     // Close out the active set: timestamp + count its reps
+    int closing_set_id = 1;
     if (!info_.sets.empty()) {
         auto& cur = info_.sets.back();
         cur.t_end_unified_s = now_wall;
@@ -238,6 +344,15 @@ int Session::advance_set(const SetInfo& next_template) {
         for (const auto& r : rep_segmenter_->get_reps())
             if (r.set_id == cur.set_id) ++reps_in_set;
         cur.completed_reps = reps_in_set;
+        closing_set_id = cur.set_id;
+    }
+
+    // Auto-capture an inter-set calibration interval if the live gate has
+    // been continuously still for ≥2 s. Operators who hit "Next set" without
+    // stopping to rest will see a failed interval (passed_gate=false) — still
+    // worth recording so post-hoc tooling knows we tried.
+    if (stillness_gate_.settled()) {
+        commit_calibration_interval(stillness_gate_, "inter_set", closing_set_id);
     }
 
     // Append the new set, inheriting timing.
@@ -376,10 +491,24 @@ void Session::process_camera_frame(const CameraFrame& f) {
 
 void Session::save() {
     if (state_ != SessionState::STOPPED) return;
+    if (!has_post_session_calibration()) {
+        Notifications::get().warn("Capture post-set calibration before saving.");
+        spdlog::warn("Save blocked: missing passed post-session calibration interval");
+        return;
+    }
     rep_segmenter_->save(session_dir_ + "/annotations/rep_segments.json");
     validator_->save_report(session_dir_ + "/validation/validation_report.json");
     validator_->save_comparison_csv(session_dir_ + "/validation/position_comparison.csv",
                                     session_dir_ + "/validation/velocity_comparison.csv");
+
+    // Capture-time sync-quality validation. The hw vs host offset has been
+    // streaming row-by-row into video_frames.csv; we now compute the median /
+    // std / extrema across the whole session so a future analyst can flag any
+    // session whose sync drift went unnoticed during recording. Threshold
+    // (5 ms) is loose — measured std across the existing dataset is <1.1 ms.
+    compute_time_sync_check_();
+    compute_imu_snapshot_post_();
+    detect_mount_shift_();
     write_metadata();
     write_manifest();
     event_log_.info("session", "save", "Session finalised; renaming .partial → final");
@@ -431,6 +560,284 @@ void Session::write_metadata() {
     j["schema_version"] = info_.schema_version;
     std::ofstream f(session_dir_ + "/metadata.json");
     f << j.dump(2);
+}
+
+bool Session::has_passed_calibration_interval(const std::string& type) const {
+    for (const auto& iv : info_.calibration_intervals) {
+        if (iv.type == type && iv.passed_gate) return true;
+    }
+    return false;
+}
+
+// ============================================================================
+// CalibrationInterval API
+// ============================================================================
+namespace {
+// Two intervals of the same type+linked_set_id collide when their time
+// spans overlap (or are adjacent within 0.5 s — a double-click on the
+// "Capture" button). When that happens we keep the longer of the two
+// rather than appending both — the duplicate-overlap fired in the first
+// post-fix session, with two pre_session entries sharing a start_t and
+// only differing in end_t.
+bool collides(const CalibrationInterval& a, const CalibrationInterval& b) {
+    if (a.type != b.type || a.linked_set_id != b.linked_set_id) return false;
+    constexpr double EPS = 0.5;
+    return !(a.t_end_unified_s + EPS < b.t_start_unified_s
+          || b.t_end_unified_s + EPS < a.t_start_unified_s);
+}
+}  // namespace
+
+void Session::commit_calibration_interval(const CalibrationInterval& iv) {
+    bool replaced = false;
+    for (auto& existing : info_.calibration_intervals) {
+        if (collides(existing, iv)) {
+            // Keep the longer / better-quality interval.
+            const bool prefer_new =
+                (iv.passed_gate && !existing.passed_gate) ||
+                (iv.passed_gate == existing.passed_gate
+                  && iv.duration_s > existing.duration_s);
+            if (prefer_new) existing = iv;
+            replaced = true;
+            break;
+        }
+    }
+    if (!replaced) info_.calibration_intervals.push_back(iv);
+
+    // Reset the live gate so the next "Capture" press requires a fresh
+    // stillness window rather than re-using the same pass_started_at and
+    // emitting an interval that overlaps the one just committed.
+    stillness_gate_.reset();
+
+    nlohmann::json payload = iv;
+    payload["replaced_overlapping"] = replaced;
+    event_log_.log("calibration", iv.passed_gate ? "info" : "warning",
+                    "calibration_interval",
+                    std::string("Calibration interval ")
+                      + (replaced ? "updated (overlap)" : "committed")
+                      + ": " + iv.type,
+                    payload, iv.t_end_unified_s);
+    spdlog::info("Calibration interval {}: type={} set={} dur={:.2f}s pass={} "
+                  "amag_std={:.4f}g gmag_mean={:.3f}dps",
+                  replaced ? "updated" : "committed",
+                  iv.type, iv.linked_set_id, iv.duration_s, iv.passed_gate,
+                  iv.accel_mag_std_g, iv.gyro_mag_mean_dps);
+    write_metadata();
+}
+
+void Session::compute_time_sync_check_() {
+    const std::string path = session_dir_ + "/camera/video_frames.csv";
+    std::ifstream f(path);
+    if (!f) return;
+
+    std::string header;
+    if (!std::getline(f, header)) return;
+
+    // Locate the columns we need by name so a column-order change in
+    // DataLogger doesn't silently break this.
+    std::vector<std::string> cols;
+    {
+        std::stringstream ss(header);
+        std::string c;
+        while (std::getline(ss, c, ',')) cols.push_back(c);
+    }
+    int idx_hw = -1, idx_host = -1;
+    for (size_t i = 0; i < cols.size(); ++i) {
+        if (cols[i] == "hw_timestamp_s")   idx_hw = (int)i;
+        if (cols[i] == "host_timestamp_s") idx_host = (int)i;
+    }
+    if (idx_hw < 0 || idx_host < 0) {
+        spdlog::warn("video_frames.csv missing hw/host columns; skipping sync check");
+        return;
+    }
+
+    std::vector<double> offsets_s;
+    std::string line;
+    while (std::getline(f, line)) {
+        if (line.empty()) continue;
+        std::vector<std::string> tok;
+        tok.reserve(cols.size());
+        std::stringstream ss(line);
+        std::string c;
+        while (std::getline(ss, c, ',')) tok.push_back(c);
+        if ((int)tok.size() <= std::max(idx_hw, idx_host)) continue;
+        try {
+            const double hw   = std::stod(tok[idx_hw]);
+            const double host = std::stod(tok[idx_host]);
+            // Skip the startup transient: hw_timestamp_s < 1e9 means the
+            // RealSense GLOBAL_TIME hadn't started flowing yet.
+            if (hw < 1e9) continue;
+            offsets_s.push_back(hw - host);
+        } catch (...) { /* skip */ }
+    }
+
+    if (offsets_s.empty()) return;
+
+    std::sort(offsets_s.begin(), offsets_s.end());
+    const double median_s = offsets_s[offsets_s.size() / 2];
+    // Two-pass variance: hw_timestamp_s is in Unix-epoch units (~1.78e12 in
+    // ms when the RealSense driver returns GLOBAL_TIME) and the per-frame
+    // offset variance we care about is sub-ms. The classic E[X²] - E[X]²
+    // formula loses ~15 digits of precision to catastrophic cancellation
+    // here, so we subtract the mean first and accumulate squared deviations.
+    double sum = 0.0;
+    for (double v : offsets_s) sum += v;
+    const double mean = sum / (double)offsets_s.size();
+    double sum_sqdev = 0.0;
+    for (double v : offsets_s) {
+        const double d = v - mean;
+        sum_sqdev += d * d;
+    }
+    const double std_s = std::sqrt(sum_sqdev / (double)offsets_s.size());
+
+    auto& tsc = info_.time_sync_check;
+    tsc.hw_sync_active                = true;  // D455 master mode + FSYNC wired
+    tsc.wall_to_mono_offset_ms_median = median_s * 1000.0;
+    tsc.sync_residual_std_ms          = std_s    * 1000.0;
+    // Min/max are stored as residuals around the median so a glance at the
+    // file shows "max excursion was 0.7 ms" rather than "max was 1.78e12".
+    tsc.sync_residual_min_ms          = (offsets_s.front() - median_s) * 1000.0;
+    tsc.sync_residual_max_ms          = (offsets_s.back()  - median_s) * 1000.0;
+    tsc.n_frames_used                 = offsets_s.size();
+
+    if (tsc.sync_residual_std_ms > 5.0) {
+        event_log_.warn("session", "time_sync_drift",
+            "hw-host offset std exceeds 5 ms — sync may be unreliable");
+    } else {
+        event_log_.log("session", "info", "time_sync_check",
+            "Capture-time sync check passed",
+            {{"wall_to_mono_offset_ms_median", tsc.wall_to_mono_offset_ms_median},
+             {"sync_residual_std_ms",          tsc.sync_residual_std_ms},
+             {"n_frames",                      tsc.n_frames_used}});
+    }
+    spdlog::info("Time-sync check: residual std={:.3f} ms, "
+                  "residual range=[{:+.3f}, {:+.3f}] ms over {} frames "
+                  "(absolute wall-to-mono offset {:.0f} ms)",
+                  tsc.sync_residual_std_ms,
+                  tsc.sync_residual_min_ms, tsc.sync_residual_max_ms,
+                  tsc.n_frames_used, tsc.wall_to_mono_offset_ms_median);
+}
+
+void Session::compute_imu_snapshot_post_() {
+    // First/last ESP timestamp seen in the live IMU callback.
+    info_.imu_snapshot.first_esp_timestamp_us = imu_first_esp_ts_us_;
+    info_.imu_snapshot.last_esp_timestamp_us  = imu_last_esp_ts_us_;
+
+    // Measured ODR from raw_imu.csv. We re-scan rather than caching live
+    // because the session may have stopped/started multiple times before
+    // save (recovery flow) and the CSV is the durable source of truth.
+    const std::string path = session_dir_ + "/imu/raw_imu.csv";
+    std::ifstream f(path);
+    if (!f) return;
+    std::string header; if (!std::getline(f, header)) return;
+
+    std::vector<std::string> cols;
+    {
+        std::stringstream ss(header);
+        std::string c;
+        while (std::getline(ss, c, ',')) cols.push_back(c);
+    }
+    int idx_t = -1;
+    for (size_t i = 0; i < cols.size(); ++i)
+        if (cols[i] == "esp_timestamp_us") idx_t = (int)i;
+    if (idx_t < 0) return;
+
+    std::vector<double> dts_us;
+    dts_us.reserve(1 << 16);
+    uint64_t prev = 0;
+    std::string line;
+    while (std::getline(f, line)) {
+        if (line.empty()) continue;
+        std::vector<std::string> tok;
+        std::stringstream ss(line);
+        std::string c;
+        while (std::getline(ss, c, ',')) tok.push_back(c);
+        if ((int)tok.size() <= idx_t) continue;
+        try {
+            uint64_t t = (uint64_t)std::stoull(tok[idx_t]);
+            if (prev != 0 && t > prev) dts_us.push_back((double)(t - prev));
+            prev = t;
+        } catch (...) { /* skip */ }
+    }
+    if (dts_us.empty()) return;
+
+    std::sort(dts_us.begin(), dts_us.end());
+    const double median_dt_us = dts_us[dts_us.size() / 2];
+    if (median_dt_us > 0.0) {
+        info_.imu_snapshot.odr_hz_measured = (float)(1e6 / median_dt_us);
+    }
+    spdlog::info("IMU snapshot post: measured ODR = {:.2f} Hz, esp_ts range = [{}, {}]",
+                  info_.imu_snapshot.odr_hz_measured,
+                  imu_first_esp_ts_us_, imu_last_esp_ts_us_);
+}
+
+void Session::detect_mount_shift_() {
+    // Pull the first passed pre_session and the first passed post_session
+    // calibration intervals. If either is missing, nothing to compare —
+    // skip silently. We don't gate save() on this; it's diagnostic.
+    const CalibrationInterval* pre  = nullptr;
+    const CalibrationInterval* post = nullptr;
+    for (const auto& iv : info_.calibration_intervals) {
+        if (iv.passed_gate && iv.type == "pre_session"  && !pre)  pre  = &iv;
+        if (iv.passed_gate && iv.type == "post_session" && !post) post = &iv;
+    }
+    if (!pre || !post) return;
+
+    // Angle between the two gravity vectors. Both are mean accel during a
+    // still window so they have magnitude ≈ 1 g; compute the dot product
+    // and arc-cosine. Numerically clamp to [-1, 1] to avoid NaN from
+    // floating-point overshoot.
+    auto norm = [](float x, float y, float z) {
+        const float m = std::sqrt(x*x + y*y + z*z);
+        return m > 1e-6f ? m : 1.0f;
+    };
+    const float pn = norm(pre->gravity_x_g, pre->gravity_y_g, pre->gravity_z_g);
+    const float qn = norm(post->gravity_x_g, post->gravity_y_g, post->gravity_z_g);
+    const float dot = (pre->gravity_x_g * post->gravity_x_g
+                     + pre->gravity_y_g * post->gravity_y_g
+                     + pre->gravity_z_g * post->gravity_z_g) / (pn * qn);
+    const float dot_clamped = std::max(-1.0f, std::min(1.0f, dot));
+    const float angle_deg = std::acos(dot_clamped) * 180.0f / (float)M_PI;
+
+    constexpr float SHIFT_THRESHOLD_DEG = 5.0f;
+    nlohmann::json payload = {
+        {"angle_deg", angle_deg},
+        {"pre_gravity_g",  {pre->gravity_x_g,  pre->gravity_y_g,  pre->gravity_z_g}},
+        {"post_gravity_g", {post->gravity_x_g, post->gravity_y_g, post->gravity_z_g}},
+        {"threshold_deg",  SHIFT_THRESHOLD_DEG},
+    };
+    if (angle_deg > SHIFT_THRESHOLD_DEG) {
+        event_log_.log("session", "warning", "mount_shift",
+            "Device gravity vector rotated > 5° between pre and post calibration",
+            payload);
+        spdlog::warn("Mount shift detected: {:.1f}° between pre and post calibration",
+                      angle_deg);
+    } else {
+        event_log_.log("session", "info", "mount_shift_check",
+            "Pre/post gravity vectors agree", payload);
+    }
+}
+
+CalibrationInterval Session::commit_calibration_interval(const StillnessGate& gate,
+                                                          const std::string& type,
+                                                          int linked_set_id) {
+    CalibrationInterval iv;
+    iv.type             = type;
+    iv.linked_set_id    = linked_set_id;
+    iv.t_start_unified_s = gate.pass_started_at();
+    iv.t_end_unified_s   = iv.t_start_unified_s + gate.pass_duration_s();
+    iv.duration_s        = gate.pass_duration_s();
+    iv.passed_gate       = gate.is_still();
+    iv.n_samples         = gate.total_samples();
+    iv.gravity_x_g       = gate.mean_accel_x();
+    iv.gravity_y_g       = gate.mean_accel_y();
+    iv.gravity_z_g       = gate.mean_accel_z();
+    iv.gyro_bias_x_dps   = gate.mean_gyro_x();
+    iv.gyro_bias_y_dps   = gate.mean_gyro_y();
+    iv.gyro_bias_z_dps   = gate.mean_gyro_z();
+    iv.accel_mag_std_g   = gate.accel_mag_std();
+    iv.gyro_mag_mean_dps = gate.gyro_mag_mean();
+    commit_calibration_interval(iv);
+    return iv;
 }
 
 void Session::write_manifest() {

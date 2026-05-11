@@ -15,6 +15,18 @@ MarkerTracker::MarkerTracker() = default;
 
 void MarkerTracker::configure(const CameraConfig& config) { config_ = config; }
 
+namespace {
+// Gaussian falloff in [0,1] from the horizontal centre of a frame of width W.
+// sigma_frac ≤ 0 disables the bias (returns 1.0 everywhere).
+float compute_centrality(float pixel_u, int W, float sigma_frac) {
+    if (sigma_frac <= 0.0f || W <= 0) return 1.0f;
+    float center = W * 0.5f;
+    float sigma  = std::max(W * sigma_frac, 1.0f);
+    float dx     = (pixel_u - center) / sigma;
+    return std::exp(-0.5f * dx * dx);
+}
+}  // namespace
+
 cv::Mat MarkerTracker::threshold_ir(const cv::Mat& ir) {
     cv::Mat binary;
     cv::threshold(ir, binary, config_.marker_threshold, 255, cv::THRESH_BINARY);
@@ -96,6 +108,9 @@ std::vector<MarkerDetection> MarkerTracker::find_blobs(const cv::Mat& binary, co
         float bg_mean = static_cast<float>(cv::mean(ir)[0]);
         det.snr = (bg_mean > 0) ? (mean_val[0] - bg_mean) / (stddev_val[0] + 1e-6f) : 0.0f;
 
+        det.centrality = compute_centrality(det.pixel_u, ir.cols,
+                                            config_.marker_center_bias_sigma_frac);
+
         det.detected = true;
         candidates.push_back(det);
     }
@@ -120,9 +135,14 @@ MarkerDetection MarkerTracker::select_best_blob(const std::vector<MarkerDetectio
         if (min_dist < 100.0f) return candidates[best_idx];
     }
 
-    // No history or all too far: pick brightest (highest SNR)
+    // No history or all too far: pick highest SNR weighted by centrality.
+    // Centrality alone could be tricked by a faint central artefact, and SNR
+    // alone could be tricked by a bright spectator at the edge — the product
+    // demands both brightness and centrality before a candidate wins.
     auto it = std::max_element(candidates.begin(), candidates.end(),
-        [](const MarkerDetection& a, const MarkerDetection& b) { return a.snr < b.snr; });
+        [](const MarkerDetection& a, const MarkerDetection& b) {
+            return a.snr * a.centrality < b.snr * b.centrality;
+        });
     return *it;
 }
 
@@ -220,9 +240,15 @@ MarkerDetection MarkerTracker::process(const cv::Mat& ir_left, const cv::Mat& ir
             stereo_triangulate(det, ir_left, ir_right, ir_intrinsics);
         }
 
-        // Compute confidence
-        det.confidence = std::min(1.0f, det.circularity * 0.4f + std::min(det.snr / 20.0f, 1.0f) * 0.4f
-                         + (det.depth_source != MarkerDetection::DepthSource::NONE ? 0.2f : 0.0f));
+        // Confidence: circularity, normalised SNR, depth-availability, and
+        // centrality each contribute. The centrality term means an edge
+        // detection is reported as lower-confidence even when its blob shape
+        // and brightness are perfect — useful downstream for rep gating.
+        det.confidence = std::min(1.0f,
+              det.circularity * 0.3f
+            + std::min(det.snr / 20.0f, 1.0f) * 0.3f
+            + det.centrality * 0.2f
+            + (det.depth_source != MarkerDetection::DepthSource::NONE ? 0.2f : 0.0f));
 
         stats_.detected_frames++;
     } else {
@@ -266,9 +292,28 @@ MarkerDetection MarkerTracker::process(const cv::Mat& ir_left, const cv::Mat& ir
             }
         }
 
+        // Soft centre-bias visualisation: draw vertical guide-lines at the
+        // ±1σ and ±2σ contours of the Gaussian. Inside ±1σ centrality ≥ 0.61;
+        // beyond ±2σ it has dropped below 0.14. Lets the operator see at a
+        // glance how aggressively edge candidates are being down-weighted.
+        if (config_.marker_center_bias_sigma_frac > 0.0f) {
+            int cx = W / 2;
+            int s1 = std::max(1, (int)(config_.marker_center_bias_sigma_frac * W));
+            int s2 = 2 * s1;
+            cv::line(debug_image_, {cx, 0}, {cx, H}, cv::Scalar(120, 255, 120), 1);
+            for (int dx : {-s2, -s1, s1, s2}) {
+                int x = cx + dx;
+                if (x > 0 && x < W) {
+                    bool is_2sigma = (std::abs(dx) == s2);
+                    cv::Scalar col = is_2sigma ? cv::Scalar(60, 180, 60) : cv::Scalar(90, 230, 90);
+                    cv::line(debug_image_, {x, 0}, {x, H}, col, 1, cv::LINE_AA);
+                }
+            }
+        }
+
         if (det.detected) {
             cv::circle(debug_image_, cv::Point((int)det.pixel_u, (int)det.pixel_v), 15, cv::Scalar(0, 255, 0), 2);
-            cv::putText(debug_image_, cv::format("%.3fm", det.z_m),
+            cv::putText(debug_image_, cv::format("%.3fm c=%.2f", det.z_m, det.centrality),
                         cv::Point((int)det.pixel_u + 20, (int)det.pixel_v),
                         cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 0), 1);
         }

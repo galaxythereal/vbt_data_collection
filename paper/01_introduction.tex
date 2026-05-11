@@ -1,0 +1,107 @@
+% ════════════════════════════════════════════════════════════════════
+% Chapter 1 — Introduction
+% ════════════════════════════════════════════════════════════════════
+\section{Introduction}\label{sec:intro}
+
+\subsection{Velocity-Based Training: Principles and Significance}
+
+Velocity-Based Training (VBT) is an autoregulatory strength-training methodology that prescribes and monitors training loads through the real-time measurement of barbell movement velocity, rather than relying on fixed percentages of a static One-Repetition Maximum (1RM).
+The theoretical foundation of VBT rests on the well-established, quasi-linear \emph{load--velocity relationship}: as the external load on a barbell increases, the maximum concentric velocity achievable by a given athlete decreases in a predictable, approximately linear fashion for compound exercises~\cite{gonzalez-badillo2010}.
+This relationship allows practitioners to estimate the athlete's daily 1RM from submaximal warm-up velocities, eliminating the need for periodic maximal testing---a practice that carries injury risk, induces excessive fatigue, and is unreliable for athletes in the early phases of a training block.
+
+The kinematic variables of primary interest in VBT research are:
+\begin{itemize}[nosep]
+  \item \textbf{Mean Concentric Velocity (MCV):} the average vertical velocity during the concentric (upward) phase of a lift. This is the standard metric for load prescription.
+  \item \textbf{Peak Concentric Velocity (PCV):} the instantaneous maximum velocity during the concentric phase. PCV is more sensitive to neuromuscular capacity but more susceptible to measurement noise.
+  \item \textbf{Range of Motion (ROM):} the total vertical displacement of the barbell during a complete repetition cycle.
+  \item \textbf{Intra-Set Velocity Loss (\%VL):} the percentage decrease in MCV from the fastest repetition (typically rep~1) to the final repetition of a set. %VL is used as a real-time proxy for neuromuscular fatigue. Research by S\'{a}nchez-Medina and Gonz\'{a}lez-Badillo~\cite{sanchez-medina2011} demonstrated that terminating sets at a 20\% velocity loss threshold yields superior hypertrophic and strength adaptations compared to training to muscular failure, while minimising central nervous system fatigue and preserving training quality across a microcycle.
+\end{itemize}
+
+The velocity zones corresponding to distinct strength qualities, as established in the literature, are summarised in \cref{tab:vel_zones}.
+
+\begin{table}[H]
+  \centering
+  \caption{Velocity zones and corresponding strength qualities (adapted from Weakley et al.~\cite{weakley2021}).}
+  \label{tab:vel_zones}
+  \begin{tabular}{lcc}
+    \toprule
+    \textbf{Strength Quality} & \textbf{MCV Range (\si{\metre\per\second})} & \textbf{Approx.\ \%1RM} \\
+    \midrule
+    Absolute Strength    & $0.15$--$0.50$ & $85$--$100\%$ \\
+    Accelerative Strength & $0.50$--$0.75$ & $70$--$85\%$  \\
+    Strength-Speed       & $0.75$--$1.00$ & $55$--$70\%$  \\
+    Speed-Strength       & $1.00$--$1.30$ & $40$--$55\%$  \\
+    Starting Strength    & $> 1.30$       & $< 40\%$      \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+A deviation of even \SI{0.05}{\metre\per\second} in MCV can shift the intended training stimulus from one physiological adaptation zone to another.
+This places stringent accuracy requirements on VBT measurement devices---requirements that many commercial systems fail to meet under field conditions.
+
+
+\subsection{Limitations of Existing VBT Measurement Technologies}\label{sec:limitations}
+
+The commercial VBT ecosystem is populated by three dominant sensor modalities, each with significant limitations for research applications:
+
+\subsubsection{Linear Position Transducers (LPTs)}
+LPTs (e.g., GymAware, Tendo Unit) measure the displacement of a retractable cable tethered to the barbell.
+While traditionally considered the ``gold standard'' for VBT velocity measurement~\cite{banyard2017}, LPTs suffer from fundamental limitations.
+The physical tether constrains the barbell to predominantly vertical motion, altering the natural bar path during explosive multi-joint lifts such as the snatch and clean, where significant horizontal displacement is biomechanically essential.
+Furthermore, LPTs provide only a single degree of freedom (1-DOF, vertical displacement); they cannot capture barbell tilt, lateral drift, or rotational dynamics---kinematic features that are clinically relevant for technique analysis and injury-risk assessment.
+
+\subsubsection{Camera-Based Systems}
+Marker-based optoelectronic motion capture systems (Vicon, Qualisys, OptiTrack) provide the highest accuracy ($<\SI{0.1}{\milli\metre}$ positional RMS in calibrated volumes) and are the true criterion standard for biomechanical research.
+However, their cost (typically \$50,000--\$250,000 for a multi-camera installation), fixed laboratory footprint, and extensive calibration requirements make them impractical for routine data collection in strength-training facilities.
+Video-based systems using smartphone or webcam feeds (e.g., the ``My Lift'' application~\cite{balsalobre-fernandez2017}) are more accessible but suffer from rolling-shutter distortion, limited frame rates (\SI{30}{}--\SI{60}{fps}), and sensitivity to lighting conditions.
+
+\subsubsection{Wearable Inertial Measurement Units}
+Commercial IMU-based VBT devices (e.g., PUSH Band, Vmaxpro, Beast Sensor, RepOne) solve the tethering and portability problems but introduce severe algorithmic challenges.
+These devices operate as ``black boxes,'' streaming heavily filtered velocity summaries over Bluetooth Low Energy (BLE) with undocumented sampling rates, proprietary sensor-fusion algorithms, and unquantified latency.
+Pérez-Castilla et al.~\cite{perez-castilla2019} reported Limits of Agreement (LoA) as wide as $\pm\SI{0.11}{\metre\per\second}$ for commercial IMU devices against an LPT criterion---an error envelope that spans nearly an entire velocity zone in \cref{tab:vel_zones}.
+
+The fundamental challenge of IMU-based VBT is the double integration of accelerometer data.
+Velocity is obtained by integrating linear acceleration, and displacement is obtained by integrating velocity.
+Any uncompensated bias $b_a$ in the accelerometer produces a position error that grows \emph{quadratically} with time:
+\begin{equation}\label{eq:drift}
+  \epsilon_p(t) = \frac{1}{2} b_a \, t^2
+\end{equation}
+For a typical MEMS accelerometer bias of \SI{5}{\milli\g} (\SI{0.049}{\metre\per\second\squared}), this yields a positional error of \SI{1.23}{\metre} after only \SI{10}{\second}---an obviously catastrophic failure for a barbell that may have moved only \SI{0.5}{\metre}.
+
+
+\subsection{Motivation for a Custom Research Platform}\label{sec:motivation}
+
+The limitations described in \cref{sec:limitations} reveal a critical gap in the research ecosystem.
+To develop and validate novel IMU-based tracking algorithms---including Error-State Kalman Filters (ESKF), Versatile Quaternion-based Filters (VQF)~\cite{laidig2023}, and lifting-specific Zero-Velocity Update (ZUPT) detectors~\cite{skog2010}---researchers require access to raw, unfiltered, high-rate sensor data that is:
+\begin{enumerate}[nosep]
+  \item \textbf{Temporally synchronised} with a concurrent optical ground-truth signal at the \emph{hardware} level, not via software timestamps;
+  \item \textbf{Fully transparent} in its processing chain, with every filtering step, calibration parameter, and algorithmic assumption documented and reproducible;
+  \item \textbf{Richly contextualised} with the metadata necessary for stratified analysis (athlete demographics, training phase, loading conditions, subjective fatigue, equipment provenance).
+\end{enumerate}
+
+This manuscript describes the complete engineering of such a platform.
+
+
+\subsection{Research Objectives}
+
+The specific objectives of the data collection system are:
+\begin{enumerate}[nosep]
+  \item To capture raw, unfiltered \SI{1}{\kilo\hertz} 6-DOF IMU data at $\pm\SI{16}{\g}$ accelerometer and $\pm\SI{2000}{\degree\per\second}$ gyroscope full-scale ranges, preserving the high-frequency shock transients of weightlifting movements.
+  \item To achieve sub-millisecond hardware synchronisation between the IMU and camera streams through a dedicated level-shifting circuit and the ICM-42688-P's internal FSYNC tagging engine.
+  \item To wirelessly transmit the high-bandwidth IMU data stream from the barbell to the host PC via ESP-NOW, avoiding any physical tethering of the barbell.
+  \item To process all raw data through an open-source, mathematically rigorous pipeline, producing ``golden model'' kinematic trajectories validated against the optical ground truth.
+  \item To persist every session in a schema-versioned, BIDS-compatible JSON taxonomy with over 120 metadata fields, enabling fully reproducible longitudinal analysis.
+\end{enumerate}
+
+
+\subsection{Document Organisation}
+
+The remainder of this manuscript is organised as follows.
+\Cref{sec:arch} presents the high-level system architecture and the rationale for each hardware selection.
+\Cref{sec:hw} details the hardware configuration of each sensor node, including register-level IMU settings and camera parameters.
+\Cref{sec:sync} describes the hardware synchronisation strategy in depth, including the NPN level-shifting circuit, FSYNC tagging, and host-side temporal alignment.
+\Cref{sec:firmware} covers the ESP32 firmware architecture for both the barbell node and the relay node.
+\Cref{sec:hostsw} documents the host-side C++17 application architecture.
+\Cref{sec:pipeline} presents the mathematical data processing pipeline, including attitude estimation, ESKF formulation, and ZUPT strategies.
+\Cref{sec:dataset} formalises the dataset schema and metadata taxonomy.
+\Cref{sec:validation} describes the multi-tiered validation framework.

@@ -9,7 +9,7 @@
  *   - Polling fallback if INT1 not wired
  *   - 64-bit µs timestamps via esp_timer_get_time()
  *   - Manual byte packing (no struct alignment issues)
- *   - 3rd-order anti-aliasing, BW = ODR/4 for clean signal
+ *   - 3rd-order UI filter, BW = ODR/2 = 500 Hz (widest; ASIC-pipeline-friendly)
  *   - FIFO disabled for minimum latency
  *   - Periodic ASCII status reports (prefixed with '#')
  *
@@ -199,7 +199,20 @@ static bool imu_init() {
     // Accel: ±16g, 1kHz ODR
     writeReg(REG_ACCEL_CONFIG0, (ACCEL_FS_16G << 5) | ODR_1KHZ);
 
-    // ── Anti-Aliasing Filters (3rd order, BW = ODR/4 for clean signal) ──
+    // ── UI Filter (3rd order, BW = ODR/2 = widest, for ASIC pipeline data) ──
+    //
+    // Dataset is being collected to design an ASIC pipeline. Filter choices
+    // belong to the silicon team, not to capture-time firmware: anything we
+    // remove here cannot be recovered offline. The 125–500 Hz band carries
+    // impact transients, mount-shift signatures, vibration character, and
+    // the high-frequency tail of Allan variance — all of which the ASIC's
+    // algorithm designers may want to use. BW_SEL=0 leaves it intact.
+    // Downstream VBT still applies its own 10 Hz LP, so this only adds
+    // noise to channels that filter it anyway.
+    //
+    // The fixed-cutoff anti-alias stage upstream of BW_SEL is always on
+    // and protects against ADC aliasing — it's the chip's intrinsic
+    // decimation filter, not a configurable post-process.
 
     // GYRO_CONFIG1: FILT_ORD[3:2] = 10 (3rd order)
     writeReg(REG_GYRO_CONFIG1, 0x02 << 2);
@@ -207,9 +220,11 @@ static bool imu_init() {
     // ACCEL_CONFIG1: FILT_ORD[3:2] = 10 (3rd order)
     writeReg(REG_ACCEL_CONFIG1, 0x02 << 2);
 
-    // GYRO_ACCEL_CONFIG0: BW_SEL = 01 (ODR/4) for both
-    // bits [3:0] = accel BW, bits [7:4] = gyro BW
-    writeReg(REG_GYRO_ACCEL_CONFIG0, 0x11);  // Both = ODR/4
+    // GYRO_ACCEL_CONFIG0: BW_SEL = 0000 = ODR/2 for both (widest cutoff)
+    // bits [3:0] = accel BW (0 = ODR/2), bits [7:4] = gyro BW (0 = ODR/2)
+    // Per ICM-42688-P §5.2.2 BW_SEL encoding: 0=ODR/2, 1=ODR/4, 2=ODR/5,
+    // 3=ODR/8, 4=ODR/10, 5=ODR/16, 6=ODR/20, 7=ODR/40.
+    writeReg(REG_GYRO_ACCEL_CONFIG0, 0x00);  // Both = ODR/2 (500 Hz @ 1 kHz ODR)
 
     // ── FIFO: Bypass (minimum latency) ──
     writeReg(REG_FIFO_CONFIG, 0x00);
@@ -365,7 +380,7 @@ void setup() {
 
     Serial.println("# ICM42688-P initialized OK");
     Serial.println("# Config: +-16g accel, +-2000dps gyro, 1kHz ODR");
-    Serial.println("# Filter: 3rd-order, BW=ODR/4 (250Hz)");
+    Serial.println("# Filter: 3rd-order, BW=ODR/2 (500Hz, ASIC-pipeline-friendly)");
     Serial.println("# FSYNC: tagged into TEMP LSB (host: fsync = temp_raw & 0x01)");
 
     // Trigger driving GPIO 25 → IMU FSYNC + Cat5e to D455 (debug rate, see top of file)

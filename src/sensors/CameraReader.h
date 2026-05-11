@@ -89,6 +89,11 @@ public:
     void close();
     bool is_open() const { return is_open_; }
 
+    /// The CameraConfig used in the latest open() call. Lets Session
+    /// snapshot the active resolution / sync mode / emitter state into
+    /// metadata.json without keeping a duplicate AppConfig handle.
+    const CameraConfig& get_config() const { return config_; }
+
     // Start/stop streaming
     void start();
     void stop();

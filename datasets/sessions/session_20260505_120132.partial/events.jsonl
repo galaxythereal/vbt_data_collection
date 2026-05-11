@@ -1,2 +1,0 @@
-{"code":"create","host_s":1777971692.5505242,"level":"info","msg":"Session created: session_20260505_120132","source":"session","wallclock":"2026-05-05T09:01:32.550514Z"}
-{"code":"build_provenance","host_s":1777971692.55056,"level":"info","msg":"build info","payload":{"build_timestamp":"2026-05-04T22:36:31Z","build_type":"Release","git_branch":"main","git_dirty":"true","git_sha":"c9f0965","version":"1.1.0"},"source":"session","wallclock":"2026-05-05T09:01:32.550558Z"}

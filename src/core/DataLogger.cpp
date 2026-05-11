@@ -136,8 +136,10 @@ void DataLogger::log_camera_frame(const CameraFrame& frame) {
 
     if (!video_writer_open_) {
         // Lazy open: now we know the frame size and (roughly) the live fps.
+        // MJPEG: every frame is an independent JPEG (all I-frames).
+        // Seeking is always instant and artefact-free regardless of GOP.
         const std::string path = session_dir_ + "/camera/ir_video.mp4";
-        const int fourcc = cv::VideoWriter::fourcc('m','p','4','v');
+        const int fourcc = cv::VideoWriter::fourcc('M','J','P','G');
         const cv::Size size(frame.ir_left.cols, frame.ir_left.rows);
         const bool ok = video_writer_.open(path, fourcc, video_fps_, size, /*isColor=*/false);
         if (!ok) {
@@ -146,7 +148,7 @@ void DataLogger::log_camera_frame(const CameraFrame& frame) {
             return;
         }
         video_writer_open_ = true;
-        spdlog::info("DataLogger: video {} opened ({}x{} @ {} fps, mp4v)",
+        spdlog::info("DataLogger: video {} opened ({}x{} @ {} fps, MJPEG-in-mp4)",
                      path, size.width, size.height, video_fps_);
     }
 
