@@ -66,6 +66,7 @@ import pandas as pd
 from scipy import stats
 
 from rep_segmenter_v2 import orientation_for
+from orientation import Tracker as OrientationTracker, TrackerConfig as OrientationConfig, qrot
 
 
 G = 9.80665
@@ -110,6 +111,22 @@ class ImuOnlyConfig:
     min_rep_displacement_m: float = 0.07
     min_concentric_peak_mps: float = 0.25
     min_inter_rep_gap_s: float = 0.40
+
+    # Velocity low-pass (post-integration). VBT literature reports peak
+    # velocity from a filtered velocity trace, typically 4 Hz. Below
+    # that, real concentric peaks get smoothed away; above ~8 Hz the
+    # IMU's wider bandwidth (vs 90 Hz camera + 10 Hz LP camera path)
+    # captures real high-frequency content the camera ground truth
+    # doesn't see, producing a "phantom IMU over-estimates" bias.
+    # 4 Hz is the conservative match.
+    vel_lp_cutoff_hz: float = 4.0
+    vel_lp_cutoff_hz_deadlift: float = 4.0
+
+    # Plausibility gates — reject reps with implausibly large ROM (likely
+    # multi-rep merges) or implausibly short durations (likely partial
+    # captures of inter-rep lulls).
+    max_rep_displacement_m: float = 1.20
+    max_rep_duration_s_hard: float = 10.0
 
     # Per-set consistency band (used for rep confidence post-emit)
     consistency_band: float = 0.35
@@ -263,7 +280,7 @@ class StreamingImuVbt:
                 ...
     """
 
-    def __init__(self, exercise: str, cfg: Optional[ImuOnlyConfig] = None):
+    def __init__(self, exercise: str, cfg: Optional[ImuOnlyConfig] = None, fs_hint: float = 1000.0):
         self.cfg = cfg or ImuOnlyConfig()
         self.exercise = exercise
         self.orientation = orientation_for(exercise)
@@ -276,17 +293,27 @@ class StreamingImuVbt:
         # State machine
         self.state = "WAITING_CALIB"
 
-        # Attitude & calibration
+        # Orientation tracker — owns ALL gravity-removal logic. Defaults
+        # to VQF (winner of docs/orientation_filter_comparison.md). Swap
+        # ``filter`` to "eskf" to use the in-tree ESKF instead; the rest
+        # of this pipeline doesn't care which filter produced the
+        # world-frame linear-accel stream it consumes.
+        self._trk = OrientationTracker(
+            fs=fs_hint,
+            cfg=OrientationConfig(
+                filter="vqf",
+                calib_min_s=self.cfg.calib_min_s,
+                filter_kwargs={"tau_acc": 2.5, "tau_bias": 0.5},
+            ),
+        )
+
+        # The "calibration done" gate is owned by the VQF tracker — it
+        # measures accel_scale from the first rest span. We mirror it for
+        # state-machine logic.
         self.q = np.array([1.0, 0.0, 0.0, 0.0])
+        # Maintained for back-compat output fields; populated from VQF.
         self.gyro_bias = np.zeros(3)
         self.accel_scale = 1.0
-
-        # Calibration accumulator
-        self._cal_n = 0
-        self._cal_t_start: Optional[float] = None
-        self._cal_a_sum = np.zeros(3)
-        self._cal_a_sq_sum = 0.0
-        self._cal_g_sum = np.zeros(3)
 
         # Stillness streaming
         self._still_run_start_t: Optional[float] = None
@@ -303,16 +330,14 @@ class StreamingImuVbt:
         # bounded to roughly drift_rate · 0.5 ≈ ±5 cm/s in practice —
         # tiny compared to the ±0.5–2 m/s peaks of real reps.
         self._vz_running = 0.0
-        # Rolling ~1 s window of (t, vz_running) for windowed peak
-        # detection. Maxlen sized at fill time once we know fs.
+        # Rolling ~1.5 s window of (t, vz_running) — used only for
+        # diagnostics now; the per-sample ZC detector below does not
+        # need it.
         self._vz_buf: deque = deque()
-        self._vz_last_checked_idx = -1
+        self._vz_prev_for_zc = 0.0       # vz at previous sample, for ZC test
+        self._peak_since_zc = 0.0        # signed peak of vz since last ZC
         self._last_ext_type: Optional[str] = None
         self._last_ext_t: float = -math.inf
-        # Signed peak of vz_running over the *current half-period*
-        # (between consecutive same-type confirmed extrema). Used to
-        # determine which polarity a confirmed extremum has.
-        self._peak_since_ext = 0.0
 
         # Cycle state (relative to last close)
         self._seed: Optional[_Extremum] = None
@@ -329,74 +354,60 @@ class StreamingImuVbt:
 
     # ── public ──────────────────────────────────────────────────────────
     def feed(self, t: float, accel_g: np.ndarray, gyro_dps: np.ndarray, dt: float) -> Optional[RepResult]:
+        # Always push the sample through the VQF tracker; it self-calibrates
+        # during the first rest window and exposes ``calibrated``.
+        self._trk.feed(t, accel_g, gyro_dps, dt)
+        if not self._trk.calibrated:
+            return None
         if self.state == "WAITING_CALIB":
-            return self._feed_calib(t, accel_g, gyro_dps)
+            self.state = "READY"
+            self.q = self._trk.last_q
+            self.accel_scale = self._trk.accel_scale
+            self.gyro_bias = self._trk.last_bias_dps
+            self._last_close_t = t
+            self._last_close_q = self.q.copy()
+            return None
         return self._feed_active(t, accel_g, gyro_dps, dt)
 
     @property
     def emitted(self) -> list[RepResult]:
         return self._emitted
 
-    # ── calibration ─────────────────────────────────────────────────────
-    def _feed_calib(self, t: float, accel_g: np.ndarray, gyro_dps: np.ndarray) -> None:
-        if self._cal_t_start is None:
-            self._cal_t_start = t
-        self._cal_a_sum += accel_g
-        self._cal_a_sq_sum += float(np.dot(accel_g, accel_g))
-        self._cal_g_sum += gyro_dps
-        self._cal_n += 1
-        if (t - self._cal_t_start) < self.cfg.calib_min_s:
-            return None
-        mean_a = self._cal_a_sum / self._cal_n
-        mean_a_mag = float(np.linalg.norm(mean_a))
-        var = max(self._cal_a_sq_sum / self._cal_n - mean_a_mag ** 2, 0.0)
-        std_a = math.sqrt(var)
-        mean_g_mag = float(np.linalg.norm(self._cal_g_sum / self._cal_n))
-        if std_a > self.cfg.calib_acc_std_g * 4 or mean_g_mag > self.cfg.calib_gyr_dps:
-            return None
-        # Lock calibration.
-        self.gyro_bias = self._cal_g_sum / self._cal_n
-        self.accel_scale = mean_a_mag or 1.0
-        self.q = attitude_from_gravity(mean_a)
-        self._last_close_t = t
-        self._last_close_q = self.q.copy()
-        self.state = "READY"
-        return None
-
     # ── active loop ─────────────────────────────────────────────────────
     def _feed_active(
         self, t: float, accel_g: np.ndarray, gyro_dps: np.ndarray, dt: float
     ) -> Optional[RepResult]:
-        # Normalize sample
+        # The VQF tracker has already processed this sample in ``feed()``.
+        # Read out its outputs: world-frame linear accel (with gravity
+        # already subtracted), latest quaternion, latest bias estimate.
+        self.q = self._trk.last_q
+        self.accel_scale = self._trk.accel_scale
+        self.gyro_bias = self._trk.last_bias_dps
+        a_world_linear_mps2 = self._trk.last_a_world_linear_mps2
+        # Convert to g units for the per-rep batch smoother's buffer (it
+        # multiplies by G when integrating to keep parity with the
+        # previous interface).
+        a_world_g = a_world_linear_mps2 / G
         a_body_g = accel_g / self.accel_scale
         w_corr_rad = np.deg2rad(gyro_dps - self.gyro_bias)
         am = float(np.linalg.norm(a_body_g))
-        if am < 1e-3:
-            beta = self.cfg.beta_motion
-        elif abs(am - 1.0) < 0.05:
-            beta = self.cfg.beta_near1g
-        else:
-            beta = self.cfg.beta_motion
-        self.q = madgwick_step(self.q, a_body_g, w_corr_rad, dt, beta)
-
-        # World-frame accel (with gravity removed)
-        a_world_g = qrot(self.q, a_body_g) - np.array([0.0, 0.0, 1.0])
 
         # Buffer for the per-rep batch smoother
         self._buf.append((t, a_body_g, w_corr_rad, dt, self.q.copy(), a_world_g))
-        # Drop ancient samples (cap per-rep buffer length to avoid leaks).
         while self._buf and (t - self._buf[0][0]) > self.cfg.max_rep_window_s:
             self._buf.popleft()
 
-        # Running vertical-velocity integration (uncorrected drift).
-        az_world_mps2 = a_world_g[2] * G
+        # Running vertical-velocity integration (now from VQF-derived
+        # gravity-removed accel — accumulated drift is minimal, but the
+        # local windowed detector below tolerates small drift anyway).
+        az_world_mps2 = a_world_linear_mps2[2]
         self._vz_running += az_world_mps2 * dt
-        # Push to the local windowed-extremum buffer. Cap at ~1.5 s
-        # (drift over that window is well below the rep amplitude).
+        # Push to a short rolling buffer of (t, vz). Kept only so the
+        # per-sample ZC detector below can read "the just-pushed value"
+        # uniformly; older samples aren't used.
         self._vz_buf.append((t, self._vz_running))
         while self._vz_buf and (t - self._vz_buf[0][0]) > 1.5:
             self._vz_buf.popleft()
-            self._vz_last_checked_idx = max(self._vz_last_checked_idx - 1, -1)
 
         # Stillness streaming. A run fires exactly once when it crosses
         # ``still_min_s``; further still samples in the same span are
@@ -434,52 +445,53 @@ class StreamingImuVbt:
             self._still_run_n = 0
             self._still_run_fired = False
 
-        # Windowed local-extremum detection on vz_running. We treat each
-        # sample as a candidate ±peak iff it's the local max/min over a
-        # centered window ±peak_window_s and has prominence (the
-        # surrounding window's opposite-extremum differs by enough). The
-        # confirmation needs peak_window_s of look-ahead, which is the
-        # rep boundary detector's latency.
+        # Position-extremum detection via velocity zero crossings.
+        #
+        # Crucial: a position TOP is the moment vz crosses from positive
+        # to negative — the bar reached its highest point, deceleration
+        # took its velocity through zero. The position BOTTOM is the
+        # mirror event (vz crosses from negative to positive). Velocity
+        # peaks happen in the MIDDLE of each phase, not at rep boundaries.
+        #
+        # To stay robust to vz_running drift (the inevitable single-
+        # integral error from any imperfect gravity removal), we gate
+        # each candidate ZC on the *magnitude of the signed peak since
+        # the previous ZC* — only fire if the bar accumulated at least
+        # ``min_concentric_peak_mps`` of velocity in one direction
+        # between two zero crossings.
         rep_close_now: Optional[RepResult] = None
-        dt_med = max(dt, 1e-3)
-        win_n = max(2, int(round(self.cfg.peak_window_s / dt_med)))
-        if len(self._vz_buf) >= 2 * win_n + 1:
-            last_checkable = len(self._vz_buf) - win_n - 1
-            prominence = max(0.15, self.cfg.min_concentric_peak_mps * 0.8)
-            for c in range(self._vz_last_checked_idx + 1, last_checkable + 1):
-                tc, vc = self._vz_buf[c]
-                vmin = vc
-                vmax = vc
-                is_max = True
-                is_min = True
-                for i in range(c - win_n, c + win_n + 1):
-                    if i == c:
-                        continue
-                    vi = self._vz_buf[i][1]
-                    if vi > vc:
-                        is_max = False
-                    if vi < vc:
-                        is_min = False
-                    if vi < vmin:
-                        vmin = vi
-                    if vi > vmax:
-                        vmax = vi
-                if not (is_max or is_min):
-                    continue
-                # A positive peak (concentric peak velocity) confirms a
-                # BOTTOM-to-TOP transition has just completed → the
-                # extremum *type* (in our schema) is "TOP".  Similarly,
-                # a negative peak confirms an "ECCENTRIC" half-period
-                # → the position extremum type is "BOTTOM".
-                typ: Optional[str] = None
-                if is_max and (vc - vmin) > prominence and vc > self.cfg.min_concentric_peak_mps:
-                    typ = "TOP"
-                elif is_min and (vmax - vc) > prominence and vc < -self.cfg.min_concentric_peak_mps * 0.6:
-                    typ = "BOTTOM"
-                if typ is None:
-                    continue
-                if self._last_ext_type == typ and (tc - self._last_ext_t) < self.cfg.same_type_debounce_s:
-                    continue
+
+        # Maintain the running peak-since-last-ZC. We use the most
+        # recently-buffered (t, vz) sample.
+        cur_t, cur_v = self._vz_buf[-1]
+        if abs(cur_v) > abs(getattr(self, "_peak_since_zc", 0.0)):
+            self._peak_since_zc = cur_v
+
+        # ZC test as a "last-significant-side" flip. Each sample with
+        # |vz| above ``zc_significant_thresh`` updates the side; a ZC
+        # fires when the new sample is significantly on the OPPOSITE
+        # side of the last recorded side. This dodges the failure mode
+        # of a symmetric dead-band: two consecutive samples both inside
+        # the band that nevertheless straddle zero.
+        zc_significant_thresh = 0.05
+        prev_side = getattr(self, "_vz_last_side", 0)
+        if cur_v > zc_significant_thresh:
+            cur_side = +1
+        elif cur_v < -zc_significant_thresh:
+            cur_side = -1
+        else:
+            cur_side = 0
+        zc = (prev_side > 0 and cur_side < 0) or (prev_side < 0 and cur_side > 0)
+        if cur_side != 0:
+            self._vz_last_side = cur_side
+
+        if zc and abs(self._peak_since_zc) >= self.cfg.min_concentric_peak_mps:
+            # Polarity: positive peak preceded this ZC ⇒ bar was rising
+            # ⇒ we've just hit the position TOP. Negative peak ⇒ BOTTOM.
+            typ = "TOP" if self._peak_since_zc > 0 else "BOTTOM"
+            tc = cur_t
+            self._peak_since_zc = 0.0
+            if not (self._last_ext_type == typ and (tc - self._last_ext_t) < self.cfg.same_type_debounce_s):
                 ext = _Extremum(typ=typ, t=tc, pos=0.0, idx=-1)
                 self._last_ext_type = typ
                 self._last_ext_t = tc
@@ -508,12 +520,71 @@ class StreamingImuVbt:
                         )
                         self._seed = ext
                         self._midpoint = None
-                        self._vz_last_checked_idx = c
                         return rep_close_now
-            self._vz_last_checked_idx = last_checkable
         return None
 
     # ── close handler ───────────────────────────────────────────────────
+    def _backdate_to_zero_motion(self, around_t: float, search_back_s: float = 0.30) -> float:
+        """Walk back in ``_buf`` from ``around_t`` and return the time
+        of the best "bar truly still" instant within the last
+        ``search_back_s`` seconds.
+
+        We rank candidates by a *sustained* low-motion score: the mean
+        of |a_world_linear| over a small window centred on each
+        candidate sample. Using the world-frame *linear* accel (gravity
+        already subtracted) instead of body-frame |a − 1g| matters
+        because mid-rep, at peak velocity, the bar has |a_body| ≈ 1g
+        too (it's coasting against gravity). World-linear distinguishes
+        rest (|a_lin| ≈ 0) from peak velocity (|a_lin| ≠ 0 — there's
+        still gravity-counteracting force from the lifter).
+
+        Velocity-zero-crossing detection inherently fires *after* the
+        bar has accumulated ~200 ms of velocity above the threshold;
+        snapping back to this point recovers the v ≈ 0 boundary
+        condition the per-rep batch smoother needs.
+        """
+        if not self._buf:
+            return around_t
+        # Build arrays of (t, |a_world_linear|) over the search window.
+        # ``_buf`` stores ``a_world_g`` (gravity-removed accel in g),
+        # so |a_world_linear_mps2| = |a_world_g| · G.
+        target_lo = around_t - search_back_s
+        ts: list[float] = []
+        mags: list[float] = []
+        for entry in reversed(self._buf):
+            t_i, _a_body_g, _w_rad, _dt, _q, a_world_g = entry
+            if t_i > around_t:
+                continue
+            if t_i < target_lo:
+                break
+            ts.append(t_i)
+            mags.append(float(np.linalg.norm(a_world_g)) * G)
+        if not ts:
+            return around_t
+        ts.reverse()
+        mags.reverse()
+        # 50-ms moving average of |a_world_linear|. Smallest mean is the
+        # candidate. We also penalise sliding the boundary too far back
+        # so the window doesn't grow unbounded.
+        n = len(ts)
+        if n < 3:
+            return around_t
+        dt_med = (ts[-1] - ts[0]) / max(n - 1, 1)
+        win = max(1, int(round(0.05 / max(dt_med, 1e-3))))
+        best_t = around_t
+        best_score = float("inf")
+        for i in range(n):
+            lo = max(0, i - win)
+            hi = min(n, i + win + 1)
+            window_mean = sum(mags[lo:hi]) / (hi - lo)
+            # Small soft penalty for going further back (1% per 100 ms).
+            penalty = 0.01 * (around_t - ts[i]) / 0.1
+            score = window_mean + penalty
+            if score < best_score:
+                best_score = score
+                best_t = ts[i]
+        return best_t
+
     def _on_close(
         self,
         t_close: float,
@@ -523,6 +594,15 @@ class StreamingImuVbt:
     ) -> Optional[RepResult]:
         if self._last_close_t is None or not self._buf:
             return None
+        # Back-date the close to the nearest low-motion sample. For
+        # stillness-triggered closes, the trigger already fired at a
+        # quiet moment so back-dating is essentially a no-op. For
+        # extremum-triggered closes (touch-and-go reps with no real
+        # stillness), this snaps the boundary to the instant the bar
+        # was closest to rest — typically 100–250 ms earlier than the
+        # ZC firing time.
+        if trigger == "extremum":
+            t_close = self._backdate_to_zero_motion(t_close, search_back_s=0.30)
         # Identify the slice of _buf since the last close.
         lo = 0
         for i, (ti, *_rest) in enumerate(self._buf):
@@ -552,32 +632,25 @@ class StreamingImuVbt:
 
         compute_t0 = time.perf_counter()
 
-        # Endpoint snap-back if we have an observed-end gravity reference.
+        # VQF gives us a continuously gravity-corrected quaternion at every
+        # sample, so the per-rep world-frame accel buffered into ``_buf``
+        # already has gravity subtracted. The only post-processing we need
+        # is the two-sided drift correction below — the endpoint snap-back
+        # that Madgwick required is no longer necessary.
         if accel_mean_g is not None:
-            q_end_obs = attitude_from_gravity(accel_mean_g)
-            q_err = qmul(q_end_obs, qconj(q_fwd[-1]))
-            drift_deg = quaternion_angle_deg(q_fwd[-1], q_end_obs)
-            q_smooth = np.zeros_like(q_fwd)
-            q_identity = np.array([1.0, 0.0, 0.0, 0.0])
-            for k in range(n):
-                alpha = k / max(n - 1, 1)
-                q_partial = slerp(q_identity, q_err, alpha)
-                q_smooth[k] = qmul(q_partial, q_fwd[k])
-            q_smooth[0] = self._last_close_q if self._last_close_q is not None else q_fwd[0]
-            q_smooth[-1] = q_end_obs
-            # Re-compute world-frame accel with smoothed attitude
-            a_world_g = np.zeros((n, 3))
-            for k in range(n):
-                a_w = qrot(q_smooth[k], a_body[k])
-                a_world_g[k] = a_w - np.array([0.0, 0.0, 1.0])
+            # Diagnostic: compare the rest-frame gravity-aligned attitude
+            # implied by the stillness accel mean to VQF's quaternion at
+            # the close instant. Should be small with VQF. Used only for
+            # reporting; we no longer correct on it.
+            from orientation import qrot as _qrot
+            implied_up = accel_mean_g / max(np.linalg.norm(accel_mean_g), 1e-6)
+            implied_world_up = _qrot(q_fwd[-1], implied_up)
+            cos_err = float(np.clip(implied_world_up[2], -1.0, 1.0))
+            drift_deg = math.degrees(math.acos(cos_err))
         else:
-            # Extremum-triggered close — no gravity observation at the end.
-            # Use forward-only attitude. Drift is bounded because each rep is
-            # short and we still anchor v=0 at both ends.
             drift_deg = 0.0
-            a_world_g = a_world_fwd_g
 
-        a_world = a_world_g * G
+        a_world = a_world_fwd_g * G
 
         # Trapezoidal velocity + position with v_start = v_end = 0 and
         # p_start = p_end = 0 (closed-cycle rep).
@@ -595,6 +668,23 @@ class StreamingImuVbt:
                 p[k] = p[k - 1] + 0.5 * (vel[k - 1, axis] + vel[k, axis]) * dt_rep[k]
             ramp = p[-1] * np.arange(n) / max(n - 1, 1)
             pos[:, axis] = p - ramp
+
+        # Low-pass velocity and position to match the camera's bandwidth.
+        # IMU is naturally wider-band (1 kHz raw) than the camera's
+        # ~10 Hz LP-filtered ground truth, so without this match the
+        # IMU reports real high-frequency peaks the camera doesn't see.
+        from scipy.signal import butter, filtfilt
+        vel_fs = 1.0 / max(float(np.median(dt_rep)), 1e-4)
+        cutoff = (
+            self.cfg.vel_lp_cutoff_hz_deadlift
+            if str(self.exercise).lower() == "deadlift"
+            else self.cfg.vel_lp_cutoff_hz
+        )
+        if n > 12 and vel_fs > 2 * cutoff:
+            b_lp, a_lp = butter(2, min(0.99, cutoff / (vel_fs / 2)), btype="low")
+            for axis in range(3):
+                vel[:, axis] = filtfilt(b_lp, a_lp, vel[:, axis])
+                pos[:, axis] = filtfilt(b_lp, a_lp, pos[:, axis])
 
         vz = vel[:, 2]
         pz = pos[:, 2]
@@ -620,15 +710,24 @@ class StreamingImuVbt:
         dur_ok = duration >= self.cfg.min_rep_duration_s
         rom_ok = rom_z >= self.cfg.min_rep_displacement_m
         peak_ok = peak_vel >= self.cfg.min_concentric_peak_mps
+        # Plausibility upper limits: real-world reps don't have >1.2 m
+        # ROM or >10 s duration. Anything beyond is almost certainly two
+        # reps merged or a window that captured rack/setup motion.
+        rom_plausible = rom_z <= self.cfg.max_rep_displacement_m
+        dur_plausible = duration <= self.cfg.max_rep_duration_s_hard
         if not dur_ok:
             flags.append(f"duration {duration:.2f}s low")
         if not rom_ok:
             flags.append(f"vertical ROM {rom_z*100:.0f}cm low")
         if not peak_ok:
             flags.append(f"peak vel {peak_vel:.2f}m/s low")
+        if not rom_plausible:
+            flags.append(f"vertical ROM {rom_z*100:.0f}cm implausibly high (multi-rep merge?)")
+        if not dur_plausible:
+            flags.append(f"duration {duration:.2f}s implausibly high")
         if drift_deg > 15.0:
             flags.append(f"attitude drift {drift_deg:.1f}°")
-        all_pass = dur_ok and rom_ok and peak_ok
+        all_pass = dur_ok and rom_ok and peak_ok and rom_plausible and dur_plausible
 
         # Latency: time the close-trigger needed to confirm + compute cost.
         # For stillness: still_min_s. For extremum: peak_window_s.
@@ -677,17 +776,18 @@ class StreamingImuVbt:
         # Drop the just-closed rep's samples; carry forward anything past t_close.
         new_buf = deque((b for b in self._buf if b[0] > t_close))
         self._buf = new_buf
-        # Also trim the vz windowed-extremum buffer to past samples only.
         new_vz_buf = deque((s for s in self._vz_buf if s[0] > t_close))
         self._vz_buf = new_vz_buf
-        self._vz_last_checked_idx = -1
         self._seed = None
         self._midpoint = None
         self._last_ext_type = None
         self._last_ext_t = -math.inf
-        self._peak_since_ext = 0.0
-        # vz_running keeps drifting — that's fine, the windowed detector
-        # only looks at a 1.5 s neighbourhood.
+        # ZC detector state needs to start fresh after a close so the
+        # next rep's first peak-since-ZC accumulates from zero. We DON'T
+        # reset _vz_running — the drift it carries is real and persists
+        # across reps.
+        self._vz_prev_for_zc = 0.0
+        self._peak_since_zc = 0.0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -780,6 +880,16 @@ def score_confidence(reps: list[RepResult], cfg: ImuOnlyConfig) -> None:
 # Validation against camera-truth annotations
 # ─────────────────────────────────────────────────────────────────────────────
 def _truth_metric(rep: dict, key: str) -> float:
+    """Read a metric out of one rep_segments.json entry.
+
+    NOTE: the ``peak_concentric_velocity`` and ``mean_concentric_velocity``
+    fields cached in older annotation files were computed at recording
+    time using a different (likely less aggressive) low-pass than the
+    project's current default. Calling code should prefer
+    :func:`recompute_truth_from_markers` and pass those values in
+    instead of trusting the cached fields. The cached fields here are
+    kept as a fallback for sessions where marker CSV is missing.
+    """
     try:
         if key == "rom_m":
             return float(rep.get("rom_m", float("nan")))
@@ -788,6 +898,103 @@ def _truth_metric(rep: dict, key: str) -> float:
             return float(v) if v is not None else float("nan")
         if key == "mean_concentric_velocity":
             return float(rep.get("mean_concentric_velocity", float("nan")))
+    except Exception:
+        return float("nan")
+    return float("nan")
+
+
+def recompute_truth_from_markers(
+    sess_dir: Path, truth: list[dict], exercise: str
+) -> Optional[list[dict]]:
+    """Recompute per-rep camera metrics from raw marker positions.
+
+    Returns the truth list augmented with ``cam_peak_vel`` / ``cam_mean_vel``
+    / ``cam_rom`` keys, each computed by:
+
+      1. quality-gating the marker rows,
+      2. linear-interpolating dropped samples,
+      3. low-pass filtering position at 6 Hz (deadlift) / 10 Hz (others),
+      4. centered-difference velocity, clipped to ±3.5 m/s,
+      5. taking max(vel) over concentric, mean(vel|vel>0.05) over
+         concentric, max(pos)−min(pos) over concentric ∪ eccentric.
+
+    This matches the studio's cleaning pipeline so the metric is
+    apples-to-apples with what a careful re-annotation would produce.
+    Returns None if the marker CSV is unusable.
+    """
+    from scipy.signal import butter, filtfilt
+    import pandas as pd
+
+    marker_p = sess_dir / "camera" / "marker_positions.csv"
+    if not marker_p.exists():
+        return None
+    try:
+        m = pd.read_csv(marker_p).drop_duplicates("timestamp_s")
+    except Exception:
+        return None
+    if len(m) < 10:
+        return None
+    t = m["timestamp_s"].to_numpy(float)
+    detected = m.get("detected", pd.Series(np.ones(len(m)))).to_numpy(float)
+    conf = m.get("confidence", pd.Series(np.ones(len(m)))).to_numpy(float)
+    snr = m.get("snr", pd.Series(np.ones(len(m)) * 5.0)).to_numpy(float)
+    circ = m.get("circularity", pd.Series(np.ones(len(m)))).to_numpy(float)
+    y = m["y_m"].to_numpy(float) if "y_m" in m else None
+    if y is None:
+        return None
+    ok = (detected > 0) & (conf >= 0.4) & (snr >= 2.0) & (circ >= 0.5)
+    pos = np.where(ok, -y, np.nan)
+    if not np.any(np.isfinite(pos)):
+        return None
+    idx = np.arange(len(pos))
+    good = np.isfinite(pos)
+    pos = np.interp(idx, idx[good], pos[good])
+    fs = 1.0 / float(np.nanmedian(np.diff(t)))
+    cutoff = 6.0 if str(exercise).lower() == "deadlift" else 10.0
+    if len(pos) > 12 and fs > 2 * cutoff:
+        b, a = butter(2, min(0.99, cutoff / (fs / 2)), btype="low")
+        pos = filtfilt(b, a, pos)
+    vel = np.nan_to_num(np.clip(np.gradient(pos, t), -3.5, 3.5))
+
+    out: list[dict] = []
+    for rep in truth:
+        rep2 = dict(rep)
+        try:
+            ts = rep["concentric"]["t_start"]
+            te = rep["concentric"]["t_end"]
+            te_ecc = rep["eccentric"]["t_end"]
+        except Exception:
+            out.append(rep2)
+            continue
+        lo = int(np.searchsorted(t, ts))
+        hi = max(lo + 1, int(np.searchsorted(t, te)))
+        hi_ecc = max(hi + 1, int(np.searchsorted(t, te_ecc)))
+        cv = vel[lo:hi]
+        rep2["cam_peak_vel"] = float(np.max(cv)) if len(cv) else float("nan")
+        pos_mask = cv > 0.05
+        rep2["cam_mean_vel"] = float(np.mean(cv[pos_mask])) if np.any(pos_mask) else float("nan")
+        pp = pos[lo:hi_ecc]
+        rep2["cam_rom"] = float(np.max(pp) - np.min(pp)) if len(pp) else float("nan")
+        out.append(rep2)
+    return out
+
+
+def _truth_metric_recomputed(rep: dict, key: str) -> float:
+    """Read a recomputed metric (cam_peak_vel/cam_mean_vel/cam_rom)
+    falling back to the cached field if recomputation didn't run."""
+    try:
+        if key == "peak_concentric_velocity":
+            if "cam_peak_vel" in rep:
+                return float(rep["cam_peak_vel"])
+            return _truth_metric(rep, key)
+        if key == "mean_concentric_velocity":
+            if "cam_mean_vel" in rep:
+                return float(rep["cam_mean_vel"])
+            return _truth_metric(rep, key)
+        if key == "rom_m":
+            if "cam_rom" in rep:
+                return float(rep["cam_rom"])
+            return _truth_metric(rep, key)
     except Exception:
         return float("nan")
     return float("nan")
@@ -889,15 +1096,22 @@ def write_session_outputs(sess_dir: Path, streamer: StreamingImuVbt, summary: di
         except Exception:
             truth = []
         if truth:
-            matches = match_to_truth(reps, truth)
-            summary["truth_reps"] = len(truth)
+            # Recompute camera metrics from raw marker positions — the
+            # cached annotation fields used a different LP cutoff at
+            # recording time and run +0.15 m/s high on peak velocity in
+            # this corpus.  Falling back to cached fields per rep.
+            truth_recomputed = recompute_truth_from_markers(sess_dir, truth, summary["exercise"])
+            cam_truth = truth_recomputed if truth_recomputed is not None else truth
+            matches = match_to_truth(reps, cam_truth)
+            summary["truth_reps"] = len(cam_truth)
             summary["matched_reps"] = len(matches)
+            summary["truth_recomputed_from_markers"] = truth_recomputed is not None
             for key, out_key in (
                 ("peak_concentric_velocity", "peak"),
                 ("mean_concentric_velocity", "mean"),
                 ("rom_m", "rom"),
             ):
-                cam_vals = np.array([_truth_metric(tr, key) for _, tr, _ in matches], float)
+                cam_vals = np.array([_truth_metric_recomputed(tr, key) for _, tr, _ in matches], float)
                 attr = {"peak_concentric_velocity": "peak_concentric_velocity",
                         "mean_concentric_velocity": "mean_concentric_velocity",
                         "rom_m": "rom_vertical_m"}[key]
@@ -918,9 +1132,9 @@ def write_session_outputs(sess_dir: Path, streamer: StreamingImuVbt, summary: di
                     "imu_rom_3d", "imu_latency_ms", "imu_close_trigger",
                 ])
                 for r, tr, ov in matches:
-                    cp = _truth_metric(tr, "peak_concentric_velocity")
-                    cm = _truth_metric(tr, "mean_concentric_velocity")
-                    crom = _truth_metric(tr, "rom_m")
+                    cp = _truth_metric_recomputed(tr, "peak_concentric_velocity")
+                    cm = _truth_metric_recomputed(tr, "mean_concentric_velocity")
+                    crom = _truth_metric_recomputed(tr, "rom_m")
                     w.writerow([
                         r.rep_id, tr.get("rep_id"), ov,
                         cp, r.peak_concentric_velocity, r.peak_concentric_velocity - cp,
