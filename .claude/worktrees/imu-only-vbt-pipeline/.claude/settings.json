@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(/home/galaxy/Desktop/data_collection/.venv/bin/python -)",
+      "Bash(rm -f briefing.aux briefing.log briefing.out briefing.pdf)",
+      "Bash(tectonic briefing.tex)"
+    ]
+  }
+}

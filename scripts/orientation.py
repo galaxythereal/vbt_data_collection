@@ -199,9 +199,9 @@ class VQFFilter:
     during rest + first-class rest detection. Best in this benchmark."""
     name = "vqf"
 
-    def __init__(self, fs: float, tau_acc: float = 2.5, tau_bias: float = 0.5,
-                 rest_th_gyr: float = 2.0, rest_th_acc: float = 0.5,
-                 bias_clip_dps: float = 4.0):
+    def __init__(self, fs: float, tau_acc: float = 2.5, tau_bias: float = 0.10,
+                 rest_th_gyr: float = 3.0, rest_th_acc: float = 0.7,
+                 bias_clip_dps: float = 4.0, rest_min_t: float = 0.30):
         self._fs = fs
         self._vqf = PyVQF(
             gyrTs=1.0 / fs,
@@ -212,16 +212,21 @@ class VQFFilter:
             motionBiasEstEnabled=True,
             restBiasEstEnabled=True,
             magDistRejectionEnabled=False,
+            # Tightened from defaults so that brief inter-rep lulls
+            # (50–300 ms) qualify as rest and re-lock gyro bias. The
+            # paper's defaults assume a freely-walking-around IMU; for
+            # a bar-mounted IMU between sets / between reps the noise
+            # floor is higher and the rest windows are shorter.
             biasSigmaInit=0.5,
-            biasForgettingTime=100.0,
+            biasForgettingTime=50.0,           # was 100s, halve so old bias is forgotten faster
             biasClip=bias_clip_dps,
-            biasSigmaMotion=0.1,
+            biasSigmaMotion=0.05,              # was 0.1, tighter during motion-bias mode
             biasVerticalForgettingFactor=0.0001,
-            biasSigmaRest=0.03,
-            restMinT=1.5,
+            biasSigmaRest=0.01,                # was 0.03, trust rest bias more aggressively
+            restMinT=rest_min_t,               # was 1.5s, allow ~300ms quiet lulls to re-lock
             restFilterTau=0.5,
-            restThGyr=rest_th_gyr,
-            restThAcc=rest_th_acc,
+            restThGyr=rest_th_gyr,             # was 2.0, slightly looser to catch noisy rest
+            restThAcc=rest_th_acc,             # was 0.5, ditto
         )
 
     def reset(self, q0: Optional[np.ndarray] = None) -> None:
@@ -826,6 +831,16 @@ class TrackerConfig:
     calib_min_s: float = 1.5
     # Filter-specific kwargs, forwarded to the underlying class.
     filter_kwargs: dict = field(default_factory=dict)
+    # Optional initial state from an out-of-band CalibrationInterval
+    # (pre-session stillness window captured before recording started).
+    # When provided, the tracker skips its first-rest auto-calibration
+    # because the bar's "down" direction and the gyro bias are already
+    # known and trusted from the StillnessGate. This is the authoritative
+    # path for VBT use: it removes the ≥1.5 s warm-up where the filter
+    # would otherwise drift while it figures out gravity, and it means
+    # the first rep does not have to bear filter-startup error.
+    init_accel_mean_g: Optional[np.ndarray] = None  # body-frame mean accel in g
+    init_gyro_bias_dps: Optional[np.ndarray] = None  # body-frame gyro bias in dps
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -863,6 +878,27 @@ class Tracker:
         self.last_rest: bool = False
         self.last_bias_dps: np.ndarray = np.zeros(3)
 
+        # Inject pre-session calibration if supplied.
+        if self.cfg.init_accel_mean_g is not None:
+            a_mean = np.asarray(self.cfg.init_accel_mean_g, dtype=np.float64)
+            n = float(np.linalg.norm(a_mean))
+            if n > 1e-6:
+                self.accel_scale = n
+                # Initialize filter attitude from the body-frame gravity dir.
+                q0 = attitude_from_gravity(a_mean / n)
+                self._filter.reset(q0)
+                self.calibrated = True
+                self.last_q = q0
+        if self.cfg.init_gyro_bias_dps is not None:
+            b = np.asarray(self.cfg.init_gyro_bias_dps, dtype=np.float64)
+            # VQF tracks its own bias and we cannot inject directly; for filters
+            # that don't (Madgwick / complementary / accel-only), pre-subtract
+            # the bias on the input stream. We mark it on the tracker so the
+            # caller can decide whether to also forward-subtract.
+            self._injected_bias_dps = b
+        else:
+            self._injected_bias_dps = None
+
     def feed(self, t: float, acc_g: np.ndarray, gyr_dps: np.ndarray, dt: Optional[float] = None) -> None:
         if not self.calibrated:
             if self._calib_t0 is None:
@@ -876,7 +912,10 @@ class Tracker:
 
         acc_norm_g = acc_g.astype(np.float64) / self.accel_scale
         dt_used = float(dt) if dt is not None and dt > 0 else 1.0 / self._fs
-        q = self._filter.update(acc_norm_g, gyr_dps.astype(np.float64), dt_used)
+        gyr_in = gyr_dps.astype(np.float64)
+        if self._injected_bias_dps is not None:
+            gyr_in = gyr_in - self._injected_bias_dps
+        q = self._filter.update(acc_norm_g, gyr_in, dt_used)
         # Convert body-frame accel to world frame, subtract gravity
         acc_mps2 = acc_norm_g * G
         a_world = qrot(q, acc_mps2)
@@ -966,6 +1005,11 @@ def _cli():
     df = pd.read_csv(args.session_dir / "imu" / "raw_imu.csv")
     if "unified_time_s" in df and np.any(df["unified_time_s"].to_numpy() > 0):
         t = df["unified_time_s"].to_numpy(float)
+        if "esp_timestamp_us" in df:
+            esp_t = df["esp_timestamp_us"].to_numpy(float) * 1e-6
+            dt = np.diff(t)
+            if len(dt) and (np.any(dt <= 0) or np.any(dt > 0.005)):
+                t = esp_t + float(np.nanmedian(t - esp_t))
     else:
         t = df["host_timestamp_s"].to_numpy(float)
     acc = df[["accel_x_g", "accel_y_g", "accel_z_g"]].to_numpy(float)

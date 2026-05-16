@@ -65,6 +65,13 @@ struct RepAnnotation {
     float mean_concentric_velocity = 0.0f;
     float peak_concentric_velocity = 0.0f;
     float rom_m                    = 0.0f;
+    // Camera-derived ROM variants. rom_m remains the legacy primary
+    // vertical-up ROM; these fields preserve the full 3-D marker evidence.
+    float rom_vertical_m           = 0.0f;
+    float rom_camera_x_m           = 0.0f;
+    float rom_camera_y_m           = 0.0f;
+    float rom_camera_z_m           = 0.0f;
+    float rom_3d_bbox_m            = 0.0f;
 
     nlohmann::json to_json() const;
     static RepAnnotation from_json(const nlohmann::json& j);

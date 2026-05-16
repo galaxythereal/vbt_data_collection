@@ -112,15 +112,15 @@ class ImuOnlyConfig:
     min_concentric_peak_mps: float = 0.25
     min_inter_rep_gap_s: float = 0.40
 
-    # Velocity low-pass (post-integration). VBT literature reports peak
-    # velocity from a filtered velocity trace, typically 4 Hz. Below
-    # that, real concentric peaks get smoothed away; above ~8 Hz the
-    # IMU's wider bandwidth (vs 90 Hz camera + 10 Hz LP camera path)
-    # captures real high-frequency content the camera ground truth
-    # doesn't see, producing a "phantom IMU over-estimates" bias.
-    # 4 Hz is the conservative match.
-    vel_lp_cutoff_hz: float = 4.0
-    vel_lp_cutoff_hz_deadlift: float = 4.0
+    # Velocity low-pass (post-integration). The default 10 Hz matches
+    # the camera-reproc path that produces ground-truth annotations:
+    # raw markers → 10 Hz LP on position → centered-difference for
+    # velocity (deadlift uses 6 Hz). Using the same effective bandwidth
+    # eliminates the spurious "IMU over-estimates peak velocity" bias
+    # that showed up when the IMU integrated wider band than the camera
+    # could see.
+    vel_lp_cutoff_hz: float = 10.0
+    vel_lp_cutoff_hz_deadlift: float = 6.0
 
     # Plausibility gates — reject reps with implausibly large ROM (likely
     # multi-rep merges) or implausibly short durations (likely partial
@@ -157,7 +157,7 @@ def qconj(q: np.ndarray) -> np.ndarray:
     return np.array([q[0], -q[1], -q[2], -q[3]])
 
 
-def qrot(q: np.ndarray, v: np.ndarray) -> np.ndarray:
+def qrotZ(q: np.ndarray, v: np.ndarray) -> np.ndarray:
     q0, q1, q2, q3 = q
     vx, vy, vz = v
     return np.array([
@@ -248,6 +248,15 @@ class RepResult:
     quaternion_drift_deg: float
     close_trigger: str   # "stillness" | "extremum"
     closure: str         # "normal" | "first_rep_no_prior_anchor" | ...
+    rom_vertical_raw_m: float = 0.0
+    rom_axis_m: float = 0.0
+    axis_linearity: float = 0.0
+    cross_axis_ratio: float = 0.0
+    movement_axis_x: float = 0.0
+    movement_axis_y: float = 0.0
+    movement_axis_z: float = 1.0
+    movement_axis_angle_deg: float = 0.0
+    metric_axis: str = "world_z"
     confidence: float = 0.0
     confidence_level: str = "rejected"
     flags: list[str] = field(default_factory=list)
@@ -257,6 +266,60 @@ def quaternion_angle_deg(q1: np.ndarray, q2: np.ndarray) -> float:
     dot = abs(float(np.dot(q1, q2)))
     dot = min(1.0, max(-1.0, dot))
     return math.degrees(2.0 * math.acos(dot))
+
+
+def _movement_axis_from_position(pos: np.ndarray) -> tuple[np.ndarray, float, float, float]:
+    """Return dominant rep path axis plus simple 1-D quality diagnostics."""
+    if len(pos) < 3:
+        return np.array([0.0, 0.0, 1.0]), 0.0, float("inf"), 0.0
+    centered = pos - np.mean(pos, axis=0)
+    cov = centered.T @ centered
+    vals, vecs = np.linalg.eigh(cov)
+    order = np.argsort(vals)[::-1]
+    vals = np.maximum(vals[order], 0.0)
+    axis = vecs[:, order[0]]
+    if axis[2] < 0:
+        axis = -axis
+    axis = axis / max(float(np.linalg.norm(axis)), 1e-12)
+    total = float(np.sum(vals))
+    linearity = float(vals[0] / total) if total > 1e-12 else 0.0
+    cross_axis_ratio = float(math.sqrt((vals[1] + vals[2]) / max(vals[0], 1e-12)))
+    axis_angle_deg = math.degrees(math.acos(float(np.clip(abs(axis[2]), -1.0, 1.0))))
+    return axis, linearity, cross_axis_ratio, axis_angle_deg
+
+
+def _metric_axis_policy(
+    exercise: str,
+    axis_linearity: float,
+    cross_axis_ratio: float,
+    axis_angle_deg: float,
+    rom_z: float,
+    rom_axis: float,
+) -> str:
+    """Choose the scalar metric axis without using camera truth."""
+    ex = str(exercise).lower().replace(" ", "_").replace("-", "_")
+    coherent = axis_linearity >= 0.78 and cross_axis_ratio <= 0.55
+    plausible_axis_rom = 0.05 <= rom_axis <= 1.35
+    if not coherent or not plausible_axis_rom:
+        return "world_z"
+    if "bench" in ex or "row" in ex:
+        return "movement_axis"
+    if "snatch" in ex:
+        return "movement_axis" if axis_angle_deg <= 60.0 else "world_z"
+    if "squat" in ex:
+        if axis_angle_deg <= 35.0 and rom_axis <= 1.20:
+            return "movement_axis"
+    if "deadlift" in ex and axis_angle_deg <= 20.0 and abs(rom_axis - rom_z) <= 0.12:
+        return "movement_axis"
+    return "world_z"
+
+
+def _interp_zero_time(t0: float, v0: float, t1: float, v1: float) -> float:
+    dv = v1 - v0
+    if abs(dv) < 1e-12:
+        return t1
+    alpha = float(np.clip(-v0 / dv, 0.0, 1.0))
+    return t0 + alpha * (t1 - t0)
 
 
 @dataclass
@@ -280,7 +343,9 @@ class StreamingImuVbt:
                 ...
     """
 
-    def __init__(self, exercise: str, cfg: Optional[ImuOnlyConfig] = None, fs_hint: float = 1000.0):
+    def __init__(self, exercise: str, cfg: Optional[ImuOnlyConfig] = None, fs_hint: float = 1000.0,
+                 init_accel_mean_g: Optional[np.ndarray] = None,
+                 init_gyro_bias_dps: Optional[np.ndarray] = None):
         self.cfg = cfg or ImuOnlyConfig()
         self.exercise = exercise
         self.orientation = orientation_for(exercise)
@@ -290,8 +355,11 @@ class StreamingImuVbt:
         # is also BOTTOM. The orientation only matters for setup trimming.
         self.close_polarity = "BOTTOM"
 
-        # State machine
-        self.state = "WAITING_CALIB"
+        # State machine. When pre-session calibration is supplied we skip
+        # WAITING_CALIB — the orientation tracker is initialised from it
+        # and the very first sample of the stream is already trustworthy.
+        self.state = "WAITING_CALIB" if init_accel_mean_g is None else "READY"
+        self._first_t: Optional[float] = None  # for debug logging only
 
         # Orientation tracker — owns ALL gravity-removal logic. Defaults
         # to VQF (winner of docs/orientation_filter_comparison.md). Swap
@@ -304,6 +372,8 @@ class StreamingImuVbt:
                 filter="vqf",
                 calib_min_s=self.cfg.calib_min_s,
                 filter_kwargs={"tau_acc": 2.5, "tau_bias": 0.5},
+                init_accel_mean_g=init_accel_mean_g,
+                init_gyro_bias_dps=init_gyro_bias_dps,
             ),
         )
 
@@ -336,6 +406,8 @@ class StreamingImuVbt:
         self._vz_buf: deque = deque()
         self._vz_prev_for_zc = 0.0       # vz at previous sample, for ZC test
         self._peak_since_zc = 0.0        # signed peak of vz since last ZC
+        self._vz_last_side_t: Optional[float] = None
+        self._vz_last_side_v: float = 0.0
         self._last_ext_type: Optional[str] = None
         self._last_ext_t: float = -math.inf
 
@@ -354,12 +426,14 @@ class StreamingImuVbt:
 
     # ── public ──────────────────────────────────────────────────────────
     def feed(self, t: float, accel_g: np.ndarray, gyro_dps: np.ndarray, dt: float) -> Optional[RepResult]:
+        if self._first_t is None:
+            self._first_t = t
         # Always push the sample through the VQF tracker; it self-calibrates
         # during the first rest window and exposes ``calibrated``.
         self._trk.feed(t, accel_g, gyro_dps, dt)
         if not self._trk.calibrated:
             return None
-        if self.state == "WAITING_CALIB":
+        if self.state == "WAITING_CALIB" or self._last_close_t is None:
             self.state = "READY"
             self.q = self._trk.last_q
             self.accel_scale = self._trk.accel_scale
@@ -397,11 +471,24 @@ class StreamingImuVbt:
         while self._buf and (t - self._buf[0][0]) > self.cfg.max_rep_window_s:
             self._buf.popleft()
 
-        # Running vertical-velocity integration (now from VQF-derived
-        # gravity-removed accel — accumulated drift is minimal, but the
-        # local windowed detector below tolerates small drift anyway).
+        # Running vertical-velocity integration. ZUPT (Zero-velocity
+        # UPdaTe): whenever VQF reports the device is at rest, snap
+        # vz_running back to 0. That's the *whole point* of the rest
+        # detector — when the bar is mechanically still the true
+        # vertical velocity is zero by definition, so any non-zero
+        # vz_running is integrated drift to be cancelled. Without
+        # this, vz_running accumulates session-long drift that
+        # mis-times the ZC rep-boundary detector below.
         az_world_mps2 = a_world_linear_mps2[2]
         self._vz_running += az_world_mps2 * dt
+        if self._trk.last_rest:
+            # Force v = 0 at confirmed rest. Also reset the side
+            # tracker so the next motion edge fires a clean ZC.
+            self._vz_running = 0.0
+            self._vz_last_side = 0
+            self._vz_last_side_t = None
+            self._vz_last_side_v = 0.0
+            self._peak_since_zc = 0.0
         # Push to a short rolling buffer of (t, vz). Kept only so the
         # per-sample ZC detector below can read "the just-pushed value"
         # uniformly; older samples aren't used.
@@ -482,14 +569,19 @@ class StreamingImuVbt:
         else:
             cur_side = 0
         zc = (prev_side > 0 and cur_side < 0) or (prev_side < 0 and cur_side > 0)
+        zc_t = cur_t
+        if zc and self._vz_last_side_t is not None:
+            zc_t = _interp_zero_time(self._vz_last_side_t, self._vz_last_side_v, cur_t, cur_v)
         if cur_side != 0:
             self._vz_last_side = cur_side
+            self._vz_last_side_t = cur_t
+            self._vz_last_side_v = cur_v
 
         if zc and abs(self._peak_since_zc) >= self.cfg.min_concentric_peak_mps:
             # Polarity: positive peak preceded this ZC ⇒ bar was rising
             # ⇒ we've just hit the position TOP. Negative peak ⇒ BOTTOM.
             typ = "TOP" if self._peak_since_zc > 0 else "BOTTOM"
-            tc = cur_t
+            tc = zc_t
             self._peak_since_zc = 0.0
             if not (self._last_ext_type == typ and (tc - self._last_ext_t) < self.cfg.same_type_debounce_s):
                 ext = _Extremum(typ=typ, t=tc, pos=0.0, idx=-1)
@@ -525,65 +617,87 @@ class StreamingImuVbt:
 
     # ── close handler ───────────────────────────────────────────────────
     def _backdate_to_zero_motion(self, around_t: float, search_back_s: float = 0.30) -> float:
-        """Walk back in ``_buf`` from ``around_t`` and return the time
-        of the best "bar truly still" instant within the last
-        ``search_back_s`` seconds.
+        """Snap the close-trigger time back to the *rep-onset edge*.
 
-        We rank candidates by a *sustained* low-motion score: the mean
-        of |a_world_linear| over a small window centred on each
-        candidate sample. Using the world-frame *linear* accel (gravity
-        already subtracted) instead of body-frame |a − 1g| matters
-        because mid-rep, at peak velocity, the bar has |a_body| ≈ 1g
-        too (it's coasting against gravity). World-linear distinguishes
-        rest (|a_lin| ≈ 0) from peak velocity (|a_lin| ≠ 0 — there's
-        still gravity-counteracting force from the lifter).
+        The velocity-zero-crossing detector fires ~200 ms after the bar
+        leaves rest, because vz needs that long to integrate above the
+        detection threshold. The rep's *actual* start is the last
+        instant when the bar was at rest before motion began.
 
-        Velocity-zero-crossing detection inherently fires *after* the
-        bar has accumulated ~200 ms of velocity above the threshold;
-        snapping back to this point recovers the v ≈ 0 boundary
-        condition the per-rep batch smoother needs.
+        Algorithm: walk the buffer over the last ``search_back_s`` and
+        find the LATEST "quiet run" — a contiguous span where
+        ``|a_world_linear| < quiet_thresh`` sustained for at least
+        ``min_run_s``. Return the END of that quiet run. That's the
+        moment the bar started accelerating.
+
+        Why the "LATEST" quiet run and not the lowest: between two
+        adjacent reps, the bar is quiet for ~50–200 ms while it touches
+        the floor / sits at lockout. Within the previous rep's
+        eccentric tail, the bar can be momentarily near-zero too, but
+        much earlier. We want the *transition edge*, not the deepest
+        valley. Earlier versions of this function returned the deepest
+        valley which pushed the rep window 100–250 ms earlier than the
+        true onset and inflated peak velocity.
         """
         if not self._buf:
             return around_t
-        # Build arrays of (t, |a_world_linear|) over the search window.
-        # ``_buf`` stores ``a_world_g`` (gravity-removed accel in g),
-        # so |a_world_linear_mps2| = |a_world_g| · G.
         target_lo = around_t - search_back_s
+        # Collect (t, |a_world_linear|) over the search window in order.
         ts: list[float] = []
         mags: list[float] = []
-        for entry in reversed(self._buf):
+        for entry in self._buf:
             t_i, _a_body_g, _w_rad, _dt, _q, a_world_g = entry
-            if t_i > around_t:
+            if t_i < target_lo or t_i > around_t:
                 continue
-            if t_i < target_lo:
-                break
             ts.append(t_i)
             mags.append(float(np.linalg.norm(a_world_g)) * G)
-        if not ts:
-            return around_t
-        ts.reverse()
-        mags.reverse()
-        # 50-ms moving average of |a_world_linear|. Smallest mean is the
-        # candidate. We also penalise sliding the boundary too far back
-        # so the window doesn't grow unbounded.
         n = len(ts)
-        if n < 3:
+        if n < 4:
             return around_t
-        dt_med = (ts[-1] - ts[0]) / max(n - 1, 1)
-        win = max(1, int(round(0.05 / max(dt_med, 1e-3))))
-        best_t = around_t
-        best_score = float("inf")
-        for i in range(n):
-            lo = max(0, i - win)
-            hi = min(n, i + win + 1)
-            window_mean = sum(mags[lo:hi]) / (hi - lo)
-            # Small soft penalty for going further back (1% per 100 ms).
-            penalty = 0.01 * (around_t - ts[i]) / 0.1
-            score = window_mean + penalty
-            if score < best_score:
-                best_score = score
-                best_t = ts[i]
-        return best_t
+
+        # Quiet threshold tuned empirically: 2.5 m/s² catches the
+        # bar-near-rest moments between touch-and-go reps without
+        # accidentally triggering on mid-rep accel-zero-crossings
+        # (which last ≪ 15 ms). 15 ms of sustained quiet eliminates
+        # those mid-rep moments cleanly while still catching the brief
+        # 20–50 ms lulls between continuous reps.
+        quiet_thresh = 2.5          # m/s² (well below typical rep peak ~10 m/s²)
+        min_run_s = 0.015
+
+        # Walk forward to find quiet runs; remember the END of the LATEST one.
+        i = 0
+        last_run_end_t: Optional[float] = None
+        while i < n:
+            if mags[i] >= quiet_thresh:
+                i += 1
+                continue
+            j = i
+            while j + 1 < n and mags[j + 1] < quiet_thresh:
+                j += 1
+            if ts[j] - ts[i] >= min_run_s:
+                last_run_end_t = ts[j]
+            i = j + 1
+
+        if last_run_end_t is None:
+            # No quiet run found — bar was continuously active. Fall back
+            # to the original "deepest valley" behaviour, but with a soft
+            # latency-preference so we don't drift too far back.
+            best_t = around_t
+            best_score = float("inf")
+            for i, mag in enumerate(mags):
+                penalty = 0.5 * (around_t - ts[i])
+                score = mag + penalty
+                if score < best_score:
+                    best_score = score
+                    best_t = ts[i]
+            import os
+            if os.environ.get("IMU_BACKDATE_DEBUG"):
+                print(f"  [bd] no-run fallback: around={around_t-self._first_t:.3f}s back={around_t-best_t:.3f}s (n={n})", flush=True)
+            return best_t
+        import os
+        if os.environ.get("IMU_BACKDATE_DEBUG"):
+            print(f"  [bd] quiet-run end: around={around_t-self._first_t:.3f}s back={around_t-last_run_end_t:.3f}s (n={n})", flush=True)
+        return last_run_end_t
 
     def _on_close(
         self,
@@ -594,15 +708,11 @@ class StreamingImuVbt:
     ) -> Optional[RepResult]:
         if self._last_close_t is None or not self._buf:
             return None
-        # Back-date the close to the nearest low-motion sample. For
-        # stillness-triggered closes, the trigger already fired at a
-        # quiet moment so back-dating is essentially a no-op. For
-        # extremum-triggered closes (touch-and-go reps with no real
-        # stillness), this snaps the boundary to the instant the bar
-        # was closest to rest — typically 100–250 ms earlier than the
-        # ZC firing time.
-        if trigger == "extremum":
-            t_close = self._backdate_to_zero_motion(t_close, search_back_s=0.30)
+        # Extremum closes are already anchored to the interpolated
+        # velocity zero-crossing. Do not back-date them to the quietest
+        # acceleration sample: fast reps often coast through low linear
+        # acceleration mid-rep, which made the old 300 ms search snap to
+        # the wrong physical event and inflate peak velocity.
         # Identify the slice of _buf since the last close.
         lo = 0
         for i, (ti, *_rest) in enumerate(self._buf):
@@ -688,11 +798,56 @@ class StreamingImuVbt:
 
         vz = vel[:, 2]
         pz = pos[:, 2]
-        peak_vel = float(np.max(vz))
-        peak_neg = float(np.min(vz))
-        pos_mask = vz > 0.05
-        mean_vel = float(np.mean(vz[pos_mask])) if np.any(pos_mask) else 0.0
-        rom_z = float(np.max(pz) - np.min(pz))
+        # Trim the metric window to the actual motion span. The rep
+        # boundary detector (ZC of vz_running) fires a couple of
+        # hundred ms after true motion begins / ends, so the buffer
+        # window can include 100–300 ms of pre-rep settling and
+        # post-rep settling. Including those in peak / mean velocity
+        # computation inflates peaks because the drift-correction ramp
+        # is fit over a longer span. We trim to the first / last
+        # sample where |vz| exceeds a motion threshold.
+        speed_thresh = 0.10
+        active = np.abs(vz) > speed_thresh
+        if active.any():
+            motion_lo = int(np.argmax(active))
+            motion_hi = len(active) - int(np.argmax(active[::-1]))
+            # Keep a small slack on each side so we don't clip the
+            # very first / last sample of true motion.
+            slack = max(3, int(0.020 / max(float(np.median(dt_rep)), 1e-4)))
+            motion_lo = max(0, motion_lo - slack)
+            motion_hi = min(len(vz), motion_hi + slack)
+            if motion_hi - motion_lo > 8:
+                vz = vz[motion_lo:motion_hi]
+                pz = pz[motion_lo:motion_hi]
+                pos = pos[motion_lo:motion_hi]
+                vel = vel[motion_lo:motion_hi]
+                t_rep = t_rep[motion_lo:motion_hi]
+                dt_rep = dt_rep[motion_lo:motion_hi]
+                n = len(vz)
+        rom_z_raw = float(np.max(pz) - np.min(pz))
+        movement_axis, axis_linearity, cross_axis_ratio, axis_angle_deg = _movement_axis_from_position(pos)
+        s_axis = pos @ movement_axis
+        v_axis = vel @ movement_axis
+        rom_axis = float(np.max(s_axis) - np.min(s_axis))
+        metric_axis = _metric_axis_policy(
+            self.exercise,
+            axis_linearity,
+            cross_axis_ratio,
+            axis_angle_deg,
+            rom_z_raw,
+            rom_axis,
+        )
+        if metric_axis == "movement_axis":
+            v_metric = v_axis
+            p_metric = s_axis
+        else:
+            v_metric = vz
+            p_metric = pz
+        peak_vel = float(np.max(v_metric))
+        peak_neg = float(np.min(v_metric))
+        pos_mask = v_metric > 0.05
+        mean_vel = float(np.mean(v_metric[pos_mask])) if np.any(pos_mask) else 0.0
+        rom_z = float(np.max(p_metric) - np.min(p_metric))
         rom_3d = float(
             math.sqrt(
                 (np.max(pos[:, 0]) - np.min(pos[:, 0])) ** 2
@@ -727,6 +882,10 @@ class StreamingImuVbt:
             flags.append(f"duration {duration:.2f}s implausibly high")
         if drift_deg > 15.0:
             flags.append(f"attitude drift {drift_deg:.1f}°")
+        if metric_axis == "movement_axis":
+            flags.append(f"metric axis movement ({axis_angle_deg:.0f}° from vertical)")
+        if axis_linearity < 0.65:
+            flags.append(f"low path linearity {axis_linearity:.2f}")
         all_pass = dur_ok and rom_ok and peak_ok and rom_plausible and dur_plausible
 
         # Latency: time the close-trigger needed to confirm + compute cost.
@@ -756,6 +915,15 @@ class StreamingImuVbt:
             quaternion_drift_deg=float(drift_deg),
             close_trigger=trigger,
             closure="normal",
+            rom_vertical_raw_m=rom_z_raw,
+            rom_axis_m=rom_axis,
+            axis_linearity=axis_linearity,
+            cross_axis_ratio=cross_axis_ratio,
+            movement_axis_x=float(movement_axis[0]),
+            movement_axis_y=float(movement_axis[1]),
+            movement_axis_z=float(movement_axis[2]),
+            movement_axis_angle_deg=float(axis_angle_deg),
+            metric_axis=metric_axis,
             flags=flags,
         )
         self._emitted.append(rep)
@@ -788,12 +956,23 @@ class StreamingImuVbt:
         # across reps.
         self._vz_prev_for_zc = 0.0
         self._peak_since_zc = 0.0
+        self._vz_last_side_t = None
+        self._vz_last_side_v = 0.0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # IMU loader & session driver
 # ─────────────────────────────────────────────────────────────────────────────
 def _load_imu(imu_csv: Path) -> Optional[tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]]:
+    """Load IMU CSV with timestamp self-repair.
+
+    Some legacy session CSVs have a few corrupted ``unified_time_s``
+    samples (huge forward+backward jumps from misaligned wallclock
+    interpolation). The ``esp_timestamp_us`` column is monotonic and
+    clean — if we detect dt anomalies in ``unified_time_s`` we rebuild
+    it from ``esp_timestamp_us`` plus the median wallclock offset
+    between the two. Same fix the benchmark already uses.
+    """
     try:
         df = pd.read_csv(imu_csv)
     except Exception:
@@ -803,6 +982,12 @@ def _load_imu(imu_csv: Path) -> Optional[tuple[np.ndarray, np.ndarray, np.ndarra
         return None
     if "unified_time_s" in df and np.any(df["unified_time_s"].to_numpy(float) > 0):
         t = df["unified_time_s"].to_numpy(float)
+        if "esp_timestamp_us" in df:
+            esp_t = df["esp_timestamp_us"].to_numpy(float) * 1e-6
+            dt_raw = np.diff(t)
+            if len(dt_raw) and (np.any(dt_raw <= 0) or np.any(dt_raw > 0.005)):
+                # Rebuild t from monotonic esp_timestamp_us + wallclock offset.
+                t = esp_t + float(np.nanmedian(t - esp_t))
     elif "host_timestamp_s" in df:
         t = df["host_timestamp_s"].to_numpy(float)
     else:
@@ -818,6 +1003,39 @@ def _load_imu(imu_csv: Path) -> Optional[tuple[np.ndarray, np.ndarray, np.ndarra
     return t, acc, gyr, dt, fs
 
 
+def _load_session_calibration(meta: dict) -> tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    """Extract per-session pre-recording gravity+gyro-bias from metadata.
+
+    Returns ``(accel_mean_body_g, gyro_bias_dps)`` if a passed pre_session
+    CalibrationInterval is present, else (None, None). Falls back to
+    post_session if no pre is available. Gravity vector is body-frame g
+    units (magnitude near 1); bias is dps.
+    """
+    intervals = meta.get("calibration_intervals", []) or []
+    pre = None
+    post = None
+    for iv in intervals:
+        if not iv.get("passed_gate", False):
+            continue
+        t = iv.get("type", "")
+        if t == "pre_session" and pre is None:
+            pre = iv
+        elif t == "post_session" and post is None:
+            post = iv
+    chosen = pre or post
+    if chosen is None:
+        return None, None
+    g = np.array([chosen.get("gravity_x_g", 0.0),
+                  chosen.get("gravity_y_g", 0.0),
+                  chosen.get("gravity_z_g", 0.0)], dtype=np.float64)
+    b = np.array([chosen.get("gyro_bias_x_dps", 0.0),
+                  chosen.get("gyro_bias_y_dps", 0.0),
+                  chosen.get("gyro_bias_z_dps", 0.0)], dtype=np.float64)
+    if float(np.linalg.norm(g)) < 0.5:
+        return None, None
+    return g, b
+
+
 def process_session(sess_dir: Path, cfg: Optional[ImuOnlyConfig] = None) -> tuple[StreamingImuVbt, dict]:
     cfg = cfg or ImuOnlyConfig()
     meta = json.loads((sess_dir / "metadata.json").read_text())
@@ -826,7 +1044,14 @@ def process_session(sess_dir: Path, cfg: Optional[ImuOnlyConfig] = None) -> tupl
     if loaded is None:
         raise RuntimeError("could not load IMU")
     t, acc, gyr, dt, fs = loaded
-    streamer = StreamingImuVbt(exercise=exercise, cfg=cfg)
+    init_g, init_b = _load_session_calibration(meta)
+    snap = meta.get("imu_snapshot", {}) or {}
+    if snap.get("gyro_bias_applied_runtime", False):
+        init_b = None
+    streamer = StreamingImuVbt(
+        exercise=exercise, cfg=cfg, fs_hint=fs,
+        init_accel_mean_g=init_g, init_gyro_bias_dps=init_b,
+    )
     for i in range(len(t)):
         streamer.feed(t[i], acc[i], gyr[i], dt[i])
     summary = {
@@ -836,6 +1061,8 @@ def process_session(sess_dir: Path, cfg: Optional[ImuOnlyConfig] = None) -> tupl
         "n_samples": int(len(t)),
         "n_emitted": int(sum(1 for r in streamer.emitted if r.rep_id > 0)),
         "n_total_closes": int(len(streamer.emitted)),
+        "used_session_calibration": bool(init_g is not None),
+        "runtime_gyro_bias_applied": bool(snap.get("gyro_bias_applied_runtime", False)),
     }
     return streamer, summary
 
@@ -1064,7 +1291,16 @@ def write_session_outputs(sess_dir: Path, streamer: StreamingImuVbt, summary: di
             "mean_concentric_velocity": r.mean_concentric_velocity,
             "peak_eccentric_velocity": r.peak_eccentric_velocity,
             "rom_vertical_m": r.rom_vertical_m,
+            "rom_vertical_raw_m": r.rom_vertical_raw_m,
+            "rom_axis_m": r.rom_axis_m,
             "rom_3d_m": r.rom_3d_m,
+            "axis_linearity": r.axis_linearity,
+            "cross_axis_ratio": r.cross_axis_ratio,
+            "movement_axis_x": r.movement_axis_x,
+            "movement_axis_y": r.movement_axis_y,
+            "movement_axis_z": r.movement_axis_z,
+            "movement_axis_angle_deg": r.movement_axis_angle_deg,
+            "metric_axis": r.metric_axis,
             "quaternion_drift_deg": r.quaternion_drift_deg,
             "close_trigger": r.close_trigger,
             "confidence": r.confidence,
@@ -1129,7 +1365,9 @@ def write_session_outputs(sess_dir: Path, streamer: StreamingImuVbt, summary: di
                     "cam_peak", "imu_peak", "delta_peak",
                     "cam_mean", "imu_mean", "delta_mean",
                     "cam_rom", "imu_rom", "delta_rom",
-                    "imu_rom_3d", "imu_latency_ms", "imu_close_trigger",
+                    "imu_rom_vertical_raw", "imu_rom_axis", "imu_rom_3d",
+                    "imu_axis_linearity", "imu_axis_angle_deg", "imu_metric_axis",
+                    "imu_latency_ms", "imu_close_trigger",
                 ])
                 for r, tr, ov in matches:
                     cp = _truth_metric_recomputed(tr, "peak_concentric_velocity")
@@ -1140,7 +1378,9 @@ def write_session_outputs(sess_dir: Path, streamer: StreamingImuVbt, summary: di
                         cp, r.peak_concentric_velocity, r.peak_concentric_velocity - cp,
                         cm, r.mean_concentric_velocity, r.mean_concentric_velocity - cm,
                         crom, r.rom_vertical_m, r.rom_vertical_m - crom,
-                        r.rom_3d_m, r.emit_latency_s * 1000.0, r.close_trigger,
+                        r.rom_vertical_raw_m, r.rom_axis_m, r.rom_3d_m,
+                        r.axis_linearity, r.movement_axis_angle_deg, r.metric_axis,
+                        r.emit_latency_s * 1000.0, r.close_trigger,
                     ])
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2, default=float) + "\n")
     return summary

@@ -147,6 +147,12 @@ private:
     double hw_anchor_a_      = 1e-6;     // sec / µs (default = identity)
     double hw_anchor_b_      = 0.0;
     bool   hw_anchor_valid_  = false;
+    // Consecutive HW-anchor refit rejections. We tolerate transient bad
+    // pairs (don't invalidate after one rejection — the previous anchor
+    // is probably still better than the dt-projection fallback), but
+    // after sustained failure we surrender the anchor.
+    int    hw_anchor_consecutive_rejections_ = 0;
+    static constexpr int HW_ANCHOR_MAX_REJECTIONS = 4;
     static constexpr size_t HW_PAIR_LIMIT = 256;
     void try_pair_and_refit_();
 };

@@ -1,0 +1,292 @@
+% ═══════════════════════════════════════════════════════════════════════════
+% PhD Dissertation - Complete Version with All 17 Chapters
+% A Real-Time Inertial Measurement System for Velocity-Based Training
+% ═══════════════════════════════════════════════════════════════════════════
+
+\documentclass[12pt,a4paper,oneside]{book}
+
+% ─── Geometry ─────────────────────────────────────────────────────────────
+\usepackage[margin=1in,headsep=0.5in]{geometry}
+
+% ─── Fonts & Encoding ─────────────────────────────────────────────────────
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{mathpazo}
+
+% ─── Mathematics ───────────────────────────────────────────────────────────
+\usepackage{amsmath, amssymb, amsfonts, bm, amsthm}
+\usepackage{mathtools}
+\usepackage{mathrsfs}
+
+% ─── Tables ────────────────────────────────────────────────────────────────
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{multicol}
+\usepackage{makecell}
+\usepackage{longtable}
+\usepackage{tabularx}
+\usepackage{array}
+
+% ─── Figures & Graphics ────────────────────────────────────────────────────
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{subcaption}
+\usepackage{tikz}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\usetikzlibrary{
+    positioning, arrows.meta, decorations.pathmorphing,
+    shapes.geometric, shapes.misc, fit, calc, backgrounds
+}
+
+% ─── Code Listings ─────────────────────────────────────────────────────────
+\usepackage{listings}
+\usepackage{xcolor}
+\definecolor{backcolour}{rgb}{0.95,0.95,0.92}
+\lstdefinestyle{mystyle}{
+    backgroundcolor=\color{backcolour},
+    basicstyle=\ttfamily\footnotesize,
+    breaklines=true,
+    captionpos=b,
+    commentstyle=\color{green!60!black}\itshape,
+    keywordstyle=\color{blue}\bfseries,
+    numberstyle=\tiny\color{gray},
+    stringstyle=\color{red!50!black},
+    frame=single,
+    numbers=left,
+    numbersep=9pt,
+    xleftmargin=2em,
+    tabsize=4,
+    showstringspaces=false,
+}
+\lstset{style=mystyle}
+
+% ─── Hyperlinks & Cross-Referencing ────────────────────────────────────────
+\usepackage[colorlinks=true, linkcolor=blue!60!black, citecolor=green!60!black, urlcolor=blue!70!black]{hyperref}
+\usepackage[noabbrev,capitalise]{cleveref}
+
+% ─── Bibliography ──────────────────────────────────────────────────────────
+\usepackage[numbers,sort&compress]{natbib}
+
+% ─── Misc ──────────────────────────────────────────────────────────────────
+\usepackage{enumitem}
+\usepackage{siunitx}
+\sisetup{per-mode=symbol, detect-all, range-phrase={\,--\,}}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{nicefrac}
+\usepackage{wrapfig}
+\usepackage{changepage}
+\usepackage{tocloft}
+\usepackage{epigraph}
+
+% ─── Custom Commands ───────────────────────────────────────────────────────
+\newcommand{\reg}[1]{\texttt{#1}}
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\class}[1]{\texttt{#1}}
+\newcommand{\file}[1]{\texttt{#1}}
+\newcommand{\algname}[1]{\textsc{#1}}
+\DeclareMathOperator{\diag}{diag}
+\DeclareMathOperator{\E}{\mathbb{E}}
+\DeclareMathOperator{\var}{var}
+\DeclareMathOperator{\cov}{cov}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\norm}[1]{\left\lVert #1 \right\rVert}
+\newcommand{\abs}[1]{\left\lvert #1 \right\rvert}
+\newcommand{\trans}{\mathsf{T}}
+
+% ─── Theorem Environments ──────────────────────────────────────────────────
+\newtheorem{theorem}{Theorem}[chapter]
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{definition}{Definition}[chapter]
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{remark}{Remark}[chapter]
+\newtheorem{corollary}[theorem]{Corollary}
+
+\pagestyle{plain}
+
+% ═══════════════════════════════════════════════════════════════════════════
+% TITLE PAGE
+% ═══════════════════════════════════════════════════════════════════════════
+
+\title{
+    \textbf{A Real-Time Inertial Measurement System for Velocity-Based Training:}\\[0.8em]
+    \textbf{From Embedded Sensor Fusion to ASIC Acceleration}
+}
+\author{
+    \textbf{Galaxy}\\[1em]
+    \textit{Department of Electrical Engineering and Computer Science}\\
+    \textit{University Name}
+}
+\date{\today}
+
+\begin{document}
+
+% ─── TITLE PAGE ────────────────────────────────────────────────────────────
+\begin{titlepage}
+    \centering
+    \vspace*{1cm}
+
+    {\Large\bfseries Department of Electrical Engineering and Computer Science\par}
+    \vspace{0.5cm}
+    {\Large University Name\par}
+
+    \vspace{2.5cm}
+
+    {\Huge\bfseries A Real-Time Inertial Measurement System for Velocity-Based Training \par}
+    \vspace{0.5cm}
+    {\large From Embedded Sensor Fusion to ASIC Acceleration \par}
+
+    \vspace{2cm}
+
+    {\large A Dissertation submitted in partial fulfillment\par}
+    {\large of the requirements for the degree of\par}
+    \vspace{0.5cm}
+    {\huge\bfseries Doctor of Philosophy\par}
+    \vspace{0.5cm}
+    {\large in Electrical Engineering and Computer Science\par}
+
+    \vspace{2.5cm}
+
+    \begin{minipage}{0.5\textwidth}
+    \centering
+    {\large Galaxy\par}
+    \end{minipage}
+
+    \vfill
+
+    \begin{minipage}{0.5\textwidth}
+    \centering
+    Supervisor: Prof. [Name]\par
+    Examiner: Prof. [Name]\par
+    \end{minipage}
+
+    \vspace{1cm}
+    {\large \today\par}
+    \vspace{2cm}
+\end{titlepage}
+
+% ─── ABSTRACT ──────────────────────────────────────────────────────────────
+\chapter*{Abstract}
+\addcontentsline{toc}{chapter}{Abstract}
+
+Velocity-Based Training (VBT) prescribes and monitors strength training through real-time measurement of barbell velocity, offering superior autoregulation compared to traditional percentage-based methods. Accurate velocity measurement requires sub-0.05 m/s precision to ensure training stimuli remain within intended physiological adaptation zones. This dissertation presents the complete design, implementation, and validation of a high-fidelity inertial measurement system for VBT research, spanning from embedded sensor acquisition through real-time signal processing to hardware acceleration architectures.
+
+The system integrates a TDK InvenSense ICM-42688-P inertial measurement unit sampled at 1 kHz via interrupt-driven SPI on an ESP32 dual-core microcontroller, wirelessly transmitting via ESP-NOW protocol to a host PC. Optical ground truth is provided by an Intel RealSense D455 stereo depth camera operating at 90 fps. Hardware-level synchronization is achieved through NPN-transistor level-shifting converting the camera's 1.8 V CMOS FRAME\_SYNC output to 3.3 V logic.
+
+The core algorithmic contribution is a causal, real-time rep-segmentation pipeline achieving sub-50 ms latency with 5 cm position accuracy without camera input. The pipeline implements (a) adaptive attitude estimation using Error-State Kalman Filter (ESKF) with Zero-Velocity Updates; (b) streaming rep-boundary detection via dual triggers; and (c) per-repetition batch smoothing with boundary-anchored double integration eliminating drift accumulation.
+
+Validation across 55 data sessions encompassing 622 annotated repetitions yields mean absolute error of 0.068 m/s for peak concentric velocity and 23 mm for vertical range of motion (R² = 0.94 for velocity, R² = 0.91 for displacement).
+
+The architecture is designed for hardware acceleration with complete ASIC migration paths. We provide RTL specifications for Xilinx Artix-7/Kintex-7 FPGA families and 28nm CMOS microarchitecture achieving estimated 185 mW power at 200 MHz -- a 17× improvement in energy efficiency over embedded software baseline.
+
+\medskip
+\noindent\textbf{Keywords:} Velocity-Based Training, IMU, Sensor Fusion, ESKF, Real-Time Processing, FPGA, ASIC, Embedded Systems
+
+% ─── ACKNOWLEDGEMENTS ──────────────────────────────────────────────────────
+\chapter*{Acknowledgements}
+\addcontentsline{toc}{chapter}{Acknowledgements}
+
+I express my deepest gratitude to my supervisor for guidance throughout this research journey, particularly in navigating the intersection of embedded systems, signal processing, and exercise science.
+
+To my committee members for their rigorous examination and valuable suggestions that substantially improved this dissertation.
+
+To the strength and conditioning coaches and athletes who participated in data collection sessions -- your commitment to performing hundreds of repetitions under instrumented conditions made this research possible.
+
+To colleagues who assisted with sensor mounting, video annotation, and technical discussions -- this work represents collective effort deserving recognition.
+
+The 55 data collection sessions and 622 annotated repetitions stand as testament to persistent effort across months of systematic experimentation.
+
+This work was supported by [Funding Agency, Grant Number].
+
+\vspace{1cm}
+\begin{center}
+\textit{Galaxy}\\
+\today
+\end{center}
+
+% ─── TABLE OF CONTENTS ─────────────────────────────────────────────────────
+\setcounter{page}{5}
+\pagestyle{plain}
+\tableofcontents
+\newpage
+
+% ─── LIST OF FIGURES ───────────────────────────────────────────────────────
+\listoffigures
+\newpage
+
+% ─── LIST OF TABLES ────────────────────────────────────────────────────────
+\listoftables
+\newpage
+
+% ─── LIST OF ABBREVIATIONS ─────────────────────────────────────────────────
+\chapter*{Abbreviations and Symbols}
+\addcontentsline{toc}{chapter}{Abbreviations and Symbols}
+
+\begin{tabular}{@{}ll@{}}
+    \toprule
+    \textbf{Abbreviation} & \textbf{Definition} \\
+    \midrule
+    1RM & One-Repetition Maximum \\
+    ASIC & Application-Specific Integrated Circuit \\
+    BLE & Bluetooth Low Energy \\
+    DSP & Digital Signal Processor \\
+    EKF & Extended Kalman Filter \\
+    ESKF & Error-State Kalman Filter \\
+    ESP-NOW & ESP32 Peer-to-Peer Wireless Protocol \\
+    FPGA & Field-Programmable Gate Array \\
+    GPIO & General Purpose Input/Output \\
+    I²C & Inter-Integrated Circuit \\
+    ICM-42688-P & TDK InvenSense 6-DOF IMU \\
+    IMU & Inertial Measurement Unit \\
+    LPT & Linear Position Transducer \\
+    MAE & Mean Absolute Error \\
+    MCV & Mean Concentric Velocity \\
+    PCV & Peak Concentric Velocity \\
+    RMSE & Root Mean Square Error \\
+    ROM & Range of Motion \\
+    RTL & Register Transfer Level \\
+    SPI & Serial Peripheral Interface \\
+    VBT & Velocity-Based Training \\
+    VQF & Versatile Quaternion-based Filter \\
+    ZUPT & Zero-Velocity Update \\
+    \bottomrule
+\end{tabular}
+
+\newpage
+
+% ═══════════════════════════════════════════════════════════════════════════
+% CHAPTERS
+% ═══════════════════════════════════════════════════════════════════════════
+
+\input{chapters/01_introduction}
+\input{chapters/02_background}
+\input{chapters/03_architecture}
+\input{chapters/04_hardware}
+\input{chapters/05_firmware}
+\input{chapters/06_host_software}
+\input{chapters/07_pipeline}
+\input{chapters/08_segmentation}
+\input{chapters/09_validation}
+\input{chapters/10_fpga}
+\input{chapters/11_asic}
+\input{chapters/12_conclusion}
+\input{chapters/13_methodology}
+\input{chapters/14_error_analysis}
+\input{chapters/15_commercialization}
+\input{chapters/16_opensource}
+\input{chapters/17_related_work}
+
+% ═══ APPENDICES ════════════════════════════════════════════════════════════
+
+\appendix
+\input{chapters/appendices}
+
+% ═══ BIBLIOGRAPHY ══════════════════════════════════════════════════════════
+
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}

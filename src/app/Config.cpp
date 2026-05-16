@@ -29,15 +29,24 @@ std::vector<ExerciseProfile> default_exercise_profiles() {
         p.expected_peak_v_max_mps = pvmax;
         v.push_back(p);
     };
-    add("back_squat",     "Back Squat",      10.0f, 1.0f, 2.0f);
-    add("front_squat",    "Front Squat",     10.0f, 1.0f, 2.0f);
-    add("bench_press",    "Bench Press",      8.0f, 0.6f, 1.2f);
-    add("deadlift",       "Deadlift",         6.0f, 0.8f, 1.5f);
-    add("overhead_press", "Overhead Press",   8.0f, 0.6f, 1.2f);
-    add("barbell_row",    "Barbell Row",      8.0f, 1.0f, 2.0f);
-    add("clean",          "Clean",           20.0f, 2.0f, 3.5f);
-    add("snatch",         "Snatch",          25.0f, 2.5f, 4.0f);
-    add("other",          "Other",           10.0f, 1.0f, 2.5f);
+    add("back_squat",        "Back Squat",         10.0f, 1.0f, 2.0f);
+    add("front_squat",       "Front Squat",        10.0f, 1.0f, 2.0f);
+    add("bench_press",       "Bench Press",         8.0f, 0.6f, 1.2f);
+    add("incline_bench_press","Incline Bench Press",8.0f, 0.6f, 1.2f);
+    add("close_grip_bench_press","Close-Grip Bench",8.0f, 0.6f, 1.2f);
+    add("deadlift",          "Deadlift",            6.0f, 0.8f, 1.5f);
+    add("romanian_deadlift", "Romanian Deadlift",   6.0f, 0.7f, 1.4f);
+    add("sumo_deadlift",     "Sumo Deadlift",       6.0f, 0.7f, 1.4f);
+    add("overhead_press",    "Overhead Press",      8.0f, 0.6f, 1.2f);
+    add("push_press",        "Push Press",         12.0f, 1.2f, 2.2f);
+    add("barbell_row",       "Barbell Row",         8.0f, 1.0f, 2.0f);
+    add("pendlay_row",       "Pendlay Row",         8.0f, 1.0f, 2.0f);
+    add("barbell_curl",      "Barbell Curl",        8.0f, 0.5f, 1.2f);
+    add("hip_thrust",        "Hip Thrust",          8.0f, 0.6f, 1.4f);
+    add("clean",             "Clean",              20.0f, 2.0f, 3.5f);
+    add("power_clean",       "Power Clean",        20.0f, 2.0f, 3.5f);
+    add("snatch",            "Snatch",             25.0f, 2.5f, 4.0f);
+    add("other",             "Other",              10.0f, 1.0f, 2.5f);
     return v;
 }
 

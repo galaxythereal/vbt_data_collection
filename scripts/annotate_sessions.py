@@ -46,6 +46,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 
 from eda_sessions import annotation_issues, read_json, safe_float
 from rep_segmenter_v2 import (
@@ -58,6 +59,66 @@ from rep_segmenter_v2 import (
 
 
 MIN_VERY_HIGH_SESSION_SCORE = 0.92
+
+
+def add_camera_3d_metrics(sess: Path, reps: list[dict]) -> list[dict]:
+    """Augment rep JSON with vertical, per-axis, and 3D camera ROM metrics."""
+    marker_p = sess / "camera" / "marker_positions.csv"
+    if not marker_p.exists() or not reps:
+        return reps
+    try:
+        m = pd.read_csv(marker_p).drop_duplicates("timestamp_s")
+    except Exception:
+        return reps
+    required = {"timestamp_s", "x_m", "y_m", "z_m"}
+    if not required.issubset(m.columns):
+        return reps
+    t = m["timestamp_s"].to_numpy(float)
+    xyz = m[["x_m", "y_m", "z_m"]].to_numpy(float)
+    detected = m.get("detected", pd.Series(np.ones(len(m)))).to_numpy(float) > 0
+    conf = m.get("confidence", pd.Series(np.ones(len(m)))).to_numpy(float)
+    snr = m.get("snr", pd.Series(np.ones(len(m)) * 9.0)).to_numpy(float)
+    circ = m.get("circularity", pd.Series(np.ones(len(m)))).to_numpy(float)
+    ok = detected & (conf >= 0.4) & (snr >= 2.0) & (circ >= 0.5)
+
+    for rep in reps:
+        times: list[float] = []
+        for phase in ("concentric", "top_rest", "eccentric", "rest"):
+            d = rep.get(phase, {}) if isinstance(rep, dict) else {}
+            for key in ("t_start", "t_end"):
+                try:
+                    times.append(float(d[key]))
+                except Exception:
+                    pass
+        if len(times) < 2:
+            continue
+        lo, hi = min(times), max(times)
+        mask = (t >= lo) & (t <= hi) & ok
+        if int(np.sum(mask)) < 3:
+            mask = (t >= lo) & (t <= hi)
+        if int(np.sum(mask)) < 3:
+            continue
+        p = xyz[mask]
+        ranges = np.nanmax(p, axis=0) - np.nanmin(p, axis=0)
+        vertical = float(np.nanmax(-p[:, 1]) - np.nanmin(-p[:, 1]))
+        x_rom = float(ranges[0])
+        z_rom = float(ranges[2])
+        bbox = float(np.sqrt(x_rom * x_rom + vertical * vertical + z_rom * z_rom))
+        rep["rom_vertical_m"] = vertical
+        rep["rom_camera_x_m"] = x_rom
+        rep["rom_camera_y_m"] = vertical
+        rep["rom_camera_z_m"] = z_rom
+        rep["rom_3d_bbox_m"] = bbox
+        rep["camera_metrics"] = {
+            "rom_vertical_m": vertical,
+            "rom_x_m": x_rom,
+            "rom_y_m": vertical,
+            "rom_z_m": z_rom,
+            "rom_3d_bbox_m": bbox,
+            "marker_ok_pct": float(np.mean(ok[(t >= lo) & (t <= hi)]) * 100.0)
+            if np.any((t >= lo) & (t <= hi)) else float("nan"),
+        }
+    return reps
 
 
 def session_dirs(root: Path) -> list[Path]:
@@ -224,8 +285,8 @@ def propose(root: Path, replace_all: bool) -> list[dict]:
         raw_reps, meta_info = segment(sig, exercise, cfg)
         accepted = [r for r in raw_reps if r.gates and r.gates.all_pass]
         rejected = [r for r in raw_reps if not (r.gates and r.gates.all_pass)]
-        accepted_json = [to_annotation_json(r) for r in accepted]
-        rejected_json = [to_annotation_json(r) for r in rejected]
+        accepted_json = add_camera_3d_metrics(sess, [to_annotation_json(r) for r in accepted])
+        rejected_json = add_camera_3d_metrics(sess, [to_annotation_json(r) for r in rejected])
 
         marker_q = float(np.mean(sig.marker_q)) if len(sig.marker_q) else 0.0
         session_score, session_level, reasons = session_confidence(accepted_json, expected, marker_q)
@@ -328,6 +389,8 @@ def promote_reviewed(root: Path, dry_run: bool) -> list[dict]:
             rows.append({"session": sess.name, "promoted": False, "reason": "candidate file missing"})
             continue
         reps = read_json(candidate_path, None)
+        if isinstance(reps, list):
+            reps = add_camera_3d_metrics(sess, reps)
         issues = annotation_issues(reps if isinstance(reps, list) else [])
         if not isinstance(reps, list) or issues:
             rows.append({"session": sess.name, "promoted": False, "reason": "; ".join(issues[:5])})

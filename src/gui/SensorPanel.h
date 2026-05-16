@@ -33,9 +33,21 @@ public:
             if (ImGui::Button("Calibrate Gyro Bias (5s)")) {
                 imu.start_gyro_bias_calibration(5000);
             }
+            ImGui::SameLine();
+            if (ImGui::Button("Clear")) {
+                imu.clear_gyro_bias();
+            }
             if (imu.is_calibrating()) {
                 ImGui::SameLine();
                 ImGui::TextColored(ImVec4(1, 1, 0, 1), "Calibrating...");
+            } else if (imu.is_gyro_bias_applied()) {
+                auto gb = imu.get_gyro_bias();
+                ImGui::TextColored(ImVec4(1, 0.6f, 0.2f, 1),
+                    "Gyro bias APPLIED to stream: (%.3f, %.3f, %.3f) dps", gb.x, gb.y, gb.z);
+                ImGui::TextWrapped("Pipeline ignores this; per-session calibration is authoritative. "
+                                   "Click Clear to record RAW.");
+            } else {
+                ImGui::TextColored(ImVec4(0.6f, 1, 0.6f, 1), "Gyro: RAW (recommended)");
             }
         } else {
             ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1), "● Disconnected");

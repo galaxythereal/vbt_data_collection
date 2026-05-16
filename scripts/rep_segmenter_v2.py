@@ -61,6 +61,8 @@ BOTTOM_START = {
     "snatch", "deadlift", "barbell_row", "pendlay_row", "bent_over_row",
     "clean", "power_clean", "hang_clean", "clean_and_jerk", "sumo_deadlift",
     "romanian_deadlift", "rdl", "stiff_leg_deadlift", "kettlebell_swing",
+    "barbell_curl", "ez_bar_curl", "preacher_curl", "hammer_curl",
+    "upright_row", "high_pull", "hip_thrust", "glute_bridge",
 }
 TOP_START = {
     "back_squat", "front_squat", "overhead_squat", "high_bar_squat",

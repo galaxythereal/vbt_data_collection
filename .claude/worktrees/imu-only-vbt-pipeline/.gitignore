@@ -1,0 +1,26 @@
+build/
+build-*/
+.cache/
+*.log
+datasets/*
+vbt_config.json
+__pycache__/
+# !./ds/**
+# !./ds/*
+# !./ds/**/*
+# Editor / IDE
+.vscode/
+.idea/
+.DS_Store
+datasets/*
+datasets/
+./datasets/*
+./datasets/
+# Tooling
+# .claude/
+.codex/
+diagnostics/
+tools/annotation_studio/node_modules
+# Runtime
+imgui.ini
+

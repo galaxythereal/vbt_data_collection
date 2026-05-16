@@ -1,0 +1,209 @@
+% ════════════════════════════════════════════════════════════════════
+% Chapter 6 — Host-Side Software Architecture
+% ════════════════════════════════════════════════════════════════════
+\section{Host-Side Software Architecture}\label{sec:hostsw}
+
+The host-side application is a C++17 real-time data acquisition, visualisation, and session management platform.
+It is built with CMake~3.20+ and depends on: \code{librealsense2}, OpenCV~4.0+, Eigen3, \code{nlohmann/json}, \code{spdlog}, Dear~ImGui~1.90.4 with ImPlot~0.16, GLFW~3.3, and OpenGL.
+The application version at the time of writing is v1.1.0.
+
+
+\subsection{Software Architecture Overview}
+
+The application follows a layered architecture with clear separation of concerns:
+
+\begin{table}[H]
+  \centering
+  \caption{Host application software layers and key classes.}
+  \label{tab:sw_layers}
+  \begin{tabular}{llp{6cm}}
+    \toprule
+    \textbf{Layer} & \textbf{Key Classes} & \textbf{Responsibility} \\
+    \midrule
+    \textit{Sensors}    & \class{IMUReader}, \class{CameraReader}, \class{MarkerTracker}
+                         & Hardware abstraction; thread-safe streaming. \\
+    \textit{Core}       & \class{Session}, \class{SyncEngine}, \class{DataLogger}, \class{CalibrationManager}, \class{EventLog}
+                         & Session lifecycle, clock mapping, data persistence, calibration. \\
+    \textit{Processing} & \class{OrientationFilter}, \class{RepSegmenter}, \class{Validator}, \class{Autoregulation}
+                         & Real-time kinematics, rep counting, plausibility checks. \\
+    \textit{GUI}        & \class{MainWindow}, \class{SessionPanel}, \class{PreflightPanel}, \class{OperatorView}, etc.
+                         & ImGui-based multi-panel tiled interface. \\
+    \textit{Annotation}  & \class{AnnotationStudio}, \class{TimelinePanel}, \class{VideoPanel}, \class{RepTablePanel}
+                         & Post-session NLE-style timeline editing and validation. \\
+    \textit{Utils}      & \class{SerialPort}, \class{AudioCue}, \class{Notifications}, \class{RingBuffer}, \class{SubjectRegistry}
+                         & Cross-platform I/O, audio cues, toast system. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+
+\subsection{Sensor Layer}
+
+\subsubsection{IMUReader}
+The \class{IMUReader} class manages a dedicated background thread that continuously reads from the USB serial port at 921\,600~baud.
+Incoming bytes are appended to a 4\,KB ring buffer.
+The parser scans for the sync word (\code{0x55AA}), extracts 26-byte packets, validates the CRC16-CCITT checksum, and converts raw integers to physical units using the scale factors in \cref{eq:accel_scale}--\cref{eq:temp_scale}.
+
+Quality metrics are continuously accumulated:
+\begin{itemize}[nosep]
+  \item \textbf{CRC error count:} Packets with failed checksums are discarded and counted.
+  \item \textbf{Dropout detection:} Gaps in the ESP32 timestamp sequence exceeding \SI{2}{\milli\second} are counted as dropouts.
+  \item \textbf{Jitter statistics:} A rolling window of inter-sample timestamp deltas is maintained to compute mean, max, and standard deviation of sampling jitter.
+  \item \textbf{Saturation detection:} Samples at the $\pm$FSR boundaries ($\pm 32768$ raw) are counted per axis, flagging potential clipping events.
+  \item \textbf{Noise floor estimation:} Rolling standard deviation of gyroscope magnitude and $|a| - 1$ at rest, providing a live noise-floor proxy.
+  \item \textbf{FSYNC hit tracking:} The \code{fsync\_tagged} flag is set when \code{(temp\_raw \& 0x01) == 1}, and a cumulative FSYNC hit counter and live rate are maintained.
+\end{itemize}
+
+Each validated sample is passed to a user-registered callback, which the \class{Session} class uses to feed the \class{SyncEngine}, \class{DataLogger}, \class{OrientationFilter}, and \class{RepSegmenter}.
+
+\subsubsection{CameraReader}
+The \class{CameraReader} wraps the \code{librealsense2} pipeline.
+It configures the D455 according to \cref{tab:cam_config} and starts a background thread that calls \code{pipeline.wait\_for\_frames()} in a blocking loop.
+Each frameset is decomposed into:
+\begin{itemize}[nosep]
+  \item Left and right IR images (\code{cv::Mat}, \code{CV\_8U}).
+  \item Aligned depth image (\code{cv::Mat}, \code{CV\_16U}, millimetres).
+  \item Hardware timestamp (via \code{RS2\_FRAME\_METADATA\_SENSOR\_TIMESTAMP}).
+  \item Frame number (monotonic counter).
+\end{itemize}
+
+Camera frames are enqueued into a bounded producer--consumer queue (\code{CAMERA\_QUEUE\_LIMIT = 512}).
+A separate camera worker thread dequeues frames and performs marker tracking, video encoding, and data logging, ensuring that the RealSense streaming thread is never blocked by downstream processing.
+
+When enabled, the D455's onboard BMI085 IMU streams accelerometer (\SI{250}{\hertz}) and gyroscope (\SI{200}{\hertz}) data via a separate callback.
+These samples are logged to \file{camera\_imu.csv} for tripod-shake detection and cross-stream synchronisation validation, but are never used for VBT kinematic computation.
+
+
+\subsection{Session Lifecycle}\label{sec:session}
+
+The \class{Session} class orchestrates the entire recording workflow through a well-defined state machine:
+
+\begin{figure}[H]
+  \centering
+  \begin{tikzpicture}[
+    state/.style={draw, rectangle, rounded corners=5pt, minimum width=2.5cm, minimum height=1cm, align=center, font=\small},
+    >={Stealth[length=2.5mm]},
+    ]
+    \node[state] (idle)       {IDLE};
+    \node[state, right=2cm of idle] (conf) {CONFIGURED};
+    \node[state, right=2cm of conf] (calib) {CALIBRATING};
+    \node[state, below=1.5cm of calib] (ready) {READY};
+    \node[state, left=2cm of ready] (rec) {RECORDING};
+    \node[state, left=2cm of rec] (stop) {STOPPED};
+    \node[state, below=1.5cm of stop] (saved) {SAVED};
+
+    \draw[->] (idle) -- node[above, font=\scriptsize] {create()} (conf);
+    \draw[->] (conf) -- node[above, font=\scriptsize] {calibrate} (calib);
+    \draw[->] (calib) -- node[right, font=\scriptsize] {tap-test OK} (ready);
+    \draw[->] (ready) -- node[above, font=\scriptsize] {start\_recording()} (rec);
+    \draw[->] (rec) -- node[above, font=\scriptsize] {stop\_recording()} (stop);
+    \draw[->] (stop) -- node[left, font=\scriptsize] {save()} (saved);
+    \draw[->, dashed] (stop.south) -- ++(0,-0.5) -| node[near start, below, font=\scriptsize] {discard()} (idle.south);
+  \end{tikzpicture}
+  \caption{Session state machine.}
+  \label{fig:session_states}
+\end{figure}
+
+\subsubsection{Atomic Session Finalisation}
+During recording, all files are written to a directory suffixed with \code{.partial/}.
+Upon calling \code{save()}, the directory is atomically renamed to its final path.
+If a final directory already exists (e.g., from a previous aborted save), it is moved to a timestamped \code{.bak\_*} backup.
+This guarantees that a crash or power failure mid-recording never corrupts the dataset---the \code{.partial} directory remains as a recoverable artefact.
+
+On startup, \code{Session::find\_orphaned\_partials()} scans the dataset root for any unfinished \code{.partial} directories and surfaces them via toast notification, offering the operator the option to recover or discard.
+
+\subsubsection{Multi-Set Support}
+Schema~v4 introduces multi-set sessions.
+During a continuous recording, the operator can call \code{advance\_set(next\_set\_info)}, which:
+\begin{enumerate}[nosep]
+  \item Stamps \code{t\_end\_unified\_s} on the current \code{SetInfo} and records the completed rep count.
+  \item Appends a new \code{SetInfo} to the session's \code{sets} vector.
+  \item Instructs the \class{RepSegmenter} to tag all subsequent reps with the new \code{set\_id}.
+\end{enumerate}
+
+
+\subsection{Data Logging}
+
+The \class{DataLogger} writes data in parallel to multiple output streams:
+
+\begin{table}[H]
+  \centering
+  \caption{Output files generated per session.}
+  \label{tab:output_files}
+  \begin{tabular}{llp{5.5cm}}
+    \toprule
+    \textbf{Directory} & \textbf{File} & \textbf{Content} \\
+    \midrule
+    \file{imu/}     & \file{raw\_imu.csv}          & All columns: \code{esp\_timestamp\_us}, \code{host\_timestamp\_s}, \code{unified\_time\_s}, \code{accel\_\{x,y,z\}\_g}, \code{gyro\_\{x,y,z\}\_dps}, \code{temp\_c}, raw integers, \code{fsync\_tagged}. \\
+    \file{imu/}     & \file{raw\_imu.bin}           & 26-byte binary packets (identical to firmware format). \\
+    \file{imu/}     & \file{camera\_imu.csv}        & D455 onboard BMI085 accel/gyro data. \\
+    \file{camera/}  & \file{marker\_positions.csv}  & Per-frame: timestamp, 2D pixel coords, 3D world coords, blob area, circularity, SNR, confidence, depth source. \\
+    \file{camera/}  & \file{ir\_video.mp4}          & Left IR frames encoded as H.264 video. \\
+    \file{camera/}  & \file{video\_frames.csv}      & Per-frame index: HW timestamp, host timestamp, frame number. \\
+    \file{annotations/} & \file{rep\_segments.json}  & Per-rep phase boundaries and kinematic summaries. \\
+    Root            & \file{session\_info.json}     & Complete session metadata (see \cref{sec:dataset}). \\
+    Root            & \file{manifest.json}          & Per-file SHA-256 checksums and sizes. \\
+    Root            & \file{events.jsonl}           & Append-only event log with hash chain. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+
+\subsection{Real-Time Processing}
+
+\subsubsection{Orientation Filter}
+The real-time GUI uses a Madgwick AHRS filter (\class{OrientationFilter}) for live gravity-compensated acceleration preview and coordinate-frame visualisation.
+The filter gain ($\beta = 0.1$) is tuned for responsiveness during live operation.
+Post-processing in the golden model pipeline replaces this with VQF for superior static accuracy.
+
+\subsubsection{Repetition Segmenter}
+The \class{RepSegmenter} implements a dual-algorithm approach:
+\begin{itemize}[nosep]
+  \item \textbf{Algorithm A (Primary):} Camera-derived velocity zero-crossing detection. A 2nd-order Butterworth lowpass filter (cutoff from the exercise profile, e.g., \SI{10}{\hertz} for squats) is applied to the camera velocity signal. A windowed peak-confirmation detector (\code{PEAK\_WINDOW\_N = 20} samples, $\pm$\SI{0.22}{\second} at \SI{90}{fps}) identifies confirmed TOP and BOTTOM extrema with prominence thresholds, avoiding false triggers from noise and oscillation.
+  \item \textbf{Algorithm B (Fallback):} Raw IMU accelerometer variance detection. When camera tracking is lost for $>$\SI{1}{\second}, the segmenter switches to monitoring the running acceleration variance over a \SI{200}{\milli\second} window. Motion onset and cessation are detected via variance thresholds.
+\end{itemize}
+
+Each completed repetition is stored as a \code{RepAnnotation} containing four chronological phase segments: \textbf{concentric} $\rightarrow$ \textbf{top\_rest} $\rightarrow$ \textbf{eccentric} $\rightarrow$ \textbf{rest}, with associated peak velocity, mean velocity, and ROM.
+
+
+\subsection{Calibration System}
+
+The \class{CalibrationManager} supports:
+\begin{enumerate}[nosep]
+  \item \textbf{6-Position Accelerometer Calibration:} The operator places the IMU in six orientations ($\pm X$, $\pm Y$, $\pm Z$ up). For each position, the mean acceleration vector is recorded over $\sim$\SI{3}{\second}. A least-squares ellipsoid fit computes the $3\times3$ scale-misalignment matrix $\mathbf{K}$ and the $3\times1$ bias vector $\mathbf{b}$:
+  \begin{equation}
+    \mathbf{a}_\text{corrected} = \mathbf{K} \left( \mathbf{a}_\text{raw} - \mathbf{b} \right)
+  \end{equation}
+  \item \textbf{Per-Session Gyroscope Bias:} The first \SI{5}{\second} of stationary data are averaged to compute the gyroscope bias vector, which is subtracted from all subsequent samples.
+  \item \textbf{Camera-to-World Extrinsic:} Gravity alignment from the D455's onboard accelerometer computes the camera-to-world rotation matrix.
+\end{enumerate}
+
+All calibration parameters are serialised to JSON with timestamps and sensor serial numbers, forming the \code{CalibrationProvenance} block in the session metadata.
+
+
+\subsection{Build Provenance}
+
+Every build embeds a \file{Version.h} generated by CMake from \file{Version.h.in}.
+This captures:
+\begin{itemize}[nosep]
+  \item Application version (currently v1.1.0).
+  \item Git SHA, branch name, and dirty flag.
+  \item Build timestamp (ISO~8601 UTC).
+  \item Build type (Release/Debug), compiler identification, OS, and architecture.
+\end{itemize}
+
+This fingerprint is embedded into every session's \code{BuildProvenance} metadata block, ensuring that any kinematic result can be traced back to the exact software state that produced it.
+
+
+\subsection{Graphical User Interface}
+
+The GUI is implemented using Dear~ImGui with ImPlot for real-time charting.
+Key panels include:
+
+\begin{itemize}[nosep]
+  \item \textbf{Pre-Flight Panel:} A systematic checklist that gates the START button. Checks include: IMU rate within $\pm 5\%$ of \SI{1}{\kilo\hertz}, no accelerometer saturation, camera connected, marker detection rate $> 80\%$, sync drift $<$ \SI{50}{ppm}, and subject ID populated.
+  \item \textbf{Operator View (F12):} A fullscreen, big-numbers display readable from across the gym. Shows: current rep count, last MCV and PCV, velocity-loss percentage, and a stop-set recommendation when VL exceeds the exercise profile threshold.
+  \item \textbf{Rep Timeline Panel:} A horizontal NLE-style timeline showing per-rep bars with colour-coded plausibility dots (green = passed, red = failed). Supports drag-handle boundary editing, right-click deletion, and bulk operations.
+  \item \textbf{Calibration Wizard (F1):} A step-by-step 6-position guide with live alignment visualisation (dot product + magnitude check), 3-second countdown capture, and a review screen.
+  \item \textbf{Replay Mode (F2):} Browse completed sessions, load metadata, view rep annotations, inspect the manifest and event log.
+\end{itemize}

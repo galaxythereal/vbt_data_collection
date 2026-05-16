@@ -152,8 +152,23 @@ SyncResult SyncEngine::finish_tap_test() {
     }
 
     double imu_peak_time = imu_peak->first;
-    // Both times are already in unified domain, so offset should be small
-    result.offset_us = (imu_peak_time - cam_peak_time) * 1e6;
+    double offset_s = imu_peak_time - cam_peak_time;
+    // Both times are already in unified domain, so a real tap should give
+    // a sub-frame offset. Anything > 500 ms means the two streams picked
+    // different events (e.g. one peak from a rest movement, the other from
+    // an actual tap). Refuse to report it as "Synced".
+    static constexpr double TAP_OFFSET_SANITY_S = 0.5;
+    if (std::abs(offset_s) > TAP_OFFSET_SANITY_S) {
+        spdlog::warn("Tap test rejected: IMU peak {:.6f}s vs CAM peak {:.6f}s — offset {:.3f}s exceeds {:.3f}s sanity window. "
+                     "Common cause: tapped twice, or the IMU peak was a bar drop not the tap.",
+                     imu_peak_time, cam_peak_time, offset_s, TAP_OFFSET_SANITY_S);
+        result.valid = false;
+        result.offset_us = offset_s * 1e6;
+        result.correlation = 0.0;
+        sync_result_ = result;
+        return result;
+    }
+    result.offset_us = offset_s * 1e6;
     result.valid = true;
     result.correlation = 0.9;
 
@@ -257,8 +272,41 @@ void SyncEngine::try_pair_and_refit_() {
     }
     long double denom = n * sum_xx - sum_x * sum_x;
     if (std::abs((double)denom) < 1.0) return;
-    hw_anchor_a_ = (double)((n * sum_xy - sum_x * sum_y) / denom);
-    hw_anchor_b_ = (double)((sum_y - hw_anchor_a_ * sum_x) / n);
+    double a = (double)((n * sum_xy - sum_x * sum_y) / denom);
+    double b = (double)((sum_y - a * sum_x) / n);
+    // A bad host-nearest FSYNC pairing can produce a plausible-looking
+    // affine fit that jumps IMU unified_time_s forward/backward by seconds.
+    // Reject fits whose slope or residuals are physically impossible for a
+    // microsecond ESP clock mapped to seconds.
+    auto note_rejection = [this](const char* why) {
+        hw_anchor_consecutive_rejections_++;
+        spdlog::warn("SyncEngine: {} (consecutive rejections={})",
+                     why, hw_anchor_consecutive_rejections_);
+        // After sustained rejection, surrender the stale anchor so the
+        // fallback dt-projection takes over rather than projecting on a
+        // multi-second-old fit.
+        if (hw_anchor_consecutive_rejections_ >= HW_ANCHOR_MAX_REJECTIONS && hw_anchor_valid_) {
+            spdlog::warn("SyncEngine: invalidating stale HW anchor after {} rejections",
+                         hw_anchor_consecutive_rejections_);
+            hw_anchor_valid_ = false;
+        }
+    };
+    if (a < 0.95e-6 || a > 1.05e-6) {
+        note_rejection(("HW anchor fit rejected, bad slope " + std::to_string(a)).c_str());
+        return;
+    }
+    double max_resid_s = 0.0;
+    for (auto& [esp, cam] : hw_pairs_) {
+        max_resid_s = std::max(max_resid_s, std::abs((a * (double)esp + b) - cam));
+    }
+    if (max_resid_s > 0.003) {
+        note_rejection(("HW anchor fit rejected, residual " +
+                        std::to_string(max_resid_s * 1000.0) + " ms").c_str());
+        return;
+    }
+    hw_anchor_consecutive_rejections_ = 0;
+    hw_anchor_a_ = a;
+    hw_anchor_b_ = b;
     hw_anchor_valid_ = true;
 
     // Update reported drift in PPM relative to ideal 1 µs / 1 µs (a = 1e-6).

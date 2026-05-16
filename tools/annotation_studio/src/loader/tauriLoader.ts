@@ -117,6 +117,24 @@ function backfillUnifiedFromVideoIndex(
   diag: { warnings: string[] }
 ) {
   if (!imu.length) return;
+  const hasEsp = imu.every((r) => Number.isFinite(r.esp_timestamp_us) && r.esp_timestamp_us > 0);
+  const badUnified = imu.some((r, i) => {
+    if (i === 0) return false;
+    const dt = r.unified_time_s - imu[i - 1].unified_time_s;
+    return dt <= 0 || dt > 0.005;
+  });
+  if (hasEsp && badUnified && imu.some((r) => r.unified_time_s > 1e9)) {
+    const offsets = imu
+      .map((r) => r.unified_time_s - r.esp_timestamp_us / 1e6)
+      .filter((v) => Number.isFinite(v))
+      .sort((a, b) => a - b);
+    const offset = offsets[Math.floor(offsets.length / 2)];
+    for (const r of imu) r.unified_time_s = r.esp_timestamp_us / 1e6 + offset;
+    diag.warnings.push(
+      `Repaired non-monotonic IMU unified_time_s from esp_timestamp_us (median offset ${offset.toExponential(3)} s).`
+    );
+    return;
+  }
   if (!imu.every((r) => r.unified_time_s === 0)) return;
   if (!videoIdx.length) {
     diag.warnings.push(

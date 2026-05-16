@@ -1,0 +1,181 @@
+% ════════════════════════════════════════════════════════════════════
+% Chapter 5 — Firmware Implementation
+% ════════════════════════════════════════════════════════════════════
+\section{Firmware Implementation}\label{sec:firmware}
+
+This section describes the embedded firmware running on both ESP32 microcontrollers: the barbell-mounted sensor node and the USB-connected relay node.
+Both are implemented in C++ using the Arduino core for ESP-IDF.
+
+
+\subsection{Barbell Node Firmware (v4.1)}
+
+\subsubsection{Boot Sequence}
+
+The barbell node executes the following deterministic initialisation sequence:
+\begin{enumerate}[nosep]
+  \item \textbf{Power hardening:} Disable the Brown-Out Detector and reduce CPU frequency to \SI{160}{\mega\hertz} (see \cref{sec:hw}).
+  \item \textbf{Serial initialisation:} Open the USB UART at 921\,600~baud for diagnostic output (prefixed with \code{\#}).
+  \item \textbf{SPI bus initialisation:} Configure the default VSPI bus with \code{SPI.begin(18, 19, 23, 5)}.
+  \item \textbf{IMU initialisation:} Execute the register configuration sequence in \cref{tab:imu_regs}, verify \reg{WHO\_AM\_I} $=$ \code{0x47}, and wait \SI{50}{\milli\second} for gyroscope startup.
+  \item \textbf{Camera SYNC input:} Attach the GPIO\,27 rising-edge interrupt (see \cref{lst:isr_debounce}).
+  \item \textbf{ESP-NOW initialisation:} Set WiFi to STA mode, configure maximum TX power, register the relay node as a unicast peer.
+  \item \textbf{INT1 probe:} Attempt to detect data-ready pulses on GPIO\,26 over \SI{50}{\milli\second}. If detected, attach the interrupt-driven sampling mode; otherwise, fall back to software polling.
+\end{enumerate}
+
+\subsubsection{Sampling Modes}
+
+The firmware supports two mutually exclusive sampling modes:
+
+\paragraph{Interrupt-Driven Mode (Primary):}
+When \code{INT1} is successfully detected during boot, the ESP32 attaches a \code{RISING}-edge interrupt:
+\begin{lstlisting}[language=C++, numbers=none]
+attachInterrupt(digitalPinToInterrupt(PIN_INT1), isr_data_ready, RISING);
+\end{lstlisting}
+The ISR sets a volatile boolean flag \code{g\_data\_ready = true}.
+The main loop polls this flag and, when set, immediately executes the SPI burst read.
+This mode achieves sub-\SI{1}{\micro\second} sampling jitter, limited only by the ISR latency of the Xtensa LX6 core.
+
+\paragraph{Polling Fallback Mode:}
+If the \code{INT1} wire is severed or the ISR probe fails, the firmware falls back to a software-timed polling loop.
+A target timestamp \code{g\_next\_sample\_us} is maintained, initialised from \code{micros()} and advanced by \SI{1000}{\micro\second} on each iteration.
+If the ESP32 falls behind by more than \SI{5000}{\micro\second} (due to a WiFi task priority inversion, for example), the target is reset to prevent a burst of catch-up reads.
+
+\subsubsection{SPI Burst Read}
+
+On each data-ready event, the ESP32 captures a 64-bit microsecond timestamp via \code{esp\_timer\_get\_time()} and then initiates a continuous 14-byte SPI burst read starting at \reg{TEMP\_DATA1} (\code{0x1D}):
+
+\begin{table}[H]
+  \centering
+  \caption{SPI burst read byte layout (14 bytes from address \code{0x1D}).}
+  \label{tab:burst_read}
+  \begin{tabular}{clll}
+    \toprule
+    \textbf{Byte Offset} & \textbf{Register} & \textbf{Content} & \textbf{Endianness} \\
+    \midrule
+    0--1   & \reg{TEMP\_DATA1/0}  & Temperature      & Big-endian \\
+    2--3   & \reg{ACCEL\_X\_H/L}  & Accel X          & Big-endian \\
+    4--5   & \reg{ACCEL\_Y\_H/L}  & Accel Y          & Big-endian \\
+    6--7   & \reg{ACCEL\_Z\_H/L}  & Accel Z          & Big-endian \\
+    8--9   & \reg{GYRO\_X\_H/L}   & Gyro X           & Big-endian \\
+    10--11 & \reg{GYRO\_Y\_H/L}   & Gyro Y           & Big-endian \\
+    12--13 & \reg{GYRO\_Z\_H/L}   & Gyro Z           & Big-endian \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The sensor registers are big-endian (MSB first); the firmware reconstructs each 16-bit signed integer from the raw bytes:
+\begin{lstlisting}[language=C++, numbers=none]
+int16_t ax = (int16_t)((uint16_t)raw[2] << 8 | raw[3]);
+\end{lstlisting}
+
+
+\subsubsection{Binary Packet Format}\label{sec:packet_format}
+
+The firmware manually assembles a 26-byte little-endian binary packet for transmission.
+Manual byte packing via explicit \code{memcpy} operations is used instead of C++ struct serialisation to avoid compiler-dependent alignment padding.
+
+\begin{table}[H]
+  \centering
+  \caption{26-byte binary packet structure (little-endian).}
+  \label{tab:packet}
+  \begin{tabular}{cllp{5cm}}
+    \toprule
+    \textbf{Offset} & \textbf{Field} & \textbf{Type} & \textbf{Description} \\
+    \midrule
+    0--1   & Sync Word         & \code{uint16\_t}  & Fixed value \code{0x55AA} for frame detection. \\
+    2--9   & Timestamp          & \code{uint64\_t}  & ESP32 \si{\micro\second} counter (\code{esp\_timer\_get\_time}). \\
+    10--11 & Accel X            & \code{int16\_t}   & Raw accelerometer X. \\
+    12--13 & Accel Y            & \code{int16\_t}   & Raw accelerometer Y. \\
+    14--15 & Accel Z            & \code{int16\_t}   & Raw accelerometer Z. \\
+    16--17 & Gyro X             & \code{int16\_t}   & Raw gyroscope X. \\
+    18--19 & Gyro Y             & \code{int16\_t}   & Raw gyroscope Y. \\
+    20--21 & Gyro Z             & \code{int16\_t}   & Raw gyroscope Z. \\
+    22--23 & Temperature        & \code{int16\_t}   & Raw temp. \textbf{LSB = FSYNC tag.} \\
+    24--25 & CRC16              & \code{uint16\_t}  & CRC16-CCITT over bytes 0--23. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The FSYNC tag is embedded in the temperature value: on the host, \code{(temp\_raw \& 0x01) == 1} indicates that the camera trigger pulse was latched during this sample's acquisition period.
+
+\subsubsection{CRC16-CCITT Integrity Check}
+
+A CRC16-CCITT checksum (polynomial \code{0x1021}, initial value \code{0xFFFF}) is computed over the first 24~bytes and appended as bytes 24--25.
+The host PC runs the identical algorithm; if the checksum diverges, the packet is discarded and the gap is flagged in the statistics.
+
+\begin{lstlisting}[language=C++, caption={CRC16-CCITT implementation (identical on ESP32 and host).}, label={lst:crc}]
+static uint16_t crc16_ccitt(const uint8_t* data, size_t length) {
+    uint16_t crc = 0xFFFF;
+    for (size_t i = 0; i < length; i++) {
+        crc ^= (uint16_t)data[i] << 8;
+        for (int j = 0; j < 8; j++) {
+            if (crc & 0x8000) crc = (crc << 1) ^ 0x1021;
+            else              crc <<= 1;
+        }
+    }
+    return crc;
+}
+\end{lstlisting}
+
+\subsubsection{ESP-NOW Batching}
+
+Triggering the ESP32's radio hardware at \SI{1}{\kilo\hertz} causes the RTOS scheduler to thrash and the packet drop rate to exceed 99\%.
+The firmware therefore batches $N = 8$ consecutive 26-byte packets into a single 208-byte buffer before invoking \code{esp\_now\_send()}.
+This reduces the radio duty cycle from \SI{1000}{\hertz} to \SI{125}{\hertz}, well within the ESP-NOW protocol's demonstrated reliable throughput capacity of $\sim$\SI{200}{\hertz} in unicast mode.
+
+The batch size of 8 was selected to keep the total payload (208~bytes) below the ESP-NOW maximum frame size of 250~bytes, while maximising the number of samples per radio transaction.
+
+\subsubsection{FSYNC Detection Logic}
+
+The firmware implements two independent FSYNC detection paths for diagnostic cross-validation:
+\begin{enumerate}[nosep]
+  \item \textbf{Path A (TEMP LSB):} After every SPI read, the firmware checks \code{raw[1] \& 0x01}. If set, the FSYNC counter \code{g\_fsync\_hits} is incremented, and the 16-bit FSYNC timestamp is read from \reg{TMST\_FSYNCH} (\code{0x2B}).
+  \item \textbf{Path B (\reg{INT\_STATUS2} polling):} Every 50th sample ($\sim$\SI{20}{\hertz}), the firmware reads \reg{INT\_STATUS2} (\code{0x37}) and checks bit~6 (\code{UI\_FSYNC\_INT}). This register-based approach is independent of the TEMP~LSB tag and provides a second confirmation channel.
+\end{enumerate}
+
+During operation, the 5-second status report prints both counters, allowing the operator to verify that the level shifter, IMU FSYNC engine, and ESP32 GPIO interrupt are all functioning correctly.
+
+\subsubsection{Periodic Status Reporting}
+
+Every \SI{5}{\second}, the firmware emits an ASCII diagnostic string (prefixed with \code{\#}) both over USB serial and via ESP-NOW to the relay.
+This report includes:
+\begin{itemize}[nosep]
+  \item IMU sampling rate and total sample count.
+  \item Camera trigger rate and cumulative trigger count.
+  \item FSYNC hit count and latest FSYNC timestamp.
+  \item Raw \reg{TEMP\_DATA0} and \reg{INT\_STATUS2} register values.
+  \item ESP-NOW packet counts (sent, failed, status).
+\end{itemize}
+
+
+\subsection{Relay Node Firmware (v2.0)}
+
+The relay node serves as a transparent ESP-NOW-to-USB bridge.
+Its architecture is deliberately minimal to maximise throughput:
+
+\subsubsection{Receive ISR and Ring Buffer}
+The ESP-NOW receive callback \code{on\_recv()} is invoked from the WiFi task context.
+Performing a blocking \code{Serial.write()} inside this callback would stall the WiFi task and cause ESP-NOW to drop subsequent packets.
+Instead, the callback appends the received bytes to an 8\,KB circular ring buffer:
+
+\begin{lstlisting}[language=C++, caption={Relay node receive callback with ring buffer.}, label={lst:relay_recv}]
+static void on_recv(const uint8_t* mac, const uint8_t* data, int len) {
+    g_recv_pkts++;
+    g_recv_bytes += len;
+    size_t free_space = RING_SIZE - ring_used() - 1;
+    if ((size_t)len > free_space) { g_overruns++; return; }
+    size_t w = g_ring_w;
+    for (int i = 0; i < len; i++) {
+        g_ring[w] = data[i];
+        w = (w + 1) % RING_SIZE;
+    }
+    g_ring_w = w;
+}
+\end{lstlisting}
+
+\subsubsection{Main Loop: Drain to Serial}
+The main \code{loop()} continuously drains the ring buffer to \code{Serial.write()} in 512-byte blocks.
+At 921\,600~baud with 10 bits per byte (8N1 + start/stop), the theoretical maximum throughput is \SI{92.16}{\kilo\byte\per\second}.
+The IMU stream at \SI{1}{\kilo\hertz} $\times$ 26~bytes $=$ \SI{26}{\kilo\byte\per\second} consumes only $\sim$28\% of this capacity, providing comfortable headroom.
+
+The 8\,KB ring buffer can absorb approximately 40 batched ESP-NOW packets (\SI{320}{\milli\second} of data), providing sufficient slack for brief \code{Serial.write()} stalls caused by USB flow control.

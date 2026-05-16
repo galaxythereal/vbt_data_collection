@@ -124,9 +124,18 @@ public:
     uint64_t get_first_esp_timestamp() const { return first_esp_timestamp_; }
     double   get_first_host_timestamp() const { return first_host_timestamp_; }
 
-    // Gyro bias calibration (call during static period)
+    // Gyro bias calibration (call during static period).
+    //
+    // SAFETY: subtraction is OFF by default. Pressing "Calibrate Gyro" in the
+    // sensor panel arms it for one calibration window; the resulting bias is
+    // then subtracted from every IMU sample for the rest of the runtime. This
+    // is intentionally opt-in because the per-session pre/post-session
+    // CalibrationInterval (StillnessGate) is the authoritative source of bias
+    // for the downstream pipeline. Calling clear_gyro_bias() reverts to raw.
     void start_gyro_bias_calibration(int duration_ms = 5000);
+    void clear_gyro_bias();
     bool is_calibrating() const { return is_calibrating_; }
+    bool is_gyro_bias_applied() const { return gyro_bias_applied_; }
     struct GyroBias { float x = 0, y = 0, z = 0; };
     GyroBias get_gyro_bias() const { return gyro_bias_; }
 
@@ -169,6 +178,7 @@ private:
 
     // Gyro calibration
     std::atomic<bool> is_calibrating_{false};
+    std::atomic<bool> gyro_bias_applied_{false};
     GyroBias gyro_bias_;
     std::vector<float> calib_gx_, calib_gy_, calib_gz_;
     int calib_samples_target_ = 0;

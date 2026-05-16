@@ -132,6 +132,18 @@ export interface RepAnnotation {
   mean_concentric_velocity: number;
   peak_concentric_velocity: number;
   rom_m: number;
+  rom_vertical_m?: number;
+  rom_camera_x_m?: number;
+  rom_camera_y_m?: number;
+  rom_camera_z_m?: number;
+  rom_3d_bbox_m?: number;
+  camera_metrics?: {
+    rom_vertical_m?: number;
+    rom_x_m?: number;
+    rom_y_m?: number;
+    rom_z_m?: number;
+    rom_3d_bbox_m?: number;
+  };
   /** 0..1 segmenter confidence; 1.0 = passed every data-driven gate,
    *  <1 = passed prominence but failed AND-gate. Pre-2026-05 reps default to 1. */
   confidence: number;

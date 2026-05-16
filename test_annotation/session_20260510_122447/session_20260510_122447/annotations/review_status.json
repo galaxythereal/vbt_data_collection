@@ -1,0 +1,30 @@
+{
+  "status": "needs_review",
+  "reviewed_by": "",
+  "reviewed_at": "",
+  "decision": "pending",
+  "candidate_file": "rep_segments.candidate.json",
+  "approved_source": "",
+  "expected_count": 10,
+  "candidate_count": 11,
+  "confidence_level": "medium",
+  "confidence_score": 0.7609,
+  "notes": "",
+  "checklist": {
+    "exercise_profile_checked": false,
+    "set_windows_checked": false,
+    "video_reps_counted": false,
+    "phase_boundaries_checked": false,
+    "dropouts_near_boundaries_checked": false,
+    "false_positives_removed": false,
+    "missed_reps_added": false,
+    "last_rep_eccentric_verified": false,
+    "saved_in_annotation_studio": false
+  },
+  "gt_usability": "pending",
+  "critical_flags": [
+    "axis_uncertain"
+  ],
+  "old_annotation_backup": "rep_segments.before_camera_gt.json",
+  "old_annotation_archived_at": "2026-05-14T10:20:42.274857+00:00"
+}

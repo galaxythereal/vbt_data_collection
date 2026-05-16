@@ -342,15 +342,21 @@ void IMUReader::read_thread_func() {
                                     gyro_bias_.y = std::accumulate(calib_gy_.begin(), calib_gy_.end(), 0.0f) / calib_gy_.size();
                                     gyro_bias_.z = std::accumulate(calib_gz_.begin(), calib_gz_.end(), 0.0f) / calib_gz_.size();
                                     is_calibrating_ = false;
-                                    spdlog::info("Gyro bias calibration complete: ({:.4f}, {:.4f}, {:.4f}) dps",
+                                    gyro_bias_applied_ = true;
+                                    spdlog::info("Gyro bias calibration complete: ({:.4f}, {:.4f}, {:.4f}) dps — APPLIED to live stream",
                                                  gyro_bias_.x, gyro_bias_.y, gyro_bias_.z);
                                 }
                             }
 
-                            // Apply gyro bias correction
-                            sample.gyro_x_dps -= gyro_bias_.x;
-                            sample.gyro_y_dps -= gyro_bias_.y;
-                            sample.gyro_z_dps -= gyro_bias_.z;
+                            // Apply gyro bias correction only when the user
+                            // has explicitly armed the runtime bias. Default
+                            // path is RAW so the downstream pipeline owns
+                            // bias (from pre-session CalibrationInterval).
+                            if (gyro_bias_applied_) {
+                                sample.gyro_x_dps -= gyro_bias_.x;
+                                sample.gyro_y_dps -= gyro_bias_.y;
+                                sample.gyro_z_dps -= gyro_bias_.z;
+                            }
 
                             // Signal-quality bookkeeping
                             const int16_t kSat = 32700;  // ~99.8% of int16 range
@@ -426,6 +432,12 @@ void IMUReader::start_gyro_bias_calibration(int duration_ms) {
     is_calibrating_ = true;
     spdlog::info("Starting gyro bias calibration ({} ms, {} samples)",
                  duration_ms, calib_samples_target_);
+}
+
+void IMUReader::clear_gyro_bias() {
+    gyro_bias_ = {0.0f, 0.0f, 0.0f};
+    gyro_bias_applied_ = false;
+    spdlog::info("Gyro bias cleared — live stream is now RAW");
 }
 
 } // namespace vbt

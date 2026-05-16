@@ -1,0 +1,189 @@
+% ════════════════════════════════════════════════════════════════════
+% Chapter 9 — Validation and Quality Assurance
+% ════════════════════════════════════════════════════════════════════
+\section{Validation and Quality Assurance}\label{sec:validation}
+
+A research-grade data collection platform must provide verifiable evidence that every stage of the measurement chain---from the ADC conversion to the final kinematic trajectory---meets quantitative accuracy targets.
+This section describes the multi-tiered validation framework, comprising pre-session hardware verification, in-session real-time monitoring, and post-session signal-processing validation.
+
+
+\subsection{Pre-Session Validation: Pre-Flight Checklist}
+
+Before any recording can begin, the GUI enforces a systematic pre-flight checklist (\class{PreflightPanel}).
+The START button is gated; only when all checks pass (or the operator explicitly overrides with documented justification) does the system transition to the RECORDING state.
+
+\begin{table}[H]
+  \centering
+  \caption{Pre-flight checklist items and acceptance criteria.}
+  \label{tab:preflight}
+  \begin{tabular}{p{3.5cm}p{3.5cm}p{3.5cm}p{3cm}}
+    \toprule
+    \textbf{Check} & \textbf{Pass} & \textbf{Warn} & \textbf{Fail} \\
+    \midrule
+    IMU sample rate     & Within $\pm 5\%$ of \SI{1}{\kilo\hertz} (\SI{950}{}--\SI{1050}{\hertz}) & Within $\pm 10\%$ & Outside $\pm 10\%$ or no samples \\
+    Accel saturation    & 0 clipped samples  & $< 10$ clipped & $\geq 10$ clipped \\
+    Camera connected    & \code{is\_open() == true}  & --- & Not connected \\
+    Marker detection    & Detection rate $> 80\%$ & $> 50\%$ & $\leq 50\%$ \\
+    Marker SNR          & $> 3.0$              & $> 2.0$ & $\leq 2.0$ \\
+    Sync drift          & $< \SI{50}{ppm}$     & $< \SI{100}{ppm}$ & $\geq \SI{100}{ppm}$ or rearm flagged \\
+    Subject ID          & Non-empty            & --- & Empty \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Any override of a failed check is recorded as a \code{preflight\_override} event in \file{events.jsonl}, including the specific check that was overridden and the operator's reason, preserving the audit trail for downstream data quality review.
+
+
+\subsection{In-Session Monitoring}
+
+\subsubsection{IMU Signal Quality Indicators}
+
+The following metrics are computed in real-time and displayed in the Sensor panel:
+
+\begin{itemize}[nosep]
+  \item \textbf{Measured rate:} Rolling estimate of the actual IMU sample rate from ESP32 timestamps. Deviations $> 5\%$ from nominal trigger a toast warning.
+  \item \textbf{Jitter statistics:} Mean, max, and standard deviation of inter-sample timing jitter. Jitter $> \SI{100}{\micro\second}$ indicates potential SPI bus contention or RTOS priority inversion.
+  \item \textbf{Per-axis saturation count:} Cumulative count of samples at $\pm$32768 (full-scale ADC). Persistent saturation indicates an insufficient FSR.
+  \item \textbf{Gyro noise floor:} Rolling standard deviation of $|\boldsymbol{\omega}|$ during detected rest periods. Expected $< \SI{0.1}{\degree\per\second}$ for the ICM-42688-P.
+  \item \textbf{Accel noise floor:} Rolling standard deviation of $|\mathbf{a}| - 1$ at rest. Expected $< \SI{0.005}{\g}$.
+  \item \textbf{CRC error rate:} Cumulative count and rate of packets failing the CRC16-CCITT check.
+  \item \textbf{Dropout count:} Number of gaps in the ESP32 timestamp sequence exceeding \SI{2}{\milli\second}.
+\end{itemize}
+
+\subsubsection{FSYNC Health Monitoring}
+
+The FSYNC hit rate is tracked in real-time and should match the camera frame rate ($\sim$\SI{90}{\hertz}).
+A mismatch indicates a fault in the level-shifting circuit, a loose SYNC cable, or a camera configuration error.
+
+\subsubsection{Synchronisation Drift Monitoring}
+
+The \class{SyncEngine} continuously computes the clock drift between the ESP32 and D455 hardware clocks using the FSYNC anchor pairs (\cref{sec:sync_engine}).
+If drift exceeds \SI{100}{ppm} for \SI{5}{\second}, the auto-rearm mechanism is triggered, halting data collection until the operator performs a fresh tap test.
+
+\subsubsection{Per-Repetition Kinematic Plausibility}
+
+After each repetition is segmented, the \class{Validator} applies configurable plausibility bounds:
+
+\begin{table}[H]
+  \centering
+  \caption{Per-repetition kinematic plausibility bounds (configurable per exercise profile).}
+  \label{tab:plausibility}
+  \begin{tabular}{llcc}
+    \toprule
+    \textbf{Metric} & \textbf{Unit} & \textbf{Min} & \textbf{Max} \\
+    \midrule
+    Mean Concentric Velocity & \si{\metre\per\second} & 0.05 & 3.00 \\
+    Peak Concentric Velocity & \si{\metre\per\second} & 0.10 & 5.00 \\
+    Range of Motion          & \si{\metre}            & 0.05 & 1.50 \\
+    Concentric Duration      & \si{\second}           & 0.10 & 10.00 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Repetitions that violate any bound are flagged as implausible.
+The Rep Timeline Panel displays a colour-coded dot for each rep: green for passed, red for failed.
+Hovering over a red dot shows the specific violations (e.g., ``PCV exceeds \SI{5.00}{\metre\per\second}: likely double-counted bounce'').
+
+
+\subsection{Post-Session Validation: Golden Model Pipeline}
+
+\subsubsection{Camera--IMU Position Agreement}
+
+The primary validation metric is the Root Mean Square Error (RMSE) between the ESKF-derived position trajectory and the camera ground truth, computed over the active zones of each session:
+\begin{equation}
+  \text{RMSE}_p = \sqrt{\frac{1}{N_a}\sum_{k \in \text{active}} \left(p_{z,\text{ESKF}}(t_k) - p_{z,\text{cam}}(t_k)\right)^2}
+\end{equation}
+The target is \textbf{RMSE} $< \SI{50}{\milli\metre}$ (\SI{5}{\centi\metre}).
+
+\subsubsection{Velocity Agreement}
+
+Velocity RMSE is computed similarly:
+\begin{equation}
+  \text{RMSE}_v = \sqrt{\frac{1}{N_a}\sum_{k \in \text{active}} \left(v_{z,\text{ESKF}}(t_k) - v_{z,\text{cam}}(t_k)\right)^2}
+\end{equation}
+Per-rep peak velocity errors are compared against the Courel-Ib\'{a}\~{n}ez equivalence margin of $\pm\SI{0.07}{\metre\per\second}$.
+
+\subsubsection{Bland--Altman Analysis}
+
+For each paired measurement (camera vs.\ ESKF), the Bland--Altman method~\cite{bland1986} is applied:
+\begin{align}
+  \bar{d}  &= \frac{1}{N}\sum_{i=1}^{N}(x_{\text{ESKF},i} - x_{\text{cam},i}) \quad \text{(mean bias)} \\
+  \text{LoA} &= \bar{d} \pm 1.96 \cdot s_d \quad \text{(95\% Limits of Agreement)}
+\end{align}
+where $s_d$ is the standard deviation of the differences.
+The \class{Validator} class computes and persists these metrics in its JSON report.
+
+\subsubsection{Per-Rep ROM Accuracy}
+
+For each annotated repetition, the golden model computes:
+\begin{align}
+  \text{ROM}_\text{cam} &= \max_{t \in \text{rep}} p_\text{cam}(t) - \min_{t \in \text{rep}} p_\text{cam}(t) \\
+  \text{ROM}_\text{ESKF} &= \max_{t \in \text{rep}} p_\text{ESKF}(t) - \min_{t \in \text{rep}} p_\text{ESKF}(t)
+\end{align}
+and reports the per-rep error, aggregate ROM RMSE, and ROM MAE.
+
+
+\subsection{Synchronisation Validation: Tap Test}
+
+The tap test (\cref{sec:sync_engine}) serves as both calibration and validation.
+After the test, the system reports:
+\begin{itemize}[nosep]
+  \item \textbf{Temporal offset:} The systematic IMU-to-camera delay. Expected $< \SI{1}{\milli\second}$ with the hardware FSYNC path.
+  \item \textbf{Drift rate:} The rate of clock divergence. Expected $< \SI{50}{ppm}$ (\SI{0.18}{\second\per\hour}).
+  \item \textbf{Cross-correlation quality:} The normalised cross-correlation coefficient between the IMU acceleration magnitude and the camera position displacement. Expected $> 0.9$.
+\end{itemize}
+
+Multiple tap tests within a session can be used to verify that drift remains bounded throughout the recording duration.
+
+
+\subsection{Allan Variance Characterisation}
+
+For IMU noise characterisation per IEEE~952-2020~\cite{ieee952}, the system includes a planned Allan variance analysis pipeline:
+\begin{itemize}[nosep]
+  \item A static recording of 4--12~hours is collected with the IMU motionless on a flat surface.
+  \item The Allan deviation $\sigma(\tau)$ is computed as a function of averaging time $\tau$ for each accelerometer and gyroscope axis.
+  \item The log-log plot of $\sigma(\tau)$ vs.\ $\tau$ reveals:
+  \begin{itemize}[nosep]
+    \item \textbf{Angle/Velocity Random Walk (ARW/VRW):} Slope $= -1/2$ region.
+    \item \textbf{Bias Instability:} Minimum of the curve.
+    \item \textbf{Rate Random Walk:} Slope $= +1/2$ region.
+  \end{itemize}
+  \item These parameters feed directly into the ESKF process-noise covariance matrix $\mathbf{Q}$.
+\end{itemize}
+
+
+\subsection{Diagnostic Export}
+
+At any time during or after a session, the operator can trigger a diagnostic bundle export (F5 or Tools $\rightarrow$ Export Diagnostics).
+This produces a PII-free JSON file containing:
+\begin{itemize}[nosep]
+  \item Build provenance (version, git SHA, compiler).
+  \item Current IMU/camera/sync statistics.
+  \item Recent toast notification history.
+  \item Full application configuration (with PII fields redacted).
+\end{itemize}
+
+This bundle enables remote troubleshooting without requiring access to the raw session data.
+
+
+\subsection{Validation Summary and Acceptance Criteria}
+
+\begin{table}[H]
+  \centering
+  \caption{System-level validation targets.}
+  \label{tab:validation_summary}
+  \begin{tabular}{lcc}
+    \toprule
+    \textbf{Metric} & \textbf{Target} & \textbf{Measurement Method} \\
+    \midrule
+    Position RMSE (ESKF vs.\ camera)    & $< \SI{50}{\milli\metre}$         & Golden model Step~8 \\
+    Velocity bias                       & $< \SI{0.05}{\metre\per\second}$   & Bland--Altman mean difference \\
+    Velocity LoA (95\%)                 & $< \pm\SI{0.10}{\metre\per\second}$ & Bland--Altman 1.96$\sigma$ \\
+    Synchronisation offset              & $< \SI{1}{\milli\second}$         & Tap test \\
+    Clock drift                         & $< \SI{50}{ppm}$                  & FSYNC anchor pairs \\
+    IMU sample rate stability           & $\pm 5\%$ of \SI{1}{\kilo\hertz}  & ESP32 timestamp analysis \\
+    CRC error rate                      & $< 0.01\%$                        & Packet validation \\
+    Marker detection rate               & $> 80\%$                          & Session statistics \\
+    \bottomrule
+  \end{tabular}
+\end{table}

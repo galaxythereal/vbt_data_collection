@@ -1,0 +1,262 @@
+{
+  "generated_at": "2026-05-14T10:49:26.246390+00:00",
+  "algorithm": "camera_gt_v1",
+  "orientation": "bottom",
+  "exercise_profile": {
+    "name": "barbell_row",
+    "display_name": "Barbell Row",
+    "movement_family": "row",
+    "start_mode": "bottom",
+    "axis_policy": "allow_pca_fallback",
+    "profile_confidence": "medium",
+    "review_required": false,
+    "lowpass_cutoff_hz": 8.0,
+    "v_max_mps": 3.5,
+    "min_rep_duration_s": 0.3,
+    "max_rep_duration_s": 5.0,
+    "min_rep_displacement_m": 0.055,
+    "min_concentric_peak_mps": 0.15,
+    "min_inter_rep_gap_s": 0.4,
+    "peak_window_s": 0.22,
+    "prominence_fraction": 0.25,
+    "setup_ignore_s": 1.0,
+    "top_start_min_descent_m": 0.1,
+    "stillness_vel_mps": 0.06,
+    "stillness_min_s": 0.3,
+    "ascent_onset_vel_mps": 0.04,
+    "descent_onset_vel_mps": 0.04,
+    "open_last_rep_allowed": false,
+    "bottom_pause_allowed": false,
+    "top_pause_allowed": true,
+    "tags": [
+      "axis_review_if_pca",
+      "bottom_start"
+    ],
+    "warnings": []
+  },
+  "profile_confidence": "medium",
+  "axis_report": {
+    "selected": "pca",
+    "vector": [
+      0.10225486230764301,
+      -0.9902540561151265,
+      0.0945560547082251
+    ],
+    "confidence": 0.5845642306896384,
+    "candidates": [
+      {
+        "name": "camera_y",
+        "vector": [
+          0.0,
+          -1.0,
+          0.0
+        ],
+        "variance_ratio": 1.0,
+        "score": 1.0481406569237033,
+        "n_extrema": 24,
+        "n_cycles_hint": 11,
+        "rom_m": 0.8902685849758688
+      },
+      {
+        "name": "pca",
+        "vector": [
+          0.10225486230764301,
+          -0.9902540561151265,
+          0.0945560547082251
+        ],
+        "variance_ratio": 0.9440176278734921,
+        "score": 1.0697433011047273,
+        "n_extrema": 24,
+        "n_cycles_hint": 11,
+        "rom_m": 0.9094298059702568
+      }
+    ],
+    "warnings": [
+      "axis_uncertain"
+    ]
+  },
+  "config_hash": "2b51a1cc37b49150",
+  "n_raw_cycles": 12,
+  "n_accepted": 12,
+  "n_extrema": 24,
+  "n_stillness_spans": 11,
+  "n_invalid_spans": 0,
+  "invalid_spans": [],
+  "review_flags": [
+    "axis_uncertain"
+  ],
+  "sets": [
+    {
+      "algorithm": "camera_gt_v1",
+      "orientation": "bottom",
+      "phase_order": "concentric_first",
+      "count_source": "camera_extrema_cycle_detector",
+      "exercise_profile": {
+        "name": "barbell_row",
+        "display_name": "Barbell Row",
+        "movement_family": "row",
+        "start_mode": "bottom",
+        "axis_policy": "allow_pca_fallback",
+        "profile_confidence": "medium",
+        "review_required": false,
+        "lowpass_cutoff_hz": 8.0,
+        "v_max_mps": 3.5,
+        "min_rep_duration_s": 0.3,
+        "max_rep_duration_s": 5.0,
+        "min_rep_displacement_m": 0.055,
+        "min_concentric_peak_mps": 0.15,
+        "min_inter_rep_gap_s": 0.4,
+        "peak_window_s": 0.22,
+        "prominence_fraction": 0.25,
+        "setup_ignore_s": 1.0,
+        "top_start_min_descent_m": 0.1,
+        "stillness_vel_mps": 0.06,
+        "stillness_min_s": 0.3,
+        "ascent_onset_vel_mps": 0.04,
+        "descent_onset_vel_mps": 0.04,
+        "open_last_rep_allowed": false,
+        "bottom_pause_allowed": false,
+        "top_pause_allowed": true,
+        "tags": [
+          "axis_review_if_pca",
+          "bottom_start"
+        ],
+        "warnings": []
+      },
+      "profile_confidence": "medium",
+      "axis_report": {
+        "selected": "pca",
+        "vector": [
+          0.10225486230764301,
+          -0.9902540561151265,
+          0.0945560547082251
+        ],
+        "confidence": 0.5845642306896384,
+        "candidates": [
+          {
+            "name": "camera_y",
+            "vector": [
+              0.0,
+              -1.0,
+              0.0
+            ],
+            "variance_ratio": 1.0,
+            "score": 1.0481406569237033,
+            "n_extrema": 24,
+            "n_cycles_hint": 11,
+            "rom_m": 0.8902685849758688
+          },
+          {
+            "name": "pca",
+            "vector": [
+              0.10225486230764301,
+              -0.9902540561151265,
+              0.0945560547082251
+            ],
+            "variance_ratio": 0.9440176278734921,
+            "score": 1.0697433011047273,
+            "n_extrema": 24,
+            "n_cycles_hint": 11,
+            "rom_m": 0.9094298059702568
+          }
+        ],
+        "warnings": [
+          "axis_uncertain"
+        ]
+      },
+      "config_hash": "2b51a1cc37b49150",
+      "n_extrema": 24,
+      "n_stillness_spans": 11,
+      "n_invalid_spans": 0,
+      "invalid_spans": [],
+      "n_raw_cycles": 12,
+      "n_accepted": 12,
+      "review_flags": [
+        "axis_uncertain"
+      ],
+      "config": {
+        "conf_min": 0.4,
+        "snr_min": 2.0,
+        "circ_min": 0.5,
+        "hampel_window": 7,
+        "lp_cutoff_hz": 8.0,
+        "lp_cutoff_hz_deadlift": 6.0,
+        "v_max_mps": 3.5,
+        "max_interpolated_gap_s": 0.2,
+        "peak_window_s": 0.22,
+        "prominence_fraction": 0.25,
+        "same_type_debounce_s": 0.3,
+        "min_rep_duration_s": 0.3,
+        "max_rep_duration_s": 5.0,
+        "min_rep_displacement_m": 0.055,
+        "min_concentric_peak_mps": 0.15,
+        "min_inter_rep_gap_s": 0.4,
+        "max_invalid_fraction": 0.18,
+        "boundary_dropout_window_s": 0.12,
+        "setup_ignore_s": 1.0,
+        "stillness_vel_mps": 0.06,
+        "stillness_min_s": 0.3,
+        "stillness_pos_std_m": 0.012,
+        "onset_sustain_s": 0.08,
+        "ascent_onset_vel_mps": 0.04,
+        "descent_onset_vel_mps": 0.04,
+        "top_start_min_descent_m": 0.1,
+        "top_start_min_descent_s": 0.2,
+        "top_start_synthetic_ecc_cap_s": 2.0,
+        "pca_min_variance_ratio": 0.55,
+        "axis_score_margin": 0.12,
+        "consistency_band": 0.35
+      },
+      "set_id": 1,
+      "set_window": {
+        "t_start": 1778405089.6013718,
+        "t_end": 1778405135.435368
+      }
+    }
+  ],
+  "candidate_count": 12,
+  "rejected_count": 0,
+  "expected_count": 10,
+  "session_confidence_score": 0.7119178569514378,
+  "session_confidence_level": "medium",
+  "marker_quality": 0.9907032846185168,
+  "config": {
+    "conf_min": 0.4,
+    "snr_min": 2.0,
+    "circ_min": 0.5,
+    "hampel_window": 7,
+    "lp_cutoff_hz": 8.0,
+    "lp_cutoff_hz_deadlift": 6.0,
+    "v_max_mps": 3.5,
+    "max_interpolated_gap_s": 0.2,
+    "peak_window_s": 0.22,
+    "prominence_fraction": 0.25,
+    "same_type_debounce_s": 0.3,
+    "min_rep_duration_s": 0.3,
+    "max_rep_duration_s": 5.0,
+    "min_rep_displacement_m": 0.055,
+    "min_concentric_peak_mps": 0.15,
+    "min_inter_rep_gap_s": 0.4,
+    "max_invalid_fraction": 0.18,
+    "boundary_dropout_window_s": 0.12,
+    "setup_ignore_s": 1.0,
+    "stillness_vel_mps": 0.06,
+    "stillness_min_s": 0.3,
+    "stillness_pos_std_m": 0.012,
+    "onset_sustain_s": 0.08,
+    "ascent_onset_vel_mps": 0.04,
+    "descent_onset_vel_mps": 0.04,
+    "top_start_min_descent_m": 0.1,
+    "top_start_min_descent_s": 0.2,
+    "top_start_synthetic_ecc_cap_s": 2.0,
+    "pca_min_variance_ratio": 0.55,
+    "axis_score_margin": 0.12,
+    "consistency_band": 0.35
+  },
+  "reasons": [
+    "camera cycle count 12 differs from manual context 10; manual count ignored",
+    "per-rep confidence mean 0.65",
+    "marker quality 0.99"
+  ],
+  "rejected": []
+}

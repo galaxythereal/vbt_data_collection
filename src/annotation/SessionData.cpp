@@ -373,6 +373,34 @@ bool SessionData::load_events_(const fs::path& p, SessionLoadDiag& diag) {
 
 void SessionData::fixup_legacy_imu_unified_time_() {
     if (imu_.size() == 0) return;
+    // Repair sessions where unified_time_s is in wall-clock domain but
+    // non-monotonic due to a bad sync refit. Preserve the epoch offset, use
+    // ESP µs for sample-to-sample timing.
+    bool bad_uni = false;
+    for (size_t k = 1; k < imu_.unified_t_s.size(); ++k) {
+        double dt = imu_.unified_t_s[k] - imu_.unified_t_s[k - 1];
+        if (dt <= 0.0 || dt > 0.005) { bad_uni = true; break; }
+    }
+    double max_uni_existing = 0.0;
+    for (double v : imu_.unified_t_s) max_uni_existing = std::max(max_uni_existing, v);
+    if (bad_uni && max_uni_existing > 1e9 && !imu_.esp_ts_us.empty()) {
+        std::vector<double> offsets;
+        offsets.reserve(imu_.size());
+        for (size_t k = 0; k < imu_.size(); ++k) {
+            if (imu_.esp_ts_us[k] > 0) offsets.push_back(imu_.unified_t_s[k] - imu_.esp_ts_us[k] / 1e6);
+        }
+        if (!offsets.empty()) {
+            std::sort(offsets.begin(), offsets.end());
+            double offset = offsets[offsets.size() / 2];
+            for (size_t k = 0; k < imu_.size(); ++k) {
+                imu_.unified_t_s[k] = imu_.esp_ts_us[k] / 1e6 + offset;
+            }
+            spdlog::warn("AnnotationStudio: repaired non-monotonic IMU unified_time_s "
+                         "from esp_timestamp_us with offset = {:.6f} s", offset);
+            return;
+        }
+    }
+
     // Detect: unified_time_s all zero or all sub-1e9 → legacy session.
     double max_uni = 0;
     for (double v : imu_.unified_t_s) max_uni = std::max(max_uni, v);
@@ -622,12 +650,31 @@ void SessionData::recompute_rep_metrics(int rep_index) {
     int k0 = std::min(i0, j0);
     int k1 = std::max(i1, j1);
     float pmin = 1e9f, pmax = -1e9f;
+    float xmin = 1e9f, xmax = -1e9f;
+    float ymin = 1e9f, ymax = -1e9f;
+    float zmin = 1e9f, zmax = -1e9f;
     for (int k = k0; k < k1 && k < (int)marker_.size(); ++k) {
         float p = marker_.pos_up_clean_m[k];
         if (p < pmin) pmin = p;
         if (p > pmax) pmax = p;
+        float x = marker_.x_m[k];
+        float y_up = -marker_.y_m[k];
+        float z = marker_.z_m[k];
+        if (x < xmin) xmin = x;
+        if (x > xmax) xmax = x;
+        if (y_up < ymin) ymin = y_up;
+        if (y_up > ymax) ymax = y_up;
+        if (z < zmin) zmin = z;
+        if (z > zmax) zmax = z;
     }
     r.rom_m = (pmax > pmin) ? pmax - pmin : 0.0f;
+    r.rom_vertical_m = r.rom_m;
+    r.rom_camera_x_m = (xmax > xmin) ? xmax - xmin : 0.0f;
+    r.rom_camera_y_m = (ymax > ymin) ? ymax - ymin : 0.0f;
+    r.rom_camera_z_m = (zmax > zmin) ? zmax - zmin : 0.0f;
+    r.rom_3d_bbox_m = std::sqrt(r.rom_camera_x_m * r.rom_camera_x_m
+                              + r.rom_camera_y_m * r.rom_camera_y_m
+                              + r.rom_camera_z_m * r.rom_camera_z_m);
 }
 
 } // namespace vbt

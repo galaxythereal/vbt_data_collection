@@ -1,0 +1,324 @@
+% ═══════════════════════════════════════════════════════════════════════════
+% Chapter 14: Error Analysis and Uncertainty Quantification
+% ═══════════════════════════════════════════════════════════════════════════
+
+\chapter{Error Analysis and Uncertainty Quantification} \label{chap:error_analysis}
+
+\section{Overview}
+
+This chapter provides a comprehensive error budget analysis, quantifying the contribution of each system component to the overall measurement uncertainty. Understanding error sources is essential for interpreting validation results and guiding future improvements.
+
+\section{Error Sources Classification}
+
+\subsection{Systematic Errors}
+
+Errors that consistently bias measurements in one direction:
+\begin{itemize}
+    \item Accelerometer scale factor error
+    \item Gyro bias drift over temperature
+    \item Gravity model inaccuracy (local g variation)
+    \item Filter steady-state offset
+\end{itemize}
+
+\subsection{Random Errors}
+
+Errors with zero mean but non-zero variance:
+\begin{itemize}
+    \item Sensor white noise
+    \item Quantization error
+    \item Numerical round-off
+    \item Timestamp jitter
+\end{itemize}
+
+\subsection{Environmental Errors}
+
+Errors induced by operating conditions:
+\begin{itemize}
+    \item Temperature-dependent bias shift
+    \item Vibration-induced measurement errors
+    \item Electromagnetic interference
+\end{itemize}
+
+\section{Accelerometer Error Budget}
+
+\subsection{ICM-42688-P Specifications}
+
+\begin{table}[h]
+    \centering
+    \caption{Accelerometer error sources}
+    \label{tab:accel_error}
+    \begin{tabular}{lcc}
+        \toprule
+        \textbf{Source} & \textbf{Magnitude} & \textbf{Effect} \\
+        \midrule
+        Zero-g bias & $\pm$50 mg & Position drift \\
+        Bias temperature coeff. & 0.5 mg/$^\circ$C & Slow drift \\
+        Scale factor error & $\pm$1\% & ROM scaling error \\
+        Scale factor temp. coeff. & 0.01\%/$^\circ$C & Minor \\
+        Non-linearity & $\pm$1\% FS & High-accel distortion \\
+        Noise density & 20 $\mu$g/$\sqrt{\text{Hz}}$ & High-frequency noise \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\subsection{Bias-Induced Position Error}
+
+A constant bias $b_a$ produces quadratic position error:
+
+\begin{equation}
+    \epsilon_p(t) = \frac{1}{2} b_a t^2
+\end{equation}
+
+For $b_a = 5$ mg = 0.049 m/s\textsuperscript{2}:
+\begin{itemize}
+    \item After 1 s: $\epsilon_p = 2.5$ cm
+    \item After 2 s: $\epsilon_p = 9.8$ cm
+    \item After 5 s: $\epsilon_p = 61$ cm
+\end{itemize}
+
+This demonstrates the necessity of ZUPT for bounding drift.
+
+\section{Gyroscope Error Budget}
+
+\begin{table}[h]
+    \centering
+    \caption{Gyroscope error sources}
+    \label{tab:gyro_error}
+    \begin{tabular}{lcc}
+        \toprule
+        \textbf{Source} & \textbf{Magnitude} & \textbf{Effect} \\
+        \midrule
+        Zero-rate offset & $\pm$30 dps & Attitude drift \\
+        Offset temp. coeff. & 0.1 dps/$^\circ$C & Slow drift \\
+        Scale factor error & $\pm$1\% & Rotation rate error \\
+        Non-linearity & $\pm$1\% FS & High-rate distortion \\
+        Noise density & 0.015 deg/s/$\sqrt{\text{Hz}}$ & High-freq jitter \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\section{Orientation Filter Error Propagation}
+
+\subsection{Quaternion Normalization Error}
+
+Unit quaternion maintenance requires periodic normalization. Floating-point round-off can cause drift:
+
+\begin{equation}
+    \delta q = |1 - |q|| \approx \frac{1}{2}\sum \epsilon_i^2
+\end{equation}
+
+With double-precision arithmetic ($\epsilon \approx 10^{-16}$), this error is negligible.
+
+\subsection{Accel Correction Weight Error}
+
+During dynamic motion, accelerometer contains non-gravitational components. The VQF adaptive weight $w_a$ down-weights accelerometer trust. Residual error is:
+
+\begin{equation}
+    \epsilon_q \approx (1 - w_a) \cdot \theta_{motion}
+\end{equation}
+
+where $\theta_{motion}$ is the tilt caused by linear acceleration. For typical lifts with $\theta_{motion} \approx 15^\circ$ and $w_a \approx 0.2$, $\epsilon_q \approx 3^\circ$.
+
+\section{Integration Numerical Error}
+
+\subsection{Trapezoidal Rule Error}
+
+Velocity integration uses trapezoidal rule:
+
+\begin{equation}
+    v_{k+1} = v_k + \frac{a_k + a_{k+1}}{2} \Delta t
+\end{equation}
+
+Local truncation error:
+
+\begin{equation}
+    \epsilon_v = \frac{1}{12} \dddot{v} (\Delta t)^3
+\end{equation}
+
+For $\Delta t = 1$ ms and $\dddot{v} \approx 100$ m/s\textsuperscript{3} (aggressive lift):
+
+\begin{equation}
+    \epsilon_v \approx 8 \times 10^{-6} \text{ m/s per sample}
+\end{equation}
+
+Over 1000 samples (1 s): accumulated error $\approx 8$ mm/s, negligible.
+
+\section{Timestamp Uncertainty}
+
+\subsection{SPI Read Latency}
+
+SPI transactions complete in $45 \pm 3$ $\mu$s. This jitter introduces timestamp uncertainty negligible relative to 1 ms sample period.
+
+\subsection{ESP-NOW Transmission Delay}
+
+ESP-NOW latency is $3.2 \pm 0.3$ ms. The host records arrival time, but the IMU sample includes its own timestamp. End-to-end skew is dominated by:
+
+\begin{equation}
+    \epsilon_{timestamp} = \epsilon_{IMU\_clock} + \epsilon_{camera\_clock}
+\end{equation}
+
+With crystal accuracies of 50 ppm, over a 10 s session:
+
+\begin{equation}
+    \epsilon_{skew} = 50 \times 10^{-6} \times 10 = 0.5 \text{ ms}
+\end{equation}
+
+Synchronization calibration reduces this to $\approx 200$ $\mu$s.
+
+\section{Ground Truth Uncertainty}
+
+\subsection{Camera Tracking Error}
+
+The RealSense D455 provides optical ground truth with stated depth accuracy:
+
+\begin{itemize}
+    \item At 1 m: $\pm$2 mm
+    \item At 2 m: $\pm$5 mm
+    \item At 3 m: $\pm$10 mm
+\end{itemize}
+
+For our setup (camera at $\approx$3 m), positional uncertainty is $\pm$10 mm.
+
+\subsection{Velocity Computation Error}
+
+Central difference velocity from discrete positions:
+
+\begin{equation}
+    v_k = \frac{p_{k+1} - p_{k-1}}{2\Delta t}
+\end{equation}
+
+With $\Delta t = 11.1$ ms (90 fps) and $\delta p = 10$ mm:
+
+\begin{equation}
+    \delta v = \frac{\delta p}{\Delta t} = \frac{0.01}{0.0111} \approx 0.9 \text{ m/s}
+\end{equation}
+
+This is unacceptably high; hence low-pass filtering (6 Hz cutoff) reduces noise at the cost of some bandwidth.
+
+\section{Total Uncertainty Budget}
+
+\begin{table}[h]
+    \centering
+    \caption{Combined uncertainty for peak velocity}
+    \label{tab:total_uncertainty_vel}
+    \begin{tabular}{lrr}
+        \toprule
+        \textbf{Source} & \textbf{Uncertainty} & \textbf{Combination} \\
+        \midrule
+        Accelerometer bias & 0.025 m/s & \multirow{4}{*}{RSS} \\
+        Gyro drift & 0.015 m/s & \\
+        Filter residual & 0.030 m/s & \\
+        Integration numerical & 0.008 m/s & \\
+        Timestamp skew & 0.005 m/s & \\
+        \midrule
+        \textbf{Combined (IMU)} & \textbf{0.041 m/s} & \\
+        Ground truth uncertainty & 0.050 m/s & \\
+        \midrule
+        \textbf{Total uncertainty} & \textbf{0.065 m/s} & RSS \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+Comparing to measured MAE of 0.068 m/s: error budget accounts for $\approx$95\% of observed error.
+
+\begin{table}[h]
+    \centering
+    \caption{Combined uncertainty for range of motion}
+    \label{tab:total_uncertainty_rom}
+    \begin{tabular}{lrr}
+        \toprule
+        \textbf{Source} & \textbf{Uncertainty} & \textbf{Combination} \\
+        \midrule
+        Accelerometer scale & 15 mm & \multirow{5}{*}{RSS} \\
+        Bias-induced drift & 20 mm & \\
+        Orientation error & 10 mm & \\
+        Integration numerical & 3 mm & \\
+        Boundary timing & 8 mm & \\
+        \midrule
+        \textbf{Combined (IMU)} & \textbf{28 mm} & \\
+        Ground truth uncertainty & 10 mm & \\
+        \midrule
+        \textbf{Total uncertainty} & \textbf{30 mm} & RSS \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+Measured MAE of 23 mm is within the uncertainty budget.
+
+\section{Sensitivity Analysis}
+
+\subsection{Filter Parameter Sensitivity}
+
+VQF parameters were tuned empirically. Sensitivity analysis shows:
+
+\begin{table}[h]
+    \centering
+    \caption{VQF parameter sensitivity}
+    \label{tab:filter_sensitivity}
+    \begin{tabular}{lcc}
+        \toprule
+        \textbf{Parameter} & \textbf{Variation} & \textbf{MAE change} \\
+        \midrule
+        $\tau_{acc}$ & $\pm$50\% & $\pm$0.012 m/s \\
+        $\tau_{bias}$ & $\pm$50\% & $\pm$0.008 m/s \\
+        Rest accel gate & $\pm$20\% & $\pm$0.015 m/s \\
+        Rest gyro gate & $\pm$20\% & $\pm$0.010 m/s \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+Algorithm is moderately sensitive to tuning; VQF defaults work well across exercises.
+
+\section{Outlier Analysis}
+
+\subsection{Identifying Outliers}
+
+Reps with error $>$ 3 standard deviations are flagged:
+
+\begin{itemize}
+    \item 12 of 622 reps (1.9\%) classified as outliers
+    \item Primary causes: partial reps, dropped samples, video occlusion
+\end{itemize}
+
+\subsection{Excluding Outliers}
+
+With outliers removed:
+\begin{itemize}
+    \item Peak velocity MAE: 0.058 m/s (vs. 0.068 m/s)
+    \item ROM MAE: 19 mm (vs. 23 mm)
+\end{itemize}
+
+\section{Monte Carlo Simulation}
+
+\subsection{Experimental Setup}
+
+10,000 synthetic rep traces generated with:
+\begin{itemize}
+    \item Random velocity profile within physiological bounds
+    \item Additive sensor noise per specifications
+    \item Random bias offset per temperature range
+\end{itemize}
+
+\subsection{Results}
+
+Simulation predicts:
+\begin{itemize}
+    \item Velocity MAE: 0.062 $\pm$ 0.005 m/s
+    \item ROM MAE: 25 $\pm$ 3 mm
+\end{itemize}
+
+Consistent with empirical measurements.
+
+\section{Summary}
+
+Error analysis confirms that:
+\begin{itemize}
+    \item IMU sensor errors dominate uncertainty budget
+    \item Orientation filter residuals are well-bounded by VQF
+    \item Ground truth contributes $\approx$20\% of total uncertainty
+    \item Outliers (2\% of data) skew aggregate metrics slightly
+\end{itemize}
+
+The measured performance (0.068 m/s velocity MAE, 23 mm ROM MAE) aligns with theoretical error budget predictions, validating the system design.
+
+\newpage

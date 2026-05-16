@@ -211,16 +211,27 @@ struct EquipmentInfo {
     float       bar_mass_kg       = 20.0f;
     std::string plate_manufacturer = "";
     std::string rack_id           = "";
-    std::string imu_mount_location = "left_collar";  // "left_collar" / "right_collar" / "sleeve" / "centre"
-    std::string imu_mount_orientation = "z_up";       // sensor-frame axis pointing along bar long-axis
+    // The IMU is glued to the collar/sleeve end of the bar (the "circular
+    // end"). The IR retro-reflective marker is co-located with the IMU
+    // on the same bar end so the marker tracks the SAME physical point
+    // the IMU measures — this removes the IMU-to-marker lever-arm from
+    // any ground-truth comparison, which is load-bearing for the
+    // calibration/validation pipeline.
+    std::string imu_mount_location = "bar_end_collar";    // "bar_end_collar" / "left_collar" / "right_collar" / "sleeve" / "centre"
+    std::string imu_mount_orientation = "z_up";           // sensor-frame axis pointing along bar long-axis
+    // Marker mount. "with_imu" is the default convention: same physical
+    // location as the IMU. "bar_end_opposite" / "centre" are reserved for
+    // future experiments. Downstream tools should refuse to do an
+    // IMU↔marker lever-arm correction unless this value is NOT "with_imu".
+    std::string marker_mount_location  = "with_imu";
     float       camera_distance_m = 2.0f;
     std::string camera_mount     = "tripod";
     std::string lighting          = "indoor_fluorescent";
 
     NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(EquipmentInfo, bar_make_model, bar_mass_kg,
                                    plate_manufacturer, rack_id, imu_mount_location,
-                                   imu_mount_orientation, camera_distance_m,
-                                   camera_mount, lighting)
+                                   imu_mount_orientation, marker_mount_location,
+                                   camera_distance_m, camera_mount, lighting)
 };
 
 // ============================================================================
@@ -497,13 +508,26 @@ struct IMUDeviceSnapshot {
     bool        emitter_used_for_fsync = true;
     uint64_t    first_esp_timestamp_us = 0;
     uint64_t    last_esp_timestamp_us  = 0;
+    // Live-stream gyro-bias correction state. When true, the IMUReader had a
+    // runtime gyro bias subtracted from every sample logged to the CSV — the
+    // CalibrationInterval-based per-session pipeline cannot be applied as-is
+    // and must use the (already-corrected) raw_imu as if it were a different
+    // device. Default is false so RAW samples are the norm.
+    bool        gyro_bias_applied_runtime  = false;
+    float       gyro_bias_runtime_x_dps    = 0.0f;
+    float       gyro_bias_runtime_y_dps    = 0.0f;
+    float       gyro_bias_runtime_z_dps    = 0.0f;
 
     NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(IMUDeviceSnapshot, model, esp_mac, firmware_version,
                                    accel_range_g, gyro_range_dps,
                                    odr_hz_nominal, odr_hz_measured,
                                    aaf_order, aaf_bw_hz,
                                    fifo_enabled, emitter_used_for_fsync,
-                                   first_esp_timestamp_us, last_esp_timestamp_us)
+                                   first_esp_timestamp_us, last_esp_timestamp_us,
+                                   gyro_bias_applied_runtime,
+                                   gyro_bias_runtime_x_dps,
+                                   gyro_bias_runtime_y_dps,
+                                   gyro_bias_runtime_z_dps)
 };
 
 struct CameraDeviceSnapshot {

@@ -62,6 +62,11 @@ def _load_imu(imu_csv: Path) -> Optional[tuple[np.ndarray, np.ndarray, np.ndarra
         return None
     if "unified_time_s" in df and np.any(df["unified_time_s"].to_numpy(float) > 0):
         t = df["unified_time_s"].to_numpy(float)
+        if "esp_timestamp_us" in df:
+            esp_t = df["esp_timestamp_us"].to_numpy(float) * 1e-6
+            dt = np.diff(t)
+            if len(dt) and (np.any(dt <= 0) or np.any(dt > 0.005)):
+                t = esp_t + float(np.nanmedian(t - esp_t))
     elif "host_timestamp_s" in df:
         t = df["host_timestamp_s"].to_numpy(float)
     else:

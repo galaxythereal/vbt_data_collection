@@ -216,6 +216,17 @@ bool Session::start_recording() {
             sync_engine_->register_imu_fsync_event(s2.esp_timestamp_us, s2.host_timestamp_s);
         }
         s2.unified_time_s = sync_engine_->esp_to_unified(s2.esp_timestamp_us);
+        // Last-resort monotonicity guard for the persisted CSV and streaming
+        // consumers. If sync refit ever returns a non-monotonic timestamp,
+        // advance from the previous logged time using the ESP device-clock
+        // delta rather than writing a poisoned unified_time_s.
+        if (last_imu_unified_t_ > 0.0 && s2.unified_time_s <= last_imu_unified_t_) {
+            double dt_esp_s = 1.0 / 988.0;
+            if (imu_last_esp_ts_us_ != 0 && s2.esp_timestamp_us > imu_last_esp_ts_us_) {
+                dt_esp_s = (double)(s2.esp_timestamp_us - imu_last_esp_ts_us_) / 1e6;
+            }
+            s2.unified_time_s = last_imu_unified_t_ + std::max(dt_esp_s, 1e-6);
+        }
         if (imu_first_esp_ts_us_ == 0) imu_first_esp_ts_us_ = s2.esp_timestamp_us;
         imu_last_esp_ts_us_ = s2.esp_timestamp_us;
         data_logger_->log_imu(s2);
@@ -721,6 +732,22 @@ void Session::compute_imu_snapshot_post_() {
     // First/last ESP timestamp seen in the live IMU callback.
     info_.imu_snapshot.first_esp_timestamp_us = imu_first_esp_ts_us_;
     info_.imu_snapshot.last_esp_timestamp_us  = imu_last_esp_ts_us_;
+
+    // Persist the runtime gyro-bias state so the downstream pipeline knows
+    // whether the logged gyro samples are raw or already biased.
+    if (imu_reader_) {
+        info_.imu_snapshot.gyro_bias_applied_runtime = imu_reader_->is_gyro_bias_applied();
+        if (info_.imu_snapshot.gyro_bias_applied_runtime) {
+            auto gb = imu_reader_->get_gyro_bias();
+            info_.imu_snapshot.gyro_bias_runtime_x_dps = gb.x;
+            info_.imu_snapshot.gyro_bias_runtime_y_dps = gb.y;
+            info_.imu_snapshot.gyro_bias_runtime_z_dps = gb.z;
+        } else {
+            info_.imu_snapshot.gyro_bias_runtime_x_dps = 0.0f;
+            info_.imu_snapshot.gyro_bias_runtime_y_dps = 0.0f;
+            info_.imu_snapshot.gyro_bias_runtime_z_dps = 0.0f;
+        }
+    }
 
     // Measured ODR from raw_imu.csv. We re-scan rather than caching live
     // because the session may have stopped/started multiple times before

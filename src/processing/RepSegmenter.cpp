@@ -598,7 +598,19 @@ nlohmann::json RepAnnotation::to_json() const {
             {"rest", {{"t_start", rest.t_start_s}, {"t_end", rest.t_end_s}}},
             {"mean_concentric_velocity", mean_concentric_velocity},
             {"peak_concentric_velocity", peak_concentric_velocity},
-            {"rom_m", rom_m}};
+            {"rom_m", rom_m},
+            {"rom_vertical_m", rom_vertical_m > 0.0f ? rom_vertical_m : rom_m},
+            {"rom_camera_x_m", rom_camera_x_m},
+            {"rom_camera_y_m", rom_camera_y_m},
+            {"rom_camera_z_m", rom_camera_z_m},
+            {"rom_3d_bbox_m", rom_3d_bbox_m},
+            {"camera_metrics", {
+                {"rom_vertical_m", rom_vertical_m > 0.0f ? rom_vertical_m : rom_m},
+                {"rom_x_m", rom_camera_x_m},
+                {"rom_y_m", rom_camera_y_m},
+                {"rom_z_m", rom_camera_z_m},
+                {"rom_3d_bbox_m", rom_3d_bbox_m}
+            }}};
 }
 
 RepAnnotation RepAnnotation::from_json(const nlohmann::json& j) {
@@ -628,6 +640,19 @@ RepAnnotation RepAnnotation::from_json(const nlohmann::json& j) {
     r.mean_concentric_velocity = j.value("mean_concentric_velocity", 0.0f);
     r.peak_concentric_velocity = j.value("peak_concentric_velocity", 0.0f);
     r.rom_m = j.value("rom_m", 0.0f);
+    r.rom_vertical_m = j.value("rom_vertical_m", r.rom_m);
+    r.rom_camera_x_m = j.value("rom_camera_x_m", 0.0f);
+    r.rom_camera_y_m = j.value("rom_camera_y_m", r.rom_vertical_m);
+    r.rom_camera_z_m = j.value("rom_camera_z_m", 0.0f);
+    r.rom_3d_bbox_m = j.value("rom_3d_bbox_m", 0.0f);
+    if (j.contains("camera_metrics") && j["camera_metrics"].is_object()) {
+        const auto& cm = j["camera_metrics"];
+        r.rom_vertical_m = cm.value("rom_vertical_m", r.rom_vertical_m);
+        r.rom_camera_x_m = cm.value("rom_x_m", r.rom_camera_x_m);
+        r.rom_camera_y_m = cm.value("rom_y_m", r.rom_camera_y_m);
+        r.rom_camera_z_m = cm.value("rom_z_m", r.rom_camera_z_m);
+        r.rom_3d_bbox_m = cm.value("rom_3d_bbox_m", r.rom_3d_bbox_m);
+    }
     return r;
 }
 
