@@ -321,6 +321,18 @@ bool Session::start_recording() {
         data_logger_->log_camera_imu(s2);
     });
 
+    // Arm the FSYNC anchor only after BOTH the IMU and camera callbacks are
+    // wired, so the deques start empty at a common recording boundary.
+    // arm_anchor also records the wall-clock boundary; subsequent
+    // register_imu_fsync_event / register_camera_frame calls drop events
+    // whose physical instant predates this boundary (this is what closes
+    // the librealsense-pre-recording-queue stale-frame race — a frame can
+    // sit up to FRAMES_QUEUE_SIZE deep in librealsense and be delivered
+    // post-arm with a pre-arm hw_timestamp_s).
+    const double arm_wall_s = std::chrono::duration<double>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    sync_engine_->arm_anchor(arm_wall_s);
+
     recording_start_ = std::chrono::steady_clock::now();
 
     // Anchor the first SetInfo's start to the current wall-clock so the
@@ -389,6 +401,9 @@ int Session::current_set_id() const {
 
 void Session::stop_recording() {
     if (state_ != SessionState::RECORDING) return;
+    // Disarm the FSYNC anchor first so any in-flight events delivered
+    // during teardown can't poison the deques for a subsequent recording.
+    sync_engine_->disarm_anchor();
     camera_reader_->set_callback(nullptr);
     camera_reader_->set_imu_callback(nullptr);
     camera_worker_running_ = false;

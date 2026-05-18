@@ -6,7 +6,11 @@
  */
 import { useMemo } from "react";
 import { useSessionStore } from "../store/session";
-import { sessionT0 } from "../types/session";
+import {
+  chronoPhaseInfo,
+  repChronoStart,
+  sessionT0,
+} from "../types/session";
 
 export function VerificationDump() {
   const session = useSessionStore((s) => s.session);
@@ -22,7 +26,7 @@ export function VerificationDump() {
       imu_rate_hz: session.imu.length / Math.max(0.001, t1 - t0),
       marker_rate_hz: session.markers.length / Math.max(0.001, t1 - t0),
       first_rep_t_s_rel: session.reps.length
-        ? session.reps[0].concentric.t_start - t0
+        ? repChronoStart(session.reps[0], session.exercise_orientation) - t0
         : 0,
     };
   }, [session]);
@@ -132,50 +136,59 @@ export function VerificationDump() {
         </div>
       )}
 
-      {reps.length > 0 && (
-        <div>
-          <div className="text-[var(--text-dim)] text-xs uppercase tracking-wider mb-2">
-            First 5 reps (relative seconds)
+      {reps.length > 0 && (() => {
+        const phaseInfo = chronoPhaseInfo(session.exercise_orientation);
+        return (
+          <div>
+            <div className="text-[var(--text-dim)] text-xs uppercase tracking-wider mb-2">
+              First 5 reps (relative seconds; chronological phases for{" "}
+              {session.exercise_orientation})
+            </div>
+            <table className="w-full text-xs font-mono">
+              <thead className="text-[var(--text-dim)]">
+                <tr>
+                  <th className="text-left">id</th>
+                  <th>set</th>
+                  <th>cat</th>
+                  <th>val</th>
+                  {phaseInfo.map((p) => (
+                    <th key={p.name}>{p.shortLabel}</th>
+                  ))}
+                  <th className="text-right">peak v</th>
+                  <th className="text-right">ROM</th>
+                </tr>
+              </thead>
+              <tbody>
+                {reps.slice(0, 5).map((r) => {
+                  const tSession = sessionT0(session);
+                  const fmt = (a: number, b: number) =>
+                    `${(a - tSession).toFixed(2)}–${(b - tSession).toFixed(2)}`;
+                  return (
+                    <tr
+                      key={r.rep_id}
+                      className="border-t border-[var(--border)]"
+                    >
+                      <td>{r.rep_id}</td>
+                      <td className="text-right">{r.set_id}</td>
+                      <td>{r.category}</td>
+                      <td>{r.validity}</td>
+                      {phaseInfo.map((p) => (
+                        <td key={p.name}>{fmt(r[p.name].t_start, r[p.name].t_end)}</td>
+                      ))}
+                      <td className="text-right">
+                        {r.peak_concentric_velocity.toFixed(3)}
+                      </td>
+                      <td className="text-right">
+                        {(r.rom_m * 1000).toFixed(0)}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
-          <table className="w-full text-xs font-mono">
-            <thead className="text-[var(--text-dim)]">
-              <tr>
-                <th className="text-left">id</th>
-                <th>set</th>
-                <th>conc</th>
-                <th>top</th>
-                <th>ecc</th>
-                <th>rest</th>
-                <th className="text-right">peak v</th>
-                <th className="text-right">ROM</th>
-              </tr>
-            </thead>
-            <tbody>
-              {reps.slice(0, 5).map((r) => {
-                const t0 = sessionT0(session);
-                const fmt = (a: number, b: number) =>
-                  `${(a - t0).toFixed(2)}–${(b - t0).toFixed(2)}`;
-                return (
-                  <tr key={r.rep_id} className="border-t border-[var(--border)]">
-                    <td>{r.rep_id}</td>
-                    <td className="text-right">{r.set_id}</td>
-                    <td>{fmt(r.concentric.t_start, r.concentric.t_end)}</td>
-                    <td>{fmt(r.top_rest.t_start, r.top_rest.t_end)}</td>
-                    <td>{fmt(r.eccentric.t_start, r.eccentric.t_end)}</td>
-                    <td>{fmt(r.rest.t_start, r.rest.t_end)}</td>
-                    <td className="text-right">
-                      {r.peak_concentric_velocity.toFixed(3)}
-                    </td>
-                    <td className="text-right">
-                      {(r.rom_m * 1000).toFixed(0)}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
+        );
+      })()}
 
       {session.videoBlobUrl && (
         <div>

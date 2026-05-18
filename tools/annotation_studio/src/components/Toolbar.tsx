@@ -14,8 +14,11 @@ import {
 import {
   defaultRepSegV2Config,
   segmentV2,
-  orientationFor,
+  applyPresetV2,
+  SEG_PRESETS,
+  type SegPreset,
 } from "../signal/repSegmentationV2";
+import { normalizeRep } from "../loader/schemaDefaults";
 
 export function Toolbar() {
   const session = useSessionStore((s) => s.session);
@@ -35,7 +38,7 @@ export function Toolbar() {
   const deleteRep = useSessionStore((s) => s.deleteRep);
   const splitRep = useSessionStore((s) => s.splitRep);
   const mergeWithNext = useSessionStore((s) => s.mergeWithNext);
-  const enforce5 = useSessionStore((s) => s.enforce5PhaseContract);
+  const enforce5 = useSessionStore((s) => s.enforcePhaseContract);
   const playhead = useSessionStore((s) => s.playhead_t_s);
   const snap = useSessionStore((s) => s.snap_to_zero_cross);
   const setSnap = useSessionStore((s) => s.setSnap);
@@ -46,17 +49,35 @@ export function Toolbar() {
   const [savedToast, setSavedToast] = useState<string | null>(null);
   const [autoCfg, setAutoCfg] = useState(defaultRepSegmentationConfig);
   const [autoV2Cfg, setAutoV2Cfg] = useState(defaultRepSegV2Config);
-  const [useV2, setUseV2] = useState(true);
+  const [useV2] = useState(true);
+  // Multi-click iterative segmentation: each click cycles to the next preset.
+  const [presetIdx, setPresetIdx] = useState<number>(0);
+  const currentPreset: SegPreset = SEG_PRESETS[presetIdx % SEG_PRESETS.length];
+  const [lastSegToast, setLastSegToast] = useState<string | null>(null);
+  const selectedRep = session?.reps.find((r) => r.rep_id === selected_rep_id);
+  const seed_mode = useSessionStore((s) => s.seed_mode);
+  const setSeedMode = useSessionStore((s) => s.setSeedMode);
+  const seed_click_count = useSessionStore((s) => s.seed_click_count);
+  const resetSeedClicks = useSessionStore((s) => s.resetSeedClicks);
 
   if (!session) return null;
 
   const dirty = reps_dirty || meta_dirty;
 
+  const intervals_dirty = useSessionStore((s) => s.intervals_dirty);
+  const takePendingLog = useSessionStore((s) => s.takePendingLog);
+
   async function onSave() {
     if (!session) return;
     setBusy(true);
     try {
-      const r = await saveSession(session, { saveReps: reps_dirty, saveMeta: meta_dirty });
+      const pending = takePendingLog();
+      const r = await saveSession(session, {
+        saveReps: reps_dirty,
+        saveMeta: meta_dirty,
+        saveIntervals: intervals_dirty,
+        appendLog: pending,
+      });
       if (r.ok) {
         clearDirty();
         setSavedToast(`Saved → ${r.paths_written.join(", ")}`);
@@ -152,33 +173,75 @@ export function Toolbar() {
       <Btn onClick={() => { pushUndo(); renumberRepsSequential(); }}>
         Renumber
       </Btn>
+      {/* Multi-click auto-segment: each click runs with the next preset.
+          Standard → Sensitive → Strict → GT-assisted → cycle back. */}
       <Btn
         onClick={() => {
           if (!session) return;
           pushUndo();
           const cleaned = computeCleanedSignal(session.markers);
-          if (useV2) {
-            replaceReps(segmentV2(cleaned, session.info.exercise || "", autoV2Cfg));
-          } else {
-            replaceReps(segmentCleanedSignal(cleaned, autoCfg));
-          }
+          const orientation = session.exercise_orientation;
+          const cfg = applyPresetV2(autoV2Cfg, currentPreset);
+          const legacy = useV2
+            ? segmentV2(cleaned, session.info.exercise || "", cfg)
+            : segmentCleanedSignal(cleaned, autoCfg);
+          const upgraded = legacy.map((r) => normalizeRep(r, orientation, "auto"));
+          replaceReps(upgraded);
+          setLastSegToast(`${currentPreset} → ${upgraded.length} reps`);
+          setTimeout(() => setLastSegToast(null), 2500);
+          // Advance preset for next click — multi-click iteration.
+          setPresetIdx((i) => (i + 1) % SEG_PRESETS.length);
         }}
-        title={
-          useV2
-            ? `Auto segment (v2): orientation-aware (${orientationFor(session.info.exercise || "")}), last-rep closure, per-rep confidence.`
-            : "Auto segment (v1): legacy windowed-extrema. Misses last rep of top-start lifts."
-        }
+        primary
+        title={`Auto-segment with preset '${currentPreset}'. Click again to cycle: ${SEG_PRESETS.join(" → ")}.`}
       >
-        Auto segment {useV2 ? "v2" : "v1"}
+        ⟲ Auto-segment ({currentPreset})
       </Btn>
-      <label className="flex items-center gap-1 text-[10px] text-[var(--text-dim)] px-1">
-        <input
-          type="checkbox"
-          checked={useV2}
-          onChange={(e) => setUseV2(e.target.checked)}
-        />
-        v2 ({orientationFor(session.info.exercise || "")}-start)
-      </label>
+      <button
+        onClick={() => setPresetIdx(0)}
+        title="Reset preset cycle to 'standard'"
+        className="px-1.5 py-1 text-[10px] rounded bg-[var(--bg-2)] hover:bg-[var(--bg-3)] text-[var(--text-dim)]"
+      >
+        ⟲ reset
+      </button>
+      <Btn
+        onClick={() => {
+          if (!session || !selectedRep) return;
+          pushUndo();
+          const cleaned = computeCleanedSignal(session.markers);
+          const orientation = session.exercise_orientation;
+          const cfg = applyPresetV2(autoV2Cfg, "sensitive");
+          // Use the selected rep's window as a seed: prepend it to the
+          // segmenter's input as a high-confidence anchor candidate. The TS
+          // v2 segmenter doesn't take a template directly — we instead use
+          // the selected rep's ROM as a per-set ROM prior by tightening
+          // consistency_band around that ROM and re-running.
+          const refRom =
+            Math.max(0.01, selectedRep.rom_m) ||
+            Math.max(
+              0.01,
+              Math.abs(
+                selectedRep.concentric.t_end - selectedRep.concentric.t_start
+              ) * 0.5
+            );
+          const tightCfg = {
+            ...cfg,
+            min_rep_displacement_m: Math.max(0.03, refRom * 0.6),
+            consistency_band: 0.25,
+          };
+          const legacy = segmentV2(cleaned, session.info.exercise || "", tightCfg);
+          const upgraded = legacy.map((r) => normalizeRep(r, orientation, "auto"));
+          replaceReps(upgraded);
+          setLastSegToast(
+            `seeded (ROM≈${(refRom * 1000).toFixed(0)}mm) → ${upgraded.length} reps`
+          );
+          setTimeout(() => setLastSegToast(null), 2500);
+        }}
+        disabled={!selectedRep}
+        title="Use the currently-selected rep as a template (ROM + duration anchor) and re-segment. Human-aided mode."
+      >
+        ⌖ Seed from selected
+      </Btn>
       <Btn
         onClick={() => {
           if (!session?.candidateReps.length) return;
@@ -190,15 +253,29 @@ export function Toolbar() {
           replaceReps(session.candidateReps);
         }}
         disabled={!session.candidateReps.length}
-        title="Load the assisted proposal from annotations/rep_segments.candidate.json for human review."
+        title="Load auto proposal from annotations/rep_segments.candidate.json."
       >
-        Use proposal
+        Use proposal ({session.candidateReps.length})
       </Btn>
       <Btn
         onClick={() => { pushUndo(); enforce5(); }}
-        title="Force the rest→C→T→E→rest contract: stitch consecutive rep boundaries and repair phase order."
+        title="Force the orientation-aware chronological contract: stitch consecutive rep boundaries and repair phase order."
       >
         Repair chain
+      </Btn>
+      <Btn
+        onClick={() => {
+          if (seed_mode) {
+            setSeedMode(false);
+          } else {
+            resetSeedClicks();
+            setSeedMode(true);
+          }
+        }}
+        active={seed_mode}
+        title="🎯 Seed mode: click any peak in the charts to seed the segmenter. Each click loosens match tolerance. Esc exits."
+      >
+        🎯 Seed mode{seed_mode ? ` (${seed_click_count}×)` : ""}
       </Btn>
 
       <label className="flex items-center gap-1 text-[10px] text-[var(--text-dim)]">
@@ -280,6 +357,11 @@ export function Toolbar() {
       {savedToast && (
         <span className="text-emerald-300 text-xs font-mono">
           ✓ {savedToast}
+        </span>
+      )}
+      {lastSegToast && (
+        <span className="text-sky-300 text-xs font-mono">
+          ⟲ {lastSegToast}
         </span>
       )}
     </div>

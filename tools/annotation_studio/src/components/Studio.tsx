@@ -21,8 +21,10 @@ import { useCallback, useRef, useState } from "react";
 import { Charts } from "./Charts";
 import { Hotkeys } from "./Hotkeys";
 import { MetadataEditor } from "./MetadataEditor";
+import { ReadinessGate } from "./ReadinessGate";
 import { RepTable } from "./RepTable";
 import { SessionPicker } from "./SessionPicker";
+import { SetOperatorForm } from "./SetOperatorForm";
 import { SetTabs } from "./SetTabs";
 import { Toolbar } from "./Toolbar";
 import { ValidationPanel } from "./ValidationPanel";
@@ -86,14 +88,17 @@ function useSplitter(
   };
 }
 
+type RightTab = "operator_gt" | "metadata";
+
 export function Studio() {
   const session = useSessionStore((s) => s.session);
   const dirName = session?.dirName ?? "";
   const [metaVisible, setMetaVisible] = useState(true);
+  const [rightTab, setRightTab] = useState<RightTab>("operator_gt");
 
   // Panel sizes
   const leftSplitter = useSplitter("x", 280, 180, 450);
-  const rightSplitter = useSplitter("x", 320, 200, 500, true);
+  const rightSplitter = useSplitter("x", 380, 240, 600, true);
   const videoSplitter = useSplitter("y", 280, 120, 600);
   const chartTimelineSplitter = useSplitter("y", 200, 80, 500);
 
@@ -147,6 +152,7 @@ export function Studio() {
       </header>
 
       <Toolbar />
+      <ReadinessGate />
 
       {/* Main content area: 3 columns */}
       <div className="flex-1 flex min-h-0">
@@ -196,15 +202,58 @@ export function Studio() {
           </div>
         </main>
 
-        {/* RIGHT: Metadata (collapsible) */}
+        {/* RIGHT: Tabbed — Operator GT | Metadata (collapsible) */}
         {metaVisible && <div {...rightSplitter.splitterProps} />}
         <aside
           className={`flex flex-col bg-[var(--bg-1)] border-l border-[var(--border)] min-h-0 panel-collapsible ${metaVisible ? "" : "collapsed"}`}
-          style={metaVisible ? { width: rightSplitter.size, minWidth: rightSplitter.size } : undefined}
+          style={
+            metaVisible
+              ? { width: rightSplitter.size, minWidth: rightSplitter.size }
+              : undefined
+          }
         >
-          <MetadataEditor />
+          <div className="flex border-b border-[var(--border)] shrink-0 bg-[var(--bg-0)]">
+            <TabBtn
+              active={rightTab === "operator_gt"}
+              onClick={() => setRightTab("operator_gt")}
+            >
+              Operator GT
+            </TabBtn>
+            <TabBtn
+              active={rightTab === "metadata"}
+              onClick={() => setRightTab("metadata")}
+            >
+              Metadata
+            </TabBtn>
+          </div>
+          <div className="flex-1 min-h-0 overflow-hidden">
+            {rightTab === "operator_gt" ? <SetOperatorForm /> : <MetadataEditor />}
+          </div>
         </aside>
       </div>
     </div>
+  );
+}
+
+function TabBtn({
+  children,
+  active,
+  onClick,
+}: {
+  children: React.ReactNode;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`flex-1 px-3 py-1.5 text-xs ${
+        active
+          ? "bg-[var(--bg-1)] text-[var(--accent)] border-b-2 border-[var(--accent)]"
+          : "text-[var(--text-dim)] hover:bg-[var(--bg-2)]"
+      }`}
+    >
+      {children}
+    </button>
   );
 }

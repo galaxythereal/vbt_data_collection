@@ -26,8 +26,22 @@
  *      ground truth; downstream tooling filters confidence ≥ 0.99 to
  *      see only clean reps.
  */
-import type { RepAnnotation } from "../types/session";
 import type { CleanedSignal } from "./cleanSignal";
+
+/** Legacy v5-shaped rep emitted by the in-studio segmenters. The Toolbar
+ *  consumer wraps these via normalizeRep to upgrade to v6. */
+export interface LegacyRepShape {
+  rep_id: number;
+  set_id: number;
+  concentric: { t_start: number; t_end: number; peak_vel?: number; source?: string };
+  top_rest: { t_start: number; t_end: number; source?: string };
+  eccentric: { t_start: number; t_end: number; source?: string };
+  rest: { t_start: number; t_end: number; source?: string };
+  mean_concentric_velocity: number;
+  peak_concentric_velocity: number;
+  rom_m: number;
+  confidence: number;
+}
 
 export interface RepSegmentationConfig {
   peak_window_s: number;
@@ -67,9 +81,9 @@ interface Extremum {
 export function segmentCleanedSignal(
   signal: CleanedSignal,
   cfg: RepSegmentationConfig = defaultRepSegmentationConfig
-): RepAnnotation[] {
+): LegacyRepShape[] {
   const extrema = findConfirmedExtrema(signal, cfg);
-  const reps: RepAnnotation[] = [];
+  const reps: LegacyRepShape[] = [];
   let seed: Extremum | null = null;
   let midpoint: Extremum | null = null;
   let lastType: ExtType | null = null;
@@ -179,7 +193,7 @@ function buildRep(
   cfg: RepSegmentationConfig,
   repId: number,
   lastAcceptedConcentricStart: number
-): RepAnnotation {
+): LegacyRepShape {
   const duration = end.t - seed.t;
   const rom = Math.abs(mid.pos - seed.pos);
 

@@ -1,61 +1,91 @@
 /**
- * Video viewer with full transport + video-centric annotation dock.
+ * Video viewer with full transport + video-centric annotation dock. v6.
  *
  * Review workflow:
  *   Z / X          → prev / next rep
  *   Space          → play / pause
- *   ← / →          → frame step  (Shift = ±10)
- *   [              → snap nearest-BEFORE boundary of selected rep to current frame
- *   ]              → snap nearest-AFTER  boundary of selected rep to current frame
+ *   ← / →          → frame step (Shift = ±10)
+ *   [ / ]          → snap nearest-BEFORE / -AFTER boundary of selected rep
  *
- * The Rep Dock below transport shows:
- *   • Phase blocks (click → jump to that phase's start time)
- *   • Live playhead position overlaid on the blocks
- *   • Keyboard shortcut hints for [ / ]
+ * Rep Dock below transport shows chronological Level-1 phases as colored
+ * blocks (click → seek), live playhead marker, and the selected rep's
+ * category / validity / reviewed status.
  */
 import { useEffect, useMemo, useRef, useCallback, useState } from "react";
 import { useSessionStore } from "../store/session";
-import { phaseAt, PHASE_LABEL, PHASE_COLOR, type Phase, type PhaseContext } from "../signal/repPhase";
+import {
+  phaseAt,
+  PHASE_LABEL,
+  PHASE_COLOR,
+  type PhaseContext,
+} from "../signal/repPhase";
 import { makeFrameLookup, type FrameLookup } from "../signal/timeUtils";
-import type { RepAnnotation } from "../types/session";
+import type {
+  ExerciseOrientation,
+  RepAnnotation,
+} from "../types/session";
+import {
+  REP_CATEGORY_LABEL,
+  chronoPhaseInfo,
+  repChronoEnd,
+  repChronoStart,
+} from "../types/session";
 
 export function VideoPanel() {
-  const session     = useSessionStore((s) => s.session);
-  const playhead    = useSessionStore((s) => s.playhead_t_s);
+  const session = useSessionStore((s) => s.session);
+  const playhead = useSessionStore((s) => s.playhead_t_s);
   const setPlayhead = useSessionStore((s) => s.setPlayhead);
   const selectedRepId = useSessionStore((s) => s.selected_rep_id);
   const setSelectedRep = useSessionStore((s) => s.setSelectedRep);
-  const fitRep      = useSessionStore((s) => s.fitRep);
+  const fitRep = useSessionStore((s) => s.fitRep);
 
-  const videoRef             = useRef<HTMLVideoElement | null>(null);
-  const ignoreNextFrameTick  = useRef(false);
-  const playingRef           = useRef(false);
-  const [isPlaying, setIsPlaying]       = useState(false);
+  const orientation: ExerciseOrientation =
+    session?.exercise_orientation ?? "top_start";
+
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const ignoreNextFrameTick = useRef(false);
+  const playingRef = useRef(false);
+  const [isPlaying, setIsPlaying] = useState(false);
   const [playbackRate, setPlaybackRate] = useState(1);
+  // Throttle store playhead writes during playback to 30 Hz so the rest of
+  // the studio (Timeline, Charts, RepTable, StateStrip) doesn't re-render
+  // at 90+ fps — that's the source of the stutter/lag.
+  const lastStorePushMs = useRef(0);
+  // Local high-resolution playhead — drives the in-panel overlays (phase
+  // badge, frame counter, scrubber playhead). Updated every video frame
+  // without going through the store.
+  const [localPlayhead, setLocalPlayhead] = useState(playhead);
 
   const lookup = useMemo(
     () => (session ? makeFrameLookup(session.videoIndex) : null),
     [session]
   );
 
-  // Inbound: playhead changed externally → seek video.
-  // Skip only when actively playing (rVFC drives currentTime then).
-  // During any user-initiated scrub the video will have been paused first
-  // by the drag handler, so playingRef is false and this always fires.
+  // Inbound seek: external playhead changes seek the video. Now also works
+  // during playback IF the playhead jumped more than 0.15 s (a deliberate
+  // scrub) — small in-band drift is ignored so we don't fight rVFC.
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !lookup) return;
     if (lookup.count === 0) return;
-    if (playingRef.current) return;
-    const idx  = lookup.nearestFrameIdx(playhead);
+    const idx = lookup.nearestFrameIdx(playhead);
     if (idx < 0) return;
     const want = (idx / Math.max(1, lookup.count - 1)) * (video.duration || 0);
-    if (Math.abs(video.currentTime - want) <= 0.002) return;
+    const delta = Math.abs(video.currentTime - want);
+    if (playingRef.current && delta < 0.15) return; // ignore tiny rVFC echoes
+    if (delta <= 0.002) return;
     ignoreNextFrameTick.current = true;
-    try { video.currentTime = want; } catch { /* unloaded */ }
+    try {
+      video.currentTime = want;
+    } catch {
+      /* unloaded */
+    }
+    setLocalPlayhead(playhead);
   }, [playhead, lookup]);
 
-  // Outbound: requestVideoFrameCallback → push playhead.
+  // Outbound: video frame → playhead. Locally updates `localPlayhead` every
+  // frame for snappy in-panel overlays, but only pushes to the global store
+  // at ≤ 30 Hz so the rest of the studio doesn't re-render at 90+ fps.
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !lookup) return;
@@ -66,33 +96,64 @@ export function VideoPanel() {
     };
     if (!v.requestVideoFrameCallback) return;
     let cancelled = false;
-    const tick = (_now: number, meta: { mediaTime: number; presentedFrames: number }) => {
+    const STORE_PUSH_MIN_MS = 33; // 30 Hz cap on store updates during play
+    const tick = (
+      _now: number,
+      meta: { mediaTime: number; presentedFrames: number }
+    ) => {
       if (cancelled) return;
       if (ignoreNextFrameTick.current) {
         ignoreNextFrameTick.current = false;
       } else if (playingRef.current && lookup.count > 0) {
         const dur = video.duration || 1;
         const idx = Math.round((meta.mediaTime / dur) * (lookup.count - 1));
-        const t   = lookup.timeOfFrame(idx);
-        if (Number.isFinite(t) && t > 0) setPlayhead(t);
+        const t = lookup.timeOfFrame(idx);
+        if (Number.isFinite(t) && t > 0) {
+          // Local fast-path
+          setLocalPlayhead(t);
+          // Throttled global push
+          const now = performance.now();
+          if (now - lastStorePushMs.current > STORE_PUSH_MIN_MS) {
+            lastStorePushMs.current = now;
+            setPlayhead(t);
+          }
+        }
       }
       v.requestVideoFrameCallback!(tick);
     };
     v.requestVideoFrameCallback!(tick);
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [lookup, setPlayhead]);
 
-  // Direct seek — pauses first, sets currentTime, skips next rVFC tick.
+  // When playback stops (pause / seek end), flush the latest local playhead
+  // to the store so other panels catch up.
+  useEffect(() => {
+    if (!isPlaying) setPlayhead(localPlayhead);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPlaying]);
+
+  // Mirror external playhead changes into the local fast-path.
+  useEffect(() => {
+    setLocalPlayhead(playhead);
+  }, [playhead]);
+
   const seekTo = useCallback(
     (t: number) => {
       const v = videoRef.current;
       if (!v || !lookup || lookup.count === 0) return;
       v.pause();
-      const idx  = lookup.nearestFrameIdx(t);
-      const want = (idx / Math.max(1, lookup.count - 1)) * (v.duration || 0);
+      const idx = lookup.nearestFrameIdx(t);
+      const want =
+        (idx / Math.max(1, lookup.count - 1)) * (v.duration || 0);
       if (Math.abs(v.currentTime - want) <= 0.002) return;
       ignoreNextFrameTick.current = true;
-      try { v.currentTime = want; } catch { /* unloaded */ }
+      try {
+        v.currentTime = want;
+      } catch {
+        /* unloaded */
+      }
     },
     [lookup]
   );
@@ -102,14 +163,15 @@ export function VideoPanel() {
       const v = videoRef.current;
       if (!v || !lookup) return;
       v.pause();
-      const cur    = useSessionStore.getState().playhead_t_s;
-      const idx    = lookup.nearestFrameIdx(cur);
+      const cur = useSessionStore.getState().playhead_t_s;
+      const idx = lookup.nearestFrameIdx(cur);
       const target = Math.max(0, Math.min(lookup.count - 1, idx + delta));
-      const t      = lookup.timeOfFrame(target);
+      const t = lookup.timeOfFrame(target);
       if (!Number.isFinite(t) || t <= 0) return;
       setPlayhead(t);
       ignoreNextFrameTick.current = true;
-      v.currentTime = (target / Math.max(1, lookup.count - 1)) * (v.duration || 0);
+      v.currentTime =
+        (target / Math.max(1, lookup.count - 1)) * (v.duration || 0);
     },
     [lookup, setPlayhead]
   );
@@ -117,11 +179,11 @@ export function VideoPanel() {
   const togglePlay = useCallback(() => {
     const v = videoRef.current;
     if (!v) return;
-    if (v.paused) v.play(); else v.pause();
+    if (v.paused) v.play();
+    else v.pause();
   }, []);
 
   if (!session) return null;
-
   if (!session.videoBlobUrl) {
     return (
       <div className="h-full flex items-center justify-center rounded border border-[var(--border)] bg-[var(--bg-1)] text-[var(--text-dim)] text-sm">
@@ -130,39 +192,59 @@ export function VideoPanel() {
     );
   }
 
-  const reps        = session.reps;
+  const reps = session.reps;
   const selectedRep = reps.find((r) => r.rep_id === selectedRepId) ?? null;
-  const repIdx      = reps.findIndex((r) => r.rep_id === selectedRepId);
-  const ph          = phaseAt(reps, playhead);
-  const frameIdx    = lookup ? lookup.nearestFrameIdx(playhead) : -1;
+  const repIdx = reps.findIndex((r) => r.rep_id === selectedRepId);
+  // In-panel readouts use the local high-rate playhead so they stay snappy
+  // even though the store sees only ~30 Hz updates during play.
+  const phRead = localPlayhead;
+  const ph = phaseAt(reps, orientation, phRead);
+  const frameIdx = lookup ? lookup.nearestFrameIdx(phRead) : -1;
   const totalFrames = lookup ? lookup.count : 0;
 
-  // Frames remaining until next phase boundary (for badge)
   let framesUntilEnd = 0;
   if (selectedRep && ph.repId === selectedRepId && lookup) {
     let phEnd = 0;
-    if      (ph.phase === "concentric") phEnd = selectedRep.concentric.t_end;
-    else if (ph.phase === "top_rest")   phEnd = selectedRep.top_rest.t_end;
-    else if (ph.phase === "eccentric")  phEnd = selectedRep.eccentric.t_end;
-    else if (ph.phase === "rest")       phEnd = selectedRep.rest.t_end;
-    if (phEnd > 0) framesUntilEnd = Math.max(0, lookup.nearestFrameIdx(phEnd) - frameIdx);
+    if (ph.phase === "pre_rep_hold") phEnd = selectedRep.pre_rep_hold.t_end;
+    else if (ph.phase === "concentric") phEnd = selectedRep.concentric.t_end;
+    else if (ph.phase === "top_dwell") phEnd = selectedRep.top_dwell.t_end;
+    else if (ph.phase === "eccentric") phEnd = selectedRep.eccentric.t_end;
+    else if (ph.phase === "bottom_dwell")
+      phEnd = selectedRep.bottom_dwell.t_end;
+    if (phEnd > 0)
+      framesUntilEnd = Math.max(0, lookup.nearestFrameIdx(phEnd) - frameIdx);
   }
 
   return (
     <div className="h-full flex flex-col">
-      {/* ── Video container ─────────────────────────────────────────── */}
       <div className="flex-1 relative bg-black overflow-hidden min-h-0">
         <video
           ref={videoRef}
           src={session.videoBlobUrl}
           className="w-full h-full object-contain block"
           playsInline
-          onPlay={() => { playingRef.current = true;  setIsPlaying(true);  }}
-          onPause={() => { playingRef.current = false; setIsPlaying(false); }}
-          onSeeking={() => { ignoreNextFrameTick.current = true; }}
+          preload="auto"
+          loop={false}
+          onPlay={() => {
+            playingRef.current = true;
+            setIsPlaying(true);
+          }}
+          onPause={() => {
+            playingRef.current = false;
+            setIsPlaying(false);
+          }}
+          onEnded={() => {
+            playingRef.current = false;
+            setIsPlaying(false);
+          }}
+          onSeeking={() => {
+            ignoreNextFrameTick.current = true;
+          }}
+          onRateChange={(e) =>
+            setPlaybackRate((e.target as HTMLVideoElement).playbackRate)
+          }
         />
 
-        {/* Phase badge – top-left */}
         <div className="absolute top-2 left-2 flex items-center gap-1.5 z-10">
           <span
             className="px-2 py-0.5 rounded font-mono text-[10px] font-semibold"
@@ -186,7 +268,6 @@ export function VideoPanel() {
           )}
         </div>
 
-        {/* Frame counter – top-right */}
         <div
           className="absolute top-2 right-2 font-mono text-[10px] px-2 py-0.5 rounded z-10"
           style={{ background: "rgba(0,0,0,0.75)", color: "#8b949e" }}
@@ -194,32 +275,68 @@ export function VideoPanel() {
           {frameIdx >= 0 ? `F${frameIdx}` : "—"} / {totalFrames}
         </div>
 
-        {/* Phase progress bar – bottom of video */}
-        {selectedRep && <RepPhaseBar rep={selectedRep} playhead={playhead} />}
+        {selectedRep && (
+          <RepPhaseBar
+            rep={selectedRep}
+            orientation={orientation}
+            playhead={phRead}
+          />
+        )}
       </div>
 
-      {/* ── Transport bar ────────────────────────────────────────────── */}
       <div className="transport-bar shrink-0">
-        <button onClick={togglePlay} className={`transport-btn ${isPlaying ? "active" : ""}`} title="Play/Pause (Space)">
+        <button
+          onClick={togglePlay}
+          className={`transport-btn ${isPlaying ? "active" : ""}`}
+          title="Play/Pause (Space)"
+        >
           {isPlaying ? "⏸" : "▶"}
         </button>
-        <button onClick={() => frameStep(-10)} className="transport-btn" title="−10 frames (Shift+←)">⏪</button>
-        <button onClick={() => frameStep(-1)}  className="transport-btn" title="−1 frame (←)">◀</button>
-        <button onClick={() => frameStep(1)}   className="transport-btn" title="+1 frame (→)">▶</button>
-        <button onClick={() => frameStep(10)}  className="transport-btn" title="+10 frames (Shift+→)">⏩</button>
+        <button
+          onClick={() => frameStep(-10)}
+          className="transport-btn"
+          title="−10 frames (Shift+←)"
+        >
+          ⏪
+        </button>
+        <button
+          onClick={() => frameStep(-1)}
+          className="transport-btn"
+          title="−1 frame (←)"
+        >
+          ◀
+        </button>
+        <button
+          onClick={() => frameStep(1)}
+          className="transport-btn"
+          title="+1 frame (→)"
+        >
+          ▶
+        </button>
+        <button
+          onClick={() => frameStep(10)}
+          className="transport-btn"
+          title="+10 frames (Shift+→)"
+        >
+          ⏩
+        </button>
 
         <VideoScrubber
           lookup={lookup}
-          playhead={playhead}
-          setPlayhead={setPlayhead}
+          playhead={phRead}
+          setPlayhead={(t) => {
+            setLocalPlayhead(t);
+            setPlayhead(t);
+          }}
           videoRef={videoRef}
           ignoreRef={ignoreNextFrameTick}
           reps={reps}
+          orientation={orientation}
         />
 
-        <span className="font-mono text-[10px] text-[var(--text-dim)] shrink-0 w-[80px] text-right">
+        <span className="font-mono text-[10px] text-[var(--text-dim)] shrink-0 w-[100px] text-right">
           {lookup && lookup.count > 0
-            ? `${(playhead - lookup.t0).toFixed(2)}s / ${(lookup.t1 - lookup.t0).toFixed(2)}s`
+            ? `${(phRead - lookup.t0).toFixed(2)}s / ${(lookup.t1 - lookup.t0).toFixed(2)}s · ${playbackRate}×`
             : "—"}
         </span>
 
@@ -233,18 +350,20 @@ export function VideoPanel() {
           }}
         >
           {[0.1, 0.25, 0.5, 1, 2, 4].map((x) => (
-            <option key={x} value={x}>{x}×</option>
+            <option key={x} value={x}>
+              {x}×
+            </option>
           ))}
         </select>
       </div>
 
-      {/* ── Rep Review Dock ──────────────────────────────────────────── */}
       {selectedRep ? (
         <RepDock
           rep={selectedRep}
+          orientation={orientation}
           repIdx={repIdx}
           totalReps={reps.length}
-          playhead={playhead}
+          playhead={phRead}
           phaseCtx={ph}
           setPlayhead={setPlayhead}
           seekTo={seekTo}
@@ -252,8 +371,9 @@ export function VideoPanel() {
             if (repIdx > 0) {
               const prev = reps[repIdx - 1];
               setSelectedRep(prev.rep_id);
-              setPlayhead(prev.concentric.t_start);
-              seekTo(prev.concentric.t_start);
+              const t = repChronoStart(prev, orientation);
+              setPlayhead(t);
+              seekTo(t);
               fitRep(prev);
             }
           }}
@@ -261,8 +381,9 @@ export function VideoPanel() {
             if (repIdx < reps.length - 1) {
               const next = reps[repIdx + 1];
               setSelectedRep(next.rep_id);
-              setPlayhead(next.concentric.t_start);
-              seekTo(next.concentric.t_start);
+              const t = repChronoStart(next, orientation);
+              setPlayhead(t);
+              seekTo(t);
               fitRep(next);
             }
           }}
@@ -276,32 +397,38 @@ export function VideoPanel() {
   );
 }
 
-// ─── Phase progress bar overlaid at the bottom of the video ──────────
-function RepPhaseBar({ rep, playhead }: { rep: RepAnnotation; playhead: number }) {
-  const total = rep.rest.t_end - rep.concentric.t_start;
+function RepPhaseBar({
+  rep,
+  orientation,
+  playhead,
+}: {
+  rep: RepAnnotation;
+  orientation: ExerciseOrientation;
+  playhead: number;
+}) {
+  const phaseInfo = useMemo(() => chronoPhaseInfo(orientation), [orientation]);
+  const tStart = repChronoStart(rep, orientation);
+  const tEnd = repChronoEnd(rep, orientation);
+  const total = tEnd - tStart;
   if (total <= 0) return null;
-
-  const segs: Array<{ phase: Phase; start: number; end: number }> = [
-    { phase: "concentric", start: rep.concentric.t_start, end: rep.concentric.t_end },
-    { phase: "top_rest",   start: rep.top_rest.t_start,   end: rep.top_rest.t_end   },
-    { phase: "eccentric",  start: rep.eccentric.t_start,  end: rep.eccentric.t_end  },
-    { phase: "rest",       start: rep.rest.t_start,       end: rep.rest.t_end       },
-  ];
-
-  const inRep = playhead >= rep.concentric.t_start && playhead <= rep.rest.t_end;
-  const relPh = Math.max(0, Math.min(1, (playhead - rep.concentric.t_start) / total));
+  const inRep = playhead >= tStart && playhead <= tEnd;
+  const relPh = Math.max(0, Math.min(1, (playhead - tStart) / total));
 
   return (
-    <div className="absolute bottom-0 left-0 right-0 flex z-10" style={{ height: 6 }}>
-      {segs.map((seg) => {
-        const w         = ((seg.end - seg.start) / total) * 100;
-        const isActive  = playhead >= seg.start && playhead < seg.end;
+    <div
+      className="absolute bottom-0 left-0 right-0 flex z-10"
+      style={{ height: 6 }}
+    >
+      {phaseInfo.map((info) => {
+        const seg = rep[info.name];
+        const w = ((seg.t_end - seg.t_start) / total) * 100;
+        const isActive = playhead >= seg.t_start && playhead < seg.t_end;
         return (
           <div
-            key={seg.phase}
+            key={info.name}
             style={{
               width: `${w}%`,
-              background: PHASE_COLOR[seg.phase],
+              background: info.color,
               opacity: isActive ? 0.95 : 0.3,
               transition: "opacity 0.08s",
             }}
@@ -311,18 +438,31 @@ function RepPhaseBar({ rep, playhead }: { rep: RepAnnotation; playhead: number }
       {inRep && (
         <div
           className="absolute top-0 bottom-0 pointer-events-none z-20"
-          style={{ left: `${relPh * 100}%`, width: 2, background: "var(--playhead)" }}
+          style={{
+            left: `${relPh * 100}%`,
+            width: 2,
+            background: "var(--playhead)",
+          }}
         />
       )}
     </div>
   );
 }
 
-// ─── Rep Review Dock ─────────────────────────────────────────────────
 function RepDock({
-  rep, repIdx, totalReps, playhead, phaseCtx, setPlayhead, seekTo, onPrev, onNext,
+  rep,
+  orientation,
+  repIdx,
+  totalReps,
+  playhead,
+  phaseCtx,
+  setPlayhead,
+  seekTo,
+  onPrev,
+  onNext,
 }: {
   rep: RepAnnotation;
+  orientation: ExerciseOrientation;
   repIdx: number;
   totalReps: number;
   playhead: number;
@@ -332,66 +472,85 @@ function RepDock({
   onPrev: () => void;
   onNext: () => void;
 }) {
-  const total = rep.rest.t_end - rep.concentric.t_start;
-
-  const phases: Array<{ phase: Phase; label: string; start: number; end: number }> = [
-    { phase: "concentric", label: "Conc", start: rep.concentric.t_start, end: rep.concentric.t_end },
-    { phase: "top_rest",   label: "Top",  start: rep.top_rest.t_start,   end: rep.top_rest.t_end   },
-    { phase: "eccentric",  label: "Ecc",  start: rep.eccentric.t_start,  end: rep.eccentric.t_end  },
-    { phase: "rest",       label: "Rest", start: rep.rest.t_start,       end: rep.rest.t_end       },
-  ];
-
-  const inRep = playhead >= rep.concentric.t_start && playhead <= rep.rest.t_end;
-  const relPh = total > 0 ? Math.max(0, Math.min(1, (playhead - rep.concentric.t_start) / total)) : 0;
+  const phaseInfo = useMemo(() => chronoPhaseInfo(orientation), [orientation]);
+  const tStart = repChronoStart(rep, orientation);
+  const tEnd = repChronoEnd(rep, orientation);
+  const total = tEnd - tStart;
+  const inRep = playhead >= tStart && playhead <= tEnd;
+  const relPh = total > 0 ? Math.max(0, Math.min(1, (playhead - tStart) / total)) : 0;
   const curPhase = phaseCtx.repId === rep.rep_id ? phaseCtx.phase : null;
 
   return (
     <div className="rep-dock shrink-0">
-      {/* Rep navigator + metrics */}
       <div className="flex items-center gap-2 mb-1.5">
         <button
           onClick={onPrev}
           disabled={repIdx <= 0}
           className="transport-btn !w-6 !h-5 text-[10px]"
           title="Prev rep (Z)"
-        >‹</button>
-
-        <span className="font-mono text-xs font-bold" style={{ color: "var(--conc-light)" }}>
+        >
+          ‹
+        </button>
+        <span
+          className="font-mono text-xs font-bold"
+          style={{ color: "var(--conc-light)" }}
+        >
           R{rep.rep_id}
         </span>
-        <span className="text-[var(--text-dim)] text[10px]">{repIdx + 1} / {totalReps}</span>
-
+        <span className="text-[var(--text-dim)] text-[10px]">
+          {repIdx + 1} / {totalReps}
+        </span>
         <button
           onClick={onNext}
           disabled={repIdx >= totalReps - 1}
           className="transport-btn !w-6 !h-5 text-[10px]"
           title="Next rep (X)"
-        >›</button>
+        >
+          ›
+        </button>
+
+        <span
+          className={`px-1.5 py-0.5 rounded text-[10px] font-mono ${
+            rep.validity === "invalid"
+              ? "bg-red-900/40 text-red-200"
+              : rep.validity === "questionable"
+                ? "bg-amber-900/40 text-amber-200"
+                : "bg-emerald-900/30 text-emerald-200"
+          }`}
+        >
+          {REP_CATEGORY_LABEL[rep.category]} · {rep.validity}
+          {rep.reviewed ? " ✓" : ""}
+        </span>
 
         <div className="flex-1" />
 
         <span className="text-[var(--text-dim)] text-[10px] font-mono">
           Set {rep.set_id}
-          {rep.peak_concentric_velocity > 0 ? ` · ${rep.peak_concentric_velocity.toFixed(2)} m/s` : ""}
+          {rep.peak_concentric_velocity > 0
+            ? ` · ${rep.peak_concentric_velocity.toFixed(2)} m/s`
+            : ""}
           {rep.rom_m > 0 ? ` · ${(rep.rom_m * 100).toFixed(0)} cm` : ""}
         </span>
       </div>
 
-      {/* Phase blocks — click any to jump to its start */}
       <div className="relative" style={{ height: 26 }}>
         <div className="flex rounded overflow-hidden h-full">
-          {phases.map((p) => {
-            const dur = p.end - p.start;
-            const w   = total > 0 ? Math.max(1, (dur / total) * 100) : 25;
-            const isActive = curPhase === p.phase;
+          {phaseInfo.map((info) => {
+            const seg = rep[info.name];
+            const dur = seg.t_end - seg.t_start;
+            const w = total > 0 ? Math.max(1, (dur / total) * 100) : 100 / phaseInfo.length;
+            const isActive = curPhase === info.name;
             return (
               <div
-                key={p.phase}
-                onClick={() => { setPlayhead(p.start); seekTo(p.start); }}
-                title={`${p.label}: ${dur.toFixed(3)}s — click to jump`}
+                key={info.name}
+                onClick={() => {
+                  setPlayhead(seg.t_start);
+                  seekTo(seg.t_start);
+                }}
+                title={`${info.label}: ${dur.toFixed(3)}s — click to jump`}
                 style={{
                   width: `${w}%`,
-                  background: PHASE_COLOR[p.phase],
+                  background: info.color,
                   opacity: isActive ? 1 : 0.4,
                   cursor: "pointer",
                   display: "flex",
@@ -407,29 +566,31 @@ function RepDock({
                   whiteSpace: "nowrap",
                 }}
               >
-                {w > 8  ? p.label : ""}
+                {w > 8 ? info.shortLabel : ""}
                 {w > 20 ? ` ${dur.toFixed(2)}s` : ""}
               </div>
             );
           })}
         </div>
 
-        {/* Live playhead marker on dock */}
         {inRep && (
           <div
             className="absolute top-0 bottom-0 pointer-events-none z-10"
-            style={{ left: `${relPh * 100}%`, width: 2, background: "var(--playhead)" }}
+            style={{
+              left: `${relPh * 100}%`,
+              width: 2,
+              background: "var(--playhead)",
+            }}
           />
         )}
       </div>
 
-      {/* Keyboard hints */}
       <div className="flex items-center justify-between mt-1.5 text-[10px] text-[var(--text-dim)]">
         <span className="flex items-center gap-1">
           <kbd className="dock-kbd">[</kbd> set phase start here
         </span>
 
-        {curPhase && curPhase !== "before" && curPhase !== "after" ? (
+        {curPhase ? (
           <span
             className="font-mono font-bold text-[10px] px-1.5 py-0.5 rounded"
             style={{ background: PHASE_COLOR[curPhase], color: "#fff" }}
@@ -448,9 +609,14 @@ function RepDock({
   );
 }
 
-// ─── Video scrubber with rep annotations ─────────────────────────────
 function VideoScrubber({
-  lookup, playhead, setPlayhead, videoRef, ignoreRef, reps,
+  lookup,
+  playhead,
+  setPlayhead,
+  videoRef,
+  ignoreRef,
+  reps,
+  orientation,
 }: {
   lookup: FrameLookup | null;
   playhead: number;
@@ -458,6 +624,7 @@ function VideoScrubber({
   videoRef: React.RefObject<HTMLVideoElement | null>;
   ignoreRef: React.MutableRefObject<boolean>;
   reps: RepAnnotation[];
+  orientation: ExerciseOrientation;
 }) {
   const trackRef = useRef<HTMLDivElement | null>(null);
 
@@ -466,13 +633,14 @@ function VideoScrubber({
       if (!trackRef.current || !lookup || lookup.count === 0) return;
       const rect = trackRef.current.getBoundingClientRect();
       const frac = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-      const t    = lookup.t0 + frac * (lookup.t1 - lookup.t0);
+      const t = lookup.t0 + frac * (lookup.t1 - lookup.t0);
       setPlayhead(t);
       ignoreRef.current = true;
       const v = videoRef.current;
       if (v) {
         const idx = lookup.nearestFrameIdx(t);
-        v.currentTime = (idx / Math.max(1, lookup.count - 1)) * (v.duration || 0);
+        v.currentTime =
+          (idx / Math.max(1, lookup.count - 1)) * (v.duration || 0);
       }
     },
     [lookup, setPlayhead, videoRef, ignoreRef]
@@ -483,7 +651,7 @@ function VideoScrubber({
       (e.target as Element).setPointerCapture(e.pointerId);
       seekTo(e.clientX);
       const onMove = (ev: PointerEvent) => seekTo(ev.clientX);
-      const onUp   = () => {
+      const onUp = () => {
         window.removeEventListener("pointermove", onMove);
         window.removeEventListener("pointerup", onUp);
       };
@@ -497,14 +665,17 @@ function VideoScrubber({
     return <div className="scrubber-track flex-1 opacity-30" />;
   }
 
-  const totalDur     = lookup.t1 - lookup.t0;
-  const playheadPct  = totalDur > 0 ? ((playhead - lookup.t0) / totalDur) * 100 : 0;
+  const totalDur = lookup.t1 - lookup.t0;
+  const playheadPct =
+    totalDur > 0 ? ((playhead - lookup.t0) / totalDur) * 100 : 0;
 
   return (
     <div ref={trackRef} className="scrubber-track" onPointerDown={onPointerDown}>
       {reps.map((r) => {
-        const startPct = ((r.concentric.t_start - lookup.t0) / totalDur) * 100;
-        const endPct   = ((r.rest.t_end         - lookup.t0) / totalDur) * 100;
+        const startPct =
+          ((repChronoStart(r, orientation) - lookup.t0) / totalDur) * 100;
+        const endPct =
+          ((repChronoEnd(r, orientation) - lookup.t0) / totalDur) * 100;
         return (
           <div
             key={r.rep_id}

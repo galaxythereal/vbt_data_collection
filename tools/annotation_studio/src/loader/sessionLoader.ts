@@ -4,22 +4,32 @@
  * handle is held by the store so subsequent saves can write back to the
  * same files without re-prompting the user.
  *
- * CSV parsing uses Papa Parse with header inference + dynamic typing.
- * For the IMU file (~50k rows × 18 cols ≈ 9 MB) parsing finishes in
- * ~150 ms on a modern laptop — fast enough that a worker isn't worth
- * the IPC overhead. We can revisit if sessions grow > 30 min.
+ * v6 reads:
+ *   annotations/rep_segments.json           — truth (v6 obj or legacy array)
+ *   annotations/rep_segments.candidate.json — auto-segmenter candidates
+ *   annotations/non_rep_intervals.json      — operator-tagged non-rep spans
+ *
+ * Legacy v5 / v4 files are auto-upgraded to v6 in memory on load. They
+ * stay on disk in their original shape until the operator saves.
  */
 
 import Papa from "papaparse";
 import type {
   ImuRow,
   MarkerRow,
+  NonRepInterval,
   RepAnnotation,
+  RepSegmentsFileV6,
   SessionData,
   SessionInfo,
   VideoFrameRow,
 } from "../types/session";
-import { defaultSessionInfo, normalizeRep } from "./schemaDefaults";
+import { orientationOf } from "../types/session";
+import {
+  defaultSessionInfo,
+  normalizeRep,
+  normalizeSetInfo,
+} from "./schemaDefaults";
 
 async function readTextFile(
   dir: FileSystemDirectoryHandle,
@@ -63,8 +73,6 @@ function parseCsv<T>(text: string): T[] {
   return res.data;
 }
 
-/** Best-effort coercion of an IMU CSV row whose column names drifted
- *  across schema versions (pre/post the wallclock_time_base fix). */
 function coerceImuRow(raw: Record<string, number | string>): ImuRow {
   const num = (k: string, fb = 0) =>
     typeof raw[k] === "number" ? (raw[k] as number) : fb;
@@ -88,8 +96,6 @@ function coerceMarkerRow(raw: Record<string, number | string>): MarkerRow {
   const str = (k: string, fb = "") =>
     typeof raw[k] === "string" ? (raw[k] as string) : fb;
   return {
-    // Recorder writes `timestamp_s` (= unified) — older sessions may use
-    // monotonic. We trust the column name.
     unified_time_s: num("timestamp_s") || num("unified_time_s"),
     x_m: num("x_m"),
     y_m: num("y_m"),
@@ -116,16 +122,15 @@ function coerceVideoRow(raw: Record<string, number | string>): VideoFrameRow {
   };
 }
 
-/** Pre-2026-05-04 sessions wrote raw_imu.csv with unified_time_s = 0
- *  for every row. Recover it from the video index's mono → wall offset
- *  (median of `hw - host` over all frames is the device clock skew). */
 function backfillUnifiedFromVideoIndex(
   imu: ImuRow[],
   videoIdx: VideoFrameRow[],
   diag: { warnings: string[] }
 ) {
   if (!imu.length) return;
-  const hasEsp = imu.every((r) => Number.isFinite(r.esp_timestamp_us) && r.esp_timestamp_us > 0);
+  const hasEsp = imu.every(
+    (r) => Number.isFinite(r.esp_timestamp_us) && r.esp_timestamp_us > 0
+  );
   const badUnified = imu.some((r, i) => {
     if (i === 0) return false;
     const dt = r.unified_time_s - imu[i - 1].unified_time_s;
@@ -151,7 +156,6 @@ function backfillUnifiedFromVideoIndex(
     );
     return;
   }
-  // mono → wall offset
   const offsets = videoIdx
     .map((r) => r.hw_timestamp_s - r.host_timestamp_s)
     .sort((a, b) => a - b);
@@ -162,21 +166,78 @@ function backfillUnifiedFromVideoIndex(
   );
 }
 
+interface RepsParseResult {
+  reps: RepAnnotation[];
+  rejected: RepAnnotation[];
+  reviewPhase: SessionData["reviewPhase"];
+}
+
+/** Parse rep_segments.json which may be either v6 object form or legacy
+ *  bare-array form. Always returns the v6 in-memory shape. */
+function parseRepsJson(
+  text: string,
+  exercise: string,
+  orientationHint?: SessionData["exercise_orientation"]
+): RepsParseResult {
+  const parsed = JSON.parse(text);
+  const orientation = orientationHint ?? orientationOf(exercise);
+
+  if (Array.isArray(parsed)) {
+    // legacy bare array
+    return {
+      reps: parsed.map((r) => normalizeRep(r, orientation)),
+      rejected: [],
+      reviewPhase: "v0_auto",
+    };
+  }
+
+  const obj = parsed as Partial<RepSegmentsFileV6>;
+  const reps = (obj.reps ?? []).map((r) => normalizeRep(r, orientation));
+  const rejected = (obj.candidates_rejected ?? []).map((r) =>
+    normalizeRep(r, orientation)
+  );
+  const reviewPhase: SessionData["reviewPhase"] =
+    obj.review?.phase ?? "v0_auto";
+  return { reps, rejected, reviewPhase };
+}
+
+function parseNonRepIntervals(text: string): NonRepInterval[] {
+  try {
+    const parsed = JSON.parse(text);
+    const arr = Array.isArray(parsed) ? parsed : parsed?.intervals ?? [];
+    return (arr as Partial<NonRepInterval>[]).map((x) => ({
+      category: (x.category as NonRepInterval["category"]) ?? "operator_pause",
+      t_start: x.t_start ?? 0,
+      t_end: x.t_end ?? 0,
+      set_id: x.set_id ?? null,
+      notes: x.notes ?? "",
+      source: (x.source as NonRepInterval["source"]) ?? "operator",
+    }));
+  } catch {
+    return [];
+  }
+}
+
 export async function loadSession(
   dirHandle: FileSystemDirectoryHandle
 ): Promise<SessionData> {
   const diagnostics = { warnings: [] as string[], errors: [] as string[] };
+  const baseInfo = defaultSessionInfo();
   const data: SessionData = {
     dirHandle,
     dirName: dirHandle.name,
-    info: defaultSessionInfo(),
+    info: baseInfo,
     reps: [],
     candidateReps: [],
+    rejectedReps: [],
+    nonRepIntervals: [],
     imu: [],
     markers: [],
     videoIndex: [],
     videoBlobUrl: null,
     diagnostics,
+    exercise_orientation: "top_start",
+    reviewPhase: "v0_auto",
   };
 
   // metadata.json
@@ -187,12 +248,22 @@ export async function loadSession(
   }
   try {
     const parsed = JSON.parse(metaText) as Partial<SessionInfo>;
-    data.info = { ...defaultSessionInfo(), ...parsed } as SessionInfo;
+    const info = { ...defaultSessionInfo(), ...parsed } as SessionInfo;
+    info.sets = (parsed.sets ?? []).map((s, i) =>
+      normalizeSetInfo(s as Partial<SessionInfo["sets"][0]>, (s?.set_id ?? i + 1))
+    );
+    if (!info.exercise_orientation) {
+      info.exercise_orientation = orientationOf(info.exercise);
+    }
+    data.info = info;
+    data.exercise_orientation = info.exercise_orientation ?? "top_start";
   } catch (e) {
-    diagnostics.errors.push(`metadata.json parse failed: ${(e as Error).message}`);
+    diagnostics.errors.push(
+      `metadata.json parse failed: ${(e as Error).message}`
+    );
   }
 
-  // rep_segments.json
+  // rep_segments.json (truth)
   const repsText = await readTextFile(
     dirHandle,
     "annotations",
@@ -200,8 +271,22 @@ export async function loadSession(
   );
   if (repsText) {
     try {
-      const arr = JSON.parse(repsText) as Partial<RepAnnotation>[];
-      data.reps = arr.map((r) => normalizeRep(r));
+      const r = parseRepsJson(
+        repsText,
+        data.info.exercise,
+        data.exercise_orientation
+      );
+      data.reps = r.reps;
+      data.rejectedReps = r.rejected;
+      data.reviewPhase = r.reviewPhase;
+      const legacyDetected = r.reps.some(
+        (rep) => rep.edit_provenance.annotation_source === "migrated_v5"
+      );
+      if (legacyDetected) {
+        diagnostics.warnings.push(
+          `Loaded ${r.reps.length} legacy reps — migrated to v6 in memory. Save to persist.`
+        );
+      }
     } catch (e) {
       diagnostics.errors.push(
         `rep_segments.json parse failed: ${(e as Error).message}`
@@ -213,6 +298,7 @@ export async function loadSession(
     );
   }
 
+  // rep_segments.candidate.json (auto proposals)
   const candidateText = await readTextFile(
     dirHandle,
     "annotations",
@@ -220,8 +306,12 @@ export async function loadSession(
   );
   if (candidateText) {
     try {
-      const arr = JSON.parse(candidateText) as Partial<RepAnnotation>[];
-      data.candidateReps = arr.map((r) => normalizeRep(r));
+      const r = parseRepsJson(
+        candidateText,
+        data.info.exercise,
+        data.exercise_orientation
+      );
+      data.candidateReps = r.reps;
       diagnostics.warnings.push(
         `Loaded ${data.candidateReps.length} proposed reps from rep_segments.candidate.json.`
       );
@@ -230,6 +320,16 @@ export async function loadSession(
         `rep_segments.candidate.json parse failed: ${(e as Error).message}`
       );
     }
+  }
+
+  // non_rep_intervals.json
+  const nriText = await readTextFile(
+    dirHandle,
+    "annotations",
+    "non_rep_intervals.json"
+  );
+  if (nriText) {
+    data.nonRepIntervals = parseNonRepIntervals(nriText);
   }
 
   // raw_imu.csv
@@ -263,13 +363,15 @@ export async function loadSession(
 
   backfillUnifiedFromVideoIndex(data.imu, data.videoIndex, diagnostics);
 
-  // Try MJPEG .avi first (new sessions), fall back to legacy .mp4.
   const aviBlob = await readBinaryFile(dirHandle, "camera", "ir_video.avi");
-  const videoBlob = aviBlob ?? await readBinaryFile(dirHandle, "camera", "ir_video.mp4");
+  const videoBlob =
+    aviBlob ?? (await readBinaryFile(dirHandle, "camera", "ir_video.mp4"));
   if (videoBlob) {
     data.videoBlobUrl = URL.createObjectURL(videoBlob);
   } else {
-    diagnostics.warnings.push("camera/ir_video.avi (and .mp4) missing — no video preview.");
+    diagnostics.warnings.push(
+      "camera/ir_video.avi (and .mp4) missing — no video preview."
+    );
   }
 
   return data;

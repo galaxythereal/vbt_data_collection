@@ -171,11 +171,15 @@ export async function loadSessionByPath(dir: string): Promise<SessionData> {
     info: defaultSessionInfo(),
     reps: [],
     candidateReps: [],
+    rejectedReps: [],
+    nonRepIntervals: [],
     imu: [],
     markers: [],
     videoIndex: [],
     videoBlobUrl: null,
     diagnostics,
+    exercise_orientation: "top_start",
+    reviewPhase: "v0_auto",
   };
   // The persistence layer needs the full filesystem path on the Tauri
   // side (browser path uses dirHandle instead). Carry it as a side

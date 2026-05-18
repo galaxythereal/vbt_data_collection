@@ -26,8 +26,8 @@
  *    median, the synthesis is suppressed (that's the bar being walked back
  *    to the rack, not a rep).
  */
-import type { RepAnnotation } from "../types/session";
 import type { CleanedSignal } from "./cleanSignal";
+import type { LegacyRepShape } from "./repSegmentation";
 
 const BOTTOM_START = new Set([
   "snatch", "deadlift", "barbell_row", "pendlay_row", "bent_over_row",
@@ -86,6 +86,35 @@ export const defaultRepSegV2Config: RepSegV2Config = {
   top_start_synthetic_ecc_cap_s: 2.0,
   consistency_band: 0.35,
 };
+
+/** Preset names matching `scripts/rep_segmenter_v3.py --preset`. */
+export const SEG_PRESETS = ["standard", "sensitive", "strict", "gt_assisted"] as const;
+export type SegPreset = (typeof SEG_PRESETS)[number];
+
+/** Tune the segmenter for a named preset. Each click of the Toolbar's
+ *  "Re-segment" button cycles through these. */
+export function applyPresetV2(cfg: RepSegV2Config, preset: SegPreset): RepSegV2Config {
+  const c = { ...cfg };
+  switch (preset) {
+    case "sensitive":
+      c.min_rep_displacement_m *= 0.6;
+      c.min_concentric_peak_mps *= 0.6;
+      c.min_rep_duration_s *= 0.7;
+      c.prominence_fraction *= 0.6;
+      c.consistency_band = 0.55;
+      break;
+    case "strict":
+      c.min_rep_displacement_m *= 1.2;
+      c.min_concentric_peak_mps *= 1.2;
+      c.consistency_band = 0.20;
+      break;
+    case "gt_assisted":
+    case "standard":
+    default:
+      break;
+  }
+  return c;
+}
 
 type ExtType = "TOP" | "BOTTOM";
 interface Extremum { type: ExtType; t: number; pos: number; idx: number; }
@@ -231,7 +260,7 @@ export function segmentV2(
   sig: CleanedSignal,
   exercise: string,
   cfg: RepSegV2Config = defaultRepSegV2Config
-): RepAnnotation[] {
+): LegacyRepShape[] {
   const orientation = orientationFor(exercise);
   const extrema = findExtrema(sig, cfg);
   const stillness = findStillnessSpans(sig, cfg);
@@ -321,7 +350,7 @@ export function segmentV2(
 
   // Number accepted reps and emit
   let nextId = 1;
-  const out: RepAnnotation[] = [];
+  const out: LegacyRepShape[] = [];
   for (const c of cycles) {
     const accepted = c.gateAll;
     if (accepted) c.rep_id = nextId++;

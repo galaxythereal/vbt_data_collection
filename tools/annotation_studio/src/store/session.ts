@@ -1,46 +1,91 @@
 /**
- * Zustand store. Holds:
- *   • the loaded session (immutable except for reps + info edits)
- *   • playhead in unified seconds (single source of truth for time)
- *   • selection (rep id), drag state, view range, snap toggle
- *   • undo/redo stack of {reps, info} snapshots — pushed on every edit
- *   • dirty flags so the toolbar can light up Ctrl+S
+ * Zustand store. v6 schema. Holds:
+ *   • the loaded session (reps + info + non-rep intervals)
+ *   • playhead, view range, selection, drag state
+ *   • undo/redo stack of {reps, info, nonRepIntervals} snapshots
+ *   • dirty flags for save
+ *   • append-only annotation_log buffer (flushed on save)
  *
- * Edits go through actions (`updateRep`, `insertRep`, `deleteRep`,
- * `updateInfo`) that take a snapshot first, then mutate. This is the
- * one piece the C++ studio kept trying and failing — here it's natural
- * because we have a real reactive store underneath.
+ * Rep schema is orientation-aware (see docs/rep_schema_v6.md):
+ *   top_start:    pre_rep_hold → eccentric → bottom_dwell → concentric → top_dwell
+ *   bottom_start: pre_rep_hold → concentric → top_dwell  → eccentric → bottom_dwell
+ *
+ * Phase field NAMES are stable across orientations. Only their position
+ * in the chronological sequence changes.
+ *
+ * The 5 boundary handles a user can drag are the phase-end timestamps;
+ * each handle's name is the phase whose t_end it represents. The next
+ * phase in chronological order has its t_start mirror this handle, kept
+ * in sync via setBoundary's clamp logic.
  */
 import { create } from "zustand";
-import type { RepAnnotation, SessionData, SessionInfo } from "../types/session";
+import type {
+  AnnotationLogEntry,
+  ExerciseOrientation,
+  NonRepInterval,
+  PhaseSegment,
+  RepAnnotation,
+  RepCategory,
+  SessionData,
+  SessionInfo,
+  SetInfo,
+  Validity,
+} from "../types/session";
+import { chronologicalPhases } from "../types/session";
 
 interface UndoEntry {
   reps: RepAnnotation[];
   info: SessionInfo;
+  nonRepIntervals: NonRepInterval[];
 }
 
 /**
- * Punch-mode state. While active, hotkeys 1..5 stamp the current
- * playhead into one of the five canonical phase boundaries:
- *   1 = rest_before → concentric (also = previous rep's rest_end)
- *   2 = concentric → top_rest
- *   3 = top_rest   → eccentric
- *   4 = eccentric  → rest_after
- *   5 = rest_after end (= next rep's t0 OR session end)
+ * Punch-mode state. While active, hotkeys 1..5 stamp the playhead into
+ * one of five chronological boundaries.
  *
- * The wizard advances `expected` after every successful stamp. When all
- * 5 are captured we commit them as a new rep and reset for the next.
- * Operators who'd rather drag handles can ignore punch mode entirely.
+ * For top_start lifts (squat / bench / OHP):
+ *   1 = rep start (= pre_rep_hold_end = eccentric_start) — top of rack / start of descent
+ *   2 = eccentric_end (= bottom_dwell_start) — reached bottom
+ *   3 = bottom_dwell_end (= concentric_start) — bar starts ascending
+ *   4 = concentric_end (= top_dwell_start) — reached lockout
+ *   5 = top_dwell_end (rep ends, = next rep's #1)
+ *
+ * For bottom_start lifts (deadlift / row / clean):
+ *   1 = rep start (= pre_rep_hold_end = concentric_start) — bar leaves floor
+ *   2 = concentric_end (= top_dwell_start) — reached lockout
+ *   3 = top_dwell_end (= eccentric_start) — bar starts descending
+ *   4 = eccentric_end (= bottom_dwell_start) — bar touches floor
+ *   5 = bottom_dwell_end (rep ends, = next rep's #1)
  */
 export type PunchKey = 1 | 2 | 3 | 4 | 5;
 export interface PunchState {
   active: boolean;
-  /** Which key the operator should press next (highlighted in UI). */
   expected: PunchKey;
-  /** Frame stamps captured so far for the in-progress rep, in unified seconds. */
   stamps: Partial<Record<PunchKey, number>>;
-  /** Auto-advance the expected pointer after each stamp. */
   auto_advance: boolean;
+}
+
+export type HandleKind =
+  | "pre_rep_hold_end"
+  | "concentric_end"
+  | "top_dwell_end"
+  | "eccentric_end"
+  | "bottom_dwell_end";
+
+/** Phase field whose t_end is the given handle. */
+function phaseOfHandle(handle: HandleKind):
+  | "pre_rep_hold"
+  | "concentric"
+  | "top_dwell"
+  | "eccentric"
+  | "bottom_dwell" {
+  switch (handle) {
+    case "pre_rep_hold_end": return "pre_rep_hold";
+    case "concentric_end":   return "concentric";
+    case "top_dwell_end":    return "top_dwell";
+    case "eccentric_end":    return "eccentric";
+    case "bottom_dwell_end": return "bottom_dwell";
+  }
 }
 
 interface SessionStore {
@@ -52,32 +97,46 @@ interface SessionStore {
   playhead_t_s: number;
   view_t_min: number;
   view_t_max: number;
-  /** When true, the timeline is pinned to a per-rep window. */
   focused_rep_id: number | null;
 
   // Selection / interaction
   selected_rep_id: number | null;
   active_set_id: number | "all";
+  /** When true, only working categories are shown in the rep table. */
+  filter_working_only: boolean;
   snap_to_zero_cross: boolean;
 
-  // Drag bookkeeping (so all panels read it from one place)
+  // ── Human-aided seed-segment mode ──
+  /** When on, charts/timeline clicks call seedFromTime() instead of seek. */
+  seed_mode: boolean;
+  /** Most recent seed time (the clicked-on point). null = no seed yet. */
+  seed_time_s: number | null;
+  /** How many times the operator has clicked-to-seed in the current pass.
+   *  Used to progressively broaden the match tolerance: each click loosens. */
+  seed_click_count: number;
+
+  // Drag
   dragging: {
     rep_id: number;
     handle: HandleKind | "translate";
   } | null;
 
-  // Punch-stamp annotation state
+  // Punch mode
   punch: PunchState;
 
   // Dirty flags
   reps_dirty: boolean;
   meta_dirty: boolean;
+  intervals_dirty: boolean;
 
   // Undo
   undo_stack: UndoEntry[];
   redo_stack: UndoEntry[];
 
-  // Actions
+  // Annotation log (in-memory; flushed to annotation_log.jsonl on save)
+  pending_log: AnnotationLogEntry[];
+
+  // ── Actions ────────────────────────────────────────────────────
   setSession(s: SessionData | null): void;
   setPlayhead(t: number): void;
   setView(min: number, max: number): void;
@@ -87,9 +146,23 @@ interface SessionStore {
   setSelectedRep(id: number | null): void;
   setActiveSet(id: number | "all"): void;
   setSnap(b: boolean): void;
+  setFilterWorkingOnly(b: boolean): void;
+
+  // Seed mode
+  setSeedMode(on: boolean): void;
+  /** Operator clicked at t_unified — find the local extremum, build a
+   *  template, find all similar reps. Returns the count of reps found. */
+  seedFromTime(
+    t_unified: number,
+    matcher: (
+      seedT: number,
+      tolerance: number
+    ) => RepAnnotation[]
+  ): number;
+  resetSeedClicks(): void;
   setDragging(d: { rep_id: number; handle: HandleKind | "translate" } | null): void;
 
-  // Punch mode
+  // Punch
   punchToggle(): void;
   punchSetExpected(k: PunchKey): void;
   punchStampHere(): void;
@@ -100,42 +173,54 @@ interface SessionStore {
   undo(): void;
   redo(): void;
 
-  updateRep(rep_id: number, patch: Partial<RepAnnotation>): void;
-  /** Mutates a phase boundary with neighbour-clamping and collapsed-band carry. */
+  // Rep boundary editing
   setBoundary(rep_id: number, handle: HandleKind, t_unified: number): void;
-  insertRep(seed_t_unified: number): number; // returns new rep_id
-  replaceReps(reps: RepAnnotation[]): void;
-  deleteRep(rep_id: number): void;
-  /** Translate the entire rep by `dt` seconds, preserving phase durations. */
   translateRep(rep_id: number, dt: number): void;
-  /** Cleave a rep at `t_unified`. Phases on the left stay; right half
-   *  becomes a new rep. The split point becomes the right rep's
-   *  concentric.t_start. */
+  insertRep(seed_t_unified: number): number;
+  deleteRep(rep_id: number): void;
   splitRep(rep_id: number, t_unified: number): number | null;
-  /** Merge `rep_id` with the rep immediately following it. The merged
-   *  rep keeps the first rep's concentric.t_start and the second rep's
-   *  rest.t_end; intermediate boundaries are heuristically averaged. */
   mergeWithNext(rep_id: number): void;
-  /** Re-order rep_ids so they ascend with concentric.t_start, fixing
-   *  the contract that consecutive reps share boundaries. */
-  enforce5PhaseContract(): void;
-  updateInfo(patch: Partial<SessionInfo>): void;
+  replaceReps(reps: RepAnnotation[]): void;
+  enforcePhaseContract(): void;
   renumberRepsSequential(): void;
+  updateRep(rep_id: number, patch: Partial<RepAnnotation>): void;
+
+  // v6 rep labelling
+  setRepCategory(rep_id: number, category: RepCategory): void;
+  setRepValidity(rep_id: number, validity: Validity, reason?: string | null): void;
+  setRepReviewed(rep_id: number, reviewed: boolean): void;
+  toggleRepReviewed(rep_id: number): void;
+  setRepGrinder(rep_id: number, is_grinder: boolean): void;
+  setRepPaused(rep_id: number, is_paused: boolean): void;
+
+  // Non-rep intervals
+  addNonRepInterval(it: NonRepInterval): void;
+  removeNonRepInterval(idx: number): void;
+  updateNonRepInterval(idx: number, patch: Partial<NonRepInterval>): void;
+
+  // Set-level
+  updateSetInfo(set_id: number, patch: Partial<SetInfo>): void;
+
+  // Session-level
+  updateInfo(patch: Partial<SessionInfo>): void;
+  setReviewPhase(phase: SessionData["reviewPhase"]): void;
 
   clearDirty(): void;
+  takePendingLog(): AnnotationLogEntry[];
 
   setLoading(b: boolean): void;
   setLoadError(e: string | null): void;
 }
 
-export type HandleKind =
-  | "concentric_start"
-  | "concentric_end"
-  | "top_rest_end"
-  | "eccentric_end"
-  | "rest_end";
-
 const MAX_UNDO = 64;
+
+function nowIso(): string {
+  return new Date().toISOString();
+}
+
+function logEntry(action: string, extra: Record<string, unknown>): AnnotationLogEntry {
+  return { t_iso: nowIso(), actor: "operator@studio", action, ...extra };
+}
 
 export const useSessionStore = create<SessionStore>((set, get) => ({
   session: null,
@@ -148,13 +233,19 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
   focused_rep_id: null,
   selected_rep_id: null,
   active_set_id: "all",
+  filter_working_only: false,
   snap_to_zero_cross: true,
+  seed_mode: false,
+  seed_time_s: null,
+  seed_click_count: 0,
   dragging: null,
   punch: { active: false, expected: 1, stamps: {}, auto_advance: true },
   reps_dirty: false,
   meta_dirty: false,
+  intervals_dirty: false,
   undo_stack: [],
   redo_stack: [],
+  pending_log: [],
 
   setSession(s) {
     if (!s) {
@@ -167,14 +258,18 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
         focused_rep_id: null,
         undo_stack: [],
         redo_stack: [],
+        pending_log: [],
         reps_dirty: false,
         meta_dirty: false,
+        intervals_dirty: false,
       });
       return;
     }
     const imuT0 = s.imu.length ? s.imu[0].unified_time_s : 0;
-    const imuT1 = s.imu.length ? s.imu[s.imu.length - 1].unified_time_s : imuT0 + 1;
-    const repTimes = s.reps.flatMap((r) => [r.concentric.t_start, r.rest.t_end]);
+    const imuT1 = s.imu.length
+      ? s.imu[s.imu.length - 1].unified_time_s
+      : imuT0 + 1;
+    const repTimes = s.reps.flatMap((r) => repBoundsArr(r, s.exercise_orientation));
     const t0 = repTimes.length ? Math.min(imuT0, ...repTimes) : imuT0;
     const t1 = repTimes.length ? Math.max(imuT1, ...repTimes) : imuT1;
     set({
@@ -187,8 +282,10 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       active_set_id: "all",
       undo_stack: [],
       redo_stack: [],
+      pending_log: [],
       reps_dirty: false,
       meta_dirty: false,
+      intervals_dirty: false,
     });
   },
 
@@ -199,15 +296,22 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
     const s = get().session;
     if (!s) return;
     const imuT0 = s.imu.length ? s.imu[0].unified_time_s : 0;
-    const imuT1 = s.imu.length ? s.imu[s.imu.length - 1].unified_time_s : imuT0 + 1;
-    const repTimes = s.reps.flatMap((r) => [r.concentric.t_start, r.rest.t_end]);
+    const imuT1 = s.imu.length
+      ? s.imu[s.imu.length - 1].unified_time_s
+      : imuT0 + 1;
+    const repTimes = s.reps.flatMap((r) =>
+      repBoundsArr(r, s.exercise_orientation)
+    );
     const t0 = repTimes.length ? Math.min(imuT0, ...repTimes) : imuT0;
     const t1 = repTimes.length ? Math.max(imuT1, ...repTimes) : imuT1;
     set({ view_t_min: t0, view_t_max: t1, focused_rep_id: null });
   },
   fitRep(rep, paddingFrac = 0.2) {
-    const t0 = rep.concentric.t_start;
-    const t1 = rep.rest.t_end;
+    const s = get().session;
+    const orient = s?.exercise_orientation ?? "top_start";
+    const phases = chronologicalPhases(orient);
+    const t0 = rep[phases[0]].t_start;
+    const t1 = rep[phases[phases.length - 1]].t_end;
     const span = Math.max(0.4, t1 - t0);
     const pad = span * paddingFrac;
     set({
@@ -219,7 +323,36 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
   setSelectedRep: (id) => set({ selected_rep_id: id }),
   setActiveSet: (id) => set({ active_set_id: id }),
   setSnap: (b) => set({ snap_to_zero_cross: b }),
+  setFilterWorkingOnly: (b) => set({ filter_working_only: b }),
   setDragging: (d) => set({ dragging: d }),
+
+  setSeedMode(on) {
+    set({
+      seed_mode: on,
+      ...(on ? {} : { seed_time_s: null, seed_click_count: 0 }),
+    });
+  },
+  resetSeedClicks() {
+    set({ seed_click_count: 0, seed_time_s: null });
+  },
+  seedFromTime(t_unified, matcher) {
+    const st = get();
+    const sess = st.session;
+    if (!sess) return 0;
+    st.pushUndo();
+    // Each click loosens the match tolerance: 0.15 → 0.25 → 0.40 → 0.55
+    const click_count = st.seed_click_count + 1;
+    const tolerance = Math.min(0.55, 0.15 + 0.13 * (click_count - 1));
+    const matched = matcher(t_unified, tolerance);
+    set({
+      session: { ...sess, reps: matched },
+      reps_dirty: true,
+      seed_time_s: t_unified,
+      seed_click_count: click_count,
+      selected_rep_id: matched.length ? matched[0].rep_id : null,
+    });
+    return matched.length;
+  },
 
   pushUndo() {
     const s = get().session;
@@ -227,6 +360,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
     const entry: UndoEntry = {
       reps: cloneReps(s.reps),
       info: cloneInfo(s.info),
+      nonRepIntervals: s.nonRepIntervals.map((x) => ({ ...x })),
     };
     set((st) => {
       const u = st.undo_stack.slice(-MAX_UNDO + 1);
@@ -241,14 +375,20 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
     const cur: UndoEntry = {
       reps: cloneReps(st.session.reps),
       info: cloneInfo(st.session.info),
+      nonRepIntervals: st.session.nonRepIntervals.map((x) => ({ ...x })),
     };
-    const newSession: SessionData = { ...st.session, reps: top.reps, info: top.info };
     set({
-      session: newSession,
+      session: {
+        ...st.session,
+        reps: top.reps,
+        info: top.info,
+        nonRepIntervals: top.nonRepIntervals,
+      },
       undo_stack: st.undo_stack.slice(0, -1),
       redo_stack: [...st.redo_stack, cur],
       reps_dirty: true,
       meta_dirty: true,
+      intervals_dirty: true,
     });
   },
   redo() {
@@ -258,151 +398,183 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
     const cur: UndoEntry = {
       reps: cloneReps(st.session.reps),
       info: cloneInfo(st.session.info),
+      nonRepIntervals: st.session.nonRepIntervals.map((x) => ({ ...x })),
     };
-    const newSession: SessionData = { ...st.session, reps: top.reps, info: top.info };
     set({
-      session: newSession,
+      session: {
+        ...st.session,
+        reps: top.reps,
+        info: top.info,
+        nonRepIntervals: top.nonRepIntervals,
+      },
       redo_stack: st.redo_stack.slice(0, -1),
       undo_stack: [...st.undo_stack, cur],
       reps_dirty: true,
       meta_dirty: true,
+      intervals_dirty: true,
     });
-  },
-
-  updateRep(rep_id, patch) {
-    const st = get();
-    if (!st.session) return;
-    const reps = st.session.reps.map((r) =>
-      r.rep_id === rep_id ? { ...r, ...patch } : r
-    );
-    set({ session: { ...st.session, reps }, reps_dirty: true });
   },
 
   setBoundary(rep_id, handle, t_in) {
     const st = get();
-    if (!st.session) return;
-    const reps = cloneReps(st.session.reps);
+    const sess = st.session;
+    if (!sess) return;
+    const orientation = sess.exercise_orientation;
+    const phaseSeq = chronologicalPhases(orientation);
+    const reps = cloneReps(sess.reps);
     const i = reps.findIndex((r) => r.rep_id === rep_id);
     if (i < 0) return;
     const r = reps[i];
 
+    // Build a chronologically-ordered list of t-values: rep_start, then
+    // each phase's t_end.
+    const ts: number[] = [r[phaseSeq[0]].t_start];
+    for (const p of phaseSeq) ts.push(r[p].t_end);
+    // ts[0] = rep_start, ts[1..5] = phase ends in chronological order
+    // Map handle → which index in ts changes.
+    const handlePhase = phaseOfHandle(handle);
+    const handleIdx = phaseSeq.indexOf(handlePhase) + 1; // +1 because ts[0] is rep_start
+
+    ts[handleIdx] = t_in;
+
+    // Enforce monotonicity with a 50 ms minimum phase duration.
+    const MIN_PHASE = 0.05;
+    // Forward pass: clamp to be >= previous + (0 or MIN_PHASE)
+    // Only enforce MIN_PHASE on the phase the user just edited.
+    for (let k = 1; k < ts.length; ++k) {
+      const minGap = k === handleIdx ? MIN_PHASE : 0;
+      if (ts[k] < ts[k - 1] + minGap) ts[k] = ts[k - 1] + minGap;
+    }
+    // Backward pass for handles other than the very last.
+    for (let k = ts.length - 2; k >= 1; --k) {
+      // Don't push our edited handle back; only later handles.
+      if (k < handleIdx) {
+        if (ts[k] > ts[k + 1]) ts[k] = ts[k + 1];
+      }
+    }
+
+    // Clamp to neighbours.
     const prev = i > 0 ? reps[i - 1] : null;
     const next = i < reps.length - 1 ? reps[i + 1] : null;
-
-    // Rep phase timestamps
-    let t0 = r.concentric.t_start;
-    let t1 = r.concentric.t_end;
-    let t2 = r.top_rest.t_end;
-    let t3 = r.eccentric.t_end;
-    let t4 = r.rest.t_end;
-
-    const MIN_PHASE = 0.05;
-
-    // Apply the dragged target
-    switch (handle) {
-      case "concentric_start": t0 = t_in; break;
-      case "concentric_end": t1 = t_in; break;
-      case "top_rest_end": t2 = t_in; break;
-      case "eccentric_end": t3 = t_in; break;
-      case "rest_end": t4 = t_in; break;
+    const repStart = ts[0];
+    const repEnd = ts[ts.length - 1];
+    const lo = prev
+      ? prev[phaseSeq[phaseSeq.length - 1]].t_end + 0.001
+      : -Infinity;
+    const hi = next ? next[phaseSeq[0]].t_start - 0.001 : Infinity;
+    if (repStart < lo) {
+      const shift = lo - repStart;
+      for (let k = 0; k < ts.length; ++k) ts[k] += shift;
+    }
+    if (repEnd > hi) {
+      const shift = repEnd - hi;
+      for (let k = 0; k < ts.length; ++k) ts[k] -= shift;
+      if (ts[0] < lo) ts[0] = lo;
     }
 
-    // Resolve internal constraints moving out from the dragged handle
-    if (handle === "concentric_start") {
-      if (t1 < t0 + MIN_PHASE) t1 = t0 + MIN_PHASE;
-      if (t2 < t1) t2 = t1;
-      if (t3 < t2 + MIN_PHASE) t3 = t2 + MIN_PHASE;
-      if (t4 < t3) t4 = t3;
-    } else if (handle === "concentric_end") {
-      if (t0 > t1 - MIN_PHASE) t0 = t1 - MIN_PHASE;
-      if (t2 < t1) t2 = t1;
-      if (t3 < t2 + MIN_PHASE) t3 = t2 + MIN_PHASE;
-      if (t4 < t3) t4 = t3;
-    } else if (handle === "top_rest_end") {
-      if (t1 > t2) t1 = t2;
-      if (t0 > t1 - MIN_PHASE) t0 = t1 - MIN_PHASE;
-      if (t3 < t2 + MIN_PHASE) t3 = t2 + MIN_PHASE;
-      if (t4 < t3) t4 = t3;
-    } else if (handle === "eccentric_end") {
-      if (t2 > t3 - MIN_PHASE) t2 = t3 - MIN_PHASE;
-      if (t1 > t2) t1 = t2;
-      if (t0 > t1 - MIN_PHASE) t0 = t1 - MIN_PHASE;
-      if (t4 < t3) t4 = t3;
-    } else if (handle === "rest_end") {
-      if (t3 > t4) t3 = t4;
-      if (t2 > t3 - MIN_PHASE) t2 = t3 - MIN_PHASE;
-      if (t1 > t2) t1 = t2;
-      if (t0 > t1 - MIN_PHASE) t0 = t1 - MIN_PHASE;
+    // Write back.
+    const beforeT = sess.reps[i][handlePhase].t_end;
+    r[phaseSeq[0]].t_start = ts[0];
+    for (let k = 0; k < phaseSeq.length; ++k) {
+      const p = phaseSeq[k];
+      const startIdx = k;
+      const endIdx = k + 1;
+      r[p].t_start = ts[startIdx];
+      r[p].t_end = ts[endIdx];
     }
-
-    // Global limits against adjacent reps
-    const limitLo = prev ? prev.rest.t_end + 0.001 : -Infinity;
-    const limitHi = next ? next.concentric.t_start - 0.001 : Infinity;
-
-    // If pushing violated adjacent rep limits, shift the block back
-    if (t0 < limitLo) {
-      const shift = limitLo - t0;
-      t0 += shift; t1 += shift; t2 += shift; t3 += shift; t4 += shift;
-    }
-    if (t4 > limitHi) {
-      const shift = t4 - limitHi;
-      t4 -= shift; t3 -= shift; t2 -= shift; t1 -= shift; t0 -= shift;
-      // Hard clamp if there isn't enough space for the whole rep
-      if (t0 < limitLo) t0 = limitLo;
-    }
-
-    r.concentric.t_start = t0;
-    r.concentric.t_end = t1;
-    r.top_rest.t_start = t1;
-    r.top_rest.t_end = t2;
-    r.eccentric.t_start = t2;
-    r.eccentric.t_end = t3;
-    r.rest.t_start = t3;
-    r.rest.t_end = t4;
+    recomputeDwellMs(r);
+    bumpProvenance(r);
     reps[i] = r;
-    set({ session: { ...st.session, reps }, reps_dirty: true });
+
+    set({
+      session: { ...sess, reps },
+      reps_dirty: true,
+      pending_log: [
+        ...st.pending_log,
+        logEntry("rep.boundary_set", {
+          rep_id,
+          handle,
+          before: { t: beforeT },
+          after: { t: ts[handleIdx] },
+        }),
+      ],
+    });
+  },
+
+  translateRep(rep_id, dt) {
+    const st = get();
+    const sess = st.session;
+    if (!sess) return;
+    const orientation = sess.exercise_orientation;
+    const phaseSeq = chronologicalPhases(orientation);
+    const reps = cloneReps(sess.reps);
+    const i = reps.findIndex((r) => r.rep_id === rep_id);
+    if (i < 0) return;
+    const r = reps[i];
+    const repStart = r[phaseSeq[0]].t_start;
+    const repEnd = r[phaseSeq[phaseSeq.length - 1]].t_end;
+    const lo = i > 0
+      ? reps[i - 1][phaseSeq[phaseSeq.length - 1]].t_end - repStart + 0.001
+      : -Infinity;
+    const hi = i < reps.length - 1
+      ? reps[i + 1][phaseSeq[0]].t_start - repEnd - 0.001
+      : Infinity;
+    const dtc = Math.min(Math.max(dt, lo), hi);
+    for (const p of phaseSeq) {
+      r[p].t_start += dtc;
+      r[p].t_end += dtc;
+    }
+    recomputeDwellMs(r);
+    bumpProvenance(r);
+    set({ session: { ...sess, reps }, reps_dirty: true });
   },
 
   insertRep(seed_t) {
     const st = get();
-    if (!st.session) return -1;
-    const reps = cloneReps(st.session.reps);
-    // 1.2-second default span centred on seed_t.
-    const W = 1.2;
-    const conc_start = seed_t - W / 2;
-    const conc_end = seed_t - W / 4;
-    const top_end = conc_end;
-    const ecc_end = seed_t + W / 4;
-    const rest_end = seed_t + W / 2;
-    // Find insertion position; keep reps sorted by conc_start.
-    let i = 0;
-    while (i < reps.length && reps[i].concentric.t_start < conc_start) ++i;
+    const sess = st.session;
+    if (!sess) return -1;
+    const orientation = sess.exercise_orientation;
+    const reps = cloneReps(sess.reps);
     const new_id = reps.length ? Math.max(...reps.map((r) => r.rep_id)) + 1 : 1;
-    const set_id = i > 0 ? reps[i - 1].set_id : 1;
-    reps.splice(i, 0, {
-      rep_id: new_id,
-      set_id,
-      concentric: { t_start: conc_start, t_end: conc_end, source: "manual" },
-      top_rest: { t_start: conc_end, t_end: top_end, source: "manual" },
-      eccentric: { t_start: top_end, t_end: ecc_end, source: "manual" },
-      rest: { t_start: ecc_end, t_end: rest_end, source: "manual" },
-      mean_concentric_velocity: 0,
-      peak_concentric_velocity: 0,
-      rom_m: 0,
-      // Manually-inserted reps are by definition operator-confirmed,
-      // so they get full confidence (the operator vouched for them).
-      confidence: 1,
+    const set_id =
+      st.active_set_id !== "all"
+        ? (st.active_set_id as number)
+        : reps.length
+          ? reps[reps.length - 1].set_id
+          : 1;
+
+    // 1.5 s default span centred on seed_t, divided into 5 phases.
+    const W = 1.5;
+    const t0 = seed_t - W / 2;
+    const tStep = W / 5;
+    const phaseSeq = chronologicalPhases(orientation);
+    const newRep: RepAnnotation = blankRep(new_id, set_id, t0, tStep, phaseSeq);
+    // Insert in chronological order.
+    let insertAt = 0;
+    while (
+      insertAt < reps.length &&
+      reps[insertAt][phaseSeq[0]].t_start < newRep[phaseSeq[0]].t_start
+    )
+      ++insertAt;
+    reps.splice(insertAt, 0, newRep);
+
+    set({
+      session: { ...sess, reps },
+      reps_dirty: true,
+      selected_rep_id: new_id,
+      pending_log: [...st.pending_log, logEntry("rep.insert", { rep_id: new_id })],
     });
-    set({ session: { ...st.session, reps }, reps_dirty: true, selected_rep_id: new_id });
     return new_id;
   },
 
   replaceReps(reps) {
     const st = get();
     if (!st.session) return;
+    const orient = st.session.exercise_orientation;
+    const phaseSeq = chronologicalPhases(orient);
     const next = reps
       .slice()
-      .sort((a, b) => a.concentric.t_start - b.concentric.t_start)
+      .sort((a, b) => a[phaseSeq[0]].t_start - b[phaseSeq[0]].t_start)
       .map((r, i) => ({ ...r, rep_id: i + 1 }));
     set({
       session: { ...st.session, reps: next },
@@ -413,176 +585,361 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
 
   deleteRep(rep_id) {
     const st = get();
-    if (!st.session) return;
-    const reps = st.session.reps.filter((r) => r.rep_id !== rep_id);
+    const sess = st.session;
+    if (!sess) return;
+    const before = sess.reps.find((r) => r.rep_id === rep_id);
+    const reps = sess.reps.filter((r) => r.rep_id !== rep_id);
     set({
-      session: { ...st.session, reps },
+      session: { ...sess, reps },
       reps_dirty: true,
       selected_rep_id: reps.length ? reps[0].rep_id : null,
+      pending_log: [
+        ...st.pending_log,
+        logEntry("rep.delete", { rep_id, before_rep: before }),
+      ],
     });
-  },
-
-  updateInfo(patch) {
-    const st = get();
-    if (!st.session) return;
-    set({
-      session: { ...st.session, info: { ...st.session.info, ...patch } },
-      meta_dirty: true,
-    });
-  },
-
-  renumberRepsSequential() {
-    const st = get();
-    if (!st.session) return;
-    const reps = st.session.reps
-      .slice()
-      .sort((a, b) => a.concentric.t_start - b.concentric.t_start)
-      .map((r, i) => ({ ...r, rep_id: i + 1 }));
-    set({ session: { ...st.session, reps }, reps_dirty: true });
-  },
-
-  translateRep(rep_id, dt) {
-    const st = get();
-    if (!st.session) return;
-    const reps = cloneReps(st.session.reps);
-    const i = reps.findIndex((r) => r.rep_id === rep_id);
-    if (i < 0) return;
-    const r = reps[i];
-    // Clamp dt so we don't cross a neighbour.
-    const lo = i > 0 ? reps[i - 1].rest.t_end - r.concentric.t_start + 0.001 : -Infinity;
-    const hi = i < reps.length - 1 ? reps[i + 1].concentric.t_start - r.rest.t_end - 0.001 : Infinity;
-    const dtc = Math.min(Math.max(dt, lo), hi);
-    for (const seg of [r.concentric, r.top_rest, r.eccentric, r.rest]) {
-      seg.t_start += dtc;
-      seg.t_end += dtc;
-    }
-    set({ session: { ...st.session, reps }, reps_dirty: true });
   },
 
   splitRep(rep_id, t_unified) {
     const st = get();
-    if (!st.session) return null;
-    const reps = cloneReps(st.session.reps);
+    const sess = st.session;
+    if (!sess) return null;
+    const orientation = sess.exercise_orientation;
+    const phaseSeq = chronologicalPhases(orientation);
+    const reps = cloneReps(sess.reps);
     const i = reps.findIndex((r) => r.rep_id === rep_id);
     if (i < 0) return null;
     const r = reps[i];
-    if (t_unified <= r.concentric.t_start + 0.05 ||
-        t_unified >= r.rest.t_end - 0.05) {
-      return null;
+    const repStart = r[phaseSeq[0]].t_start;
+    const repEnd = r[phaseSeq[phaseSeq.length - 1]].t_end;
+    if (t_unified <= repStart + 0.05 || t_unified >= repEnd - 0.05) return null;
+
+    // Left half: keep r but truncate its last phase to end at t_unified.
+    const left = r;
+    const lastPhase = phaseSeq[phaseSeq.length - 1];
+    left[lastPhase].t_end = t_unified;
+    // Ensure all of left's phases remain monotone.
+    for (let k = 0; k < phaseSeq.length - 1; ++k) {
+      if (left[phaseSeq[k]].t_end > t_unified)
+        left[phaseSeq[k]].t_end = t_unified;
+      if (left[phaseSeq[k + 1]].t_start > t_unified)
+        left[phaseSeq[k + 1]].t_start = t_unified;
     }
-    // Build the right half. Phases on the right of t_unified become the
-    // new rep. Anything entirely on the left stays in `r`. The phase
-    // straddling t_unified is split into two halves.
-    const left: RepAnnotation = { ...r, rest: { ...r.rest } };
+    recomputeDwellMs(left);
+
+    // Right half: blank rep from t_unified to original repEnd.
     const new_id = Math.max(...reps.map((x) => x.rep_id)) + 1;
-    const right: RepAnnotation = {
-      rep_id: new_id,
-      set_id: r.set_id,
-      concentric: { t_start: t_unified, t_end: t_unified + 0.05, source: "manual" },
-      top_rest:   { t_start: t_unified + 0.05, t_end: t_unified + 0.05, source: "manual" },
-      eccentric:  { t_start: t_unified + 0.05, t_end: t_unified + 0.10, source: "manual" },
-      rest:       { t_start: t_unified + 0.10, t_end: r.rest.t_end, source: "manual" },
-      mean_concentric_velocity: 0,
-      peak_concentric_velocity: 0,
-      rom_m: 0,
-      // Manual split — the operator explicitly created this rep, so
-      // it inherits full confidence regardless of the source it split from.
-      confidence: 1,
-    };
-    // Truncate the left rep at t_unified — its rest now ends at t_unified.
-    left.rest.t_end = t_unified;
-    if (left.rest.t_start > left.rest.t_end) left.rest.t_start = left.rest.t_end;
+    const span = Math.max(0.25, repEnd - t_unified);
+    const tStep = span / phaseSeq.length;
+    const right = blankRep(new_id, r.set_id, t_unified, tStep, phaseSeq);
+    // Stretch the last phase to land on repEnd.
+    right[phaseSeq[phaseSeq.length - 1]].t_end = repEnd;
+    recomputeDwellMs(right);
+
     reps.splice(i, 1, left, right);
     set({
-      session: { ...st.session, reps },
+      session: { ...sess, reps },
       reps_dirty: true,
       selected_rep_id: new_id,
+      pending_log: [
+        ...st.pending_log,
+        logEntry("rep.split", { rep_id, at_t: t_unified, new_rep_id: new_id }),
+      ],
     });
     return new_id;
   },
 
   mergeWithNext(rep_id) {
     const st = get();
-    if (!st.session) return;
-    const reps = cloneReps(st.session.reps);
+    const sess = st.session;
+    if (!sess) return;
+    const orientation = sess.exercise_orientation;
+    const phaseSeq = chronologicalPhases(orientation);
+    const reps = cloneReps(sess.reps);
     const i = reps.findIndex((r) => r.rep_id === rep_id);
     if (i < 0 || i + 1 >= reps.length) return;
     const a = reps[i];
     const b = reps[i + 1];
-    // Keep a's concentric.t_start, b's rest.t_end, then redistribute
-    // the middle boundaries by the durations of a's phases (heuristic
-    // but predictable — operator can drag-fix afterwards).
-    const span = b.rest.t_end - a.concentric.t_start;
-    const orig_a_span = a.rest.t_end - a.concentric.t_start;
-    const k = orig_a_span > 0 ? span / orig_a_span : 1;
-    const merged: RepAnnotation = {
-      rep_id: a.rep_id,
-      set_id: a.set_id,
-      concentric: {
-        t_start: a.concentric.t_start,
-        t_end: a.concentric.t_start + (a.concentric.t_end - a.concentric.t_start) * k,
-        source: "manual",
-      },
-      top_rest: { t_start: 0, t_end: 0, source: "manual" },
-      eccentric: { t_start: 0, t_end: 0, source: "manual" },
-      rest: { t_start: 0, t_end: b.rest.t_end, source: "manual" },
-      mean_concentric_velocity: 0,
-      peak_concentric_velocity: 0,
-      rom_m: 0,
-      confidence: 1,
-    };
-    merged.top_rest.t_start = merged.concentric.t_end;
-    merged.top_rest.t_end =
-      merged.top_rest.t_start + (a.top_rest.t_end - a.top_rest.t_start) * k;
-    merged.eccentric.t_start = merged.top_rest.t_end;
-    merged.eccentric.t_end =
-      merged.eccentric.t_start + (a.eccentric.t_end - a.eccentric.t_start) * k;
-    merged.rest.t_start = merged.eccentric.t_end;
-    reps.splice(i, 2, merged);
+    const repStart = a[phaseSeq[0]].t_start;
+    const repEnd = b[phaseSeq[phaseSeq.length - 1]].t_end;
+    const span = repEnd - repStart;
+    // Redistribute boundaries by the merged span proportional to a's phases.
+    const aSpan = a[phaseSeq[phaseSeq.length - 1]].t_end - repStart;
+    const k = aSpan > 0 ? span / aSpan : 1;
+    let cursor = repStart;
+    for (const p of phaseSeq) {
+      const dur = (a[p].t_end - a[p].t_start) * k;
+      a[p].t_start = cursor;
+      a[p].t_end = cursor + dur;
+      cursor = a[p].t_end;
+    }
+    a[phaseSeq[phaseSeq.length - 1]].t_end = repEnd;
+    recomputeDwellMs(a);
+    bumpProvenance(a);
+    reps.splice(i, 2, a);
     set({
-      session: { ...st.session, reps },
+      session: { ...sess, reps },
       reps_dirty: true,
-      selected_rep_id: merged.rep_id,
+      selected_rep_id: a.rep_id,
+      pending_log: [
+        ...st.pending_log,
+        logEntry("rep.merge", { rep_id, merged_with: b.rep_id }),
+      ],
     });
   },
 
-  enforce5PhaseContract() {
+  enforcePhaseContract() {
     const st = get();
-    if (!st.session) return;
-    const reps = cloneReps(st.session.reps).sort(
-      (a, b) => a.concentric.t_start - b.concentric.t_start
+    const sess = st.session;
+    if (!sess) return;
+    const orientation = sess.exercise_orientation;
+    const phaseSeq = chronologicalPhases(orientation);
+    const reps = cloneReps(sess.reps).sort(
+      (a, b) => a[phaseSeq[0]].t_start - b[phaseSeq[0]].t_start
     );
-    // Stitch consecutive reps so rep[i].rest.t_end == rep[i+1].concentric.t_start.
-    for (let i = 0; i < reps.length - 1; ++i) {
-      const a = reps[i];
-      const b = reps[i + 1];
-      if (a.rest.t_end > b.concentric.t_start) {
-        // overlap — clip a.rest to start of b
-        a.rest.t_end = b.concentric.t_start;
-        if (a.rest.t_start > a.rest.t_end) a.rest.t_start = a.rest.t_end;
-      }
-      // If there's a gap, pull a.rest.t_end forward to meet b.
-      if (a.rest.t_end < b.concentric.t_start) {
-        a.rest.t_end = b.concentric.t_start;
-      }
-    }
-    // Also ensure each rep's own boundaries are monotone.
     for (const r of reps) {
-      if (r.concentric.t_end < r.concentric.t_start)
-        r.concentric.t_end = r.concentric.t_start + 0.01;
-      if (r.top_rest.t_start !== r.concentric.t_end)
-        r.top_rest.t_start = r.concentric.t_end;
-      if (r.top_rest.t_end < r.top_rest.t_start)
-        r.top_rest.t_end = r.top_rest.t_start;
-      if (r.eccentric.t_start !== r.top_rest.t_end)
-        r.eccentric.t_start = r.top_rest.t_end;
-      if (r.eccentric.t_end < r.eccentric.t_start)
-        r.eccentric.t_end = r.eccentric.t_start + 0.01;
-      if (r.rest.t_start !== r.eccentric.t_end)
-        r.rest.t_start = r.eccentric.t_end;
-      if (r.rest.t_end < r.rest.t_start) r.rest.t_end = r.rest.t_start;
+      // Make every phase monotone and chained.
+      for (let k = 0; k < phaseSeq.length; ++k) {
+        const p = phaseSeq[k];
+        if (r[p].t_end < r[p].t_start) r[p].t_end = r[p].t_start;
+        if (k + 1 < phaseSeq.length) {
+          r[phaseSeq[k + 1]].t_start = r[p].t_end;
+        }
+      }
+      recomputeDwellMs(r);
     }
-    set({ session: { ...st.session, reps }, reps_dirty: true });
+    for (let i = 0; i < reps.length - 1; ++i) {
+      const aEnd = reps[i][phaseSeq[phaseSeq.length - 1]].t_end;
+      const bStart = reps[i + 1][phaseSeq[0]].t_start;
+      if (aEnd > bStart) {
+        reps[i][phaseSeq[phaseSeq.length - 1]].t_end = bStart;
+      }
+    }
+    set({ session: { ...sess, reps }, reps_dirty: true });
+  },
+
+  renumberRepsSequential() {
+    const st = get();
+    const sess = st.session;
+    if (!sess) return;
+    const orientation = sess.exercise_orientation;
+    const phaseSeq = chronologicalPhases(orientation);
+    const reps = sess.reps
+      .slice()
+      .sort((a, b) => a[phaseSeq[0]].t_start - b[phaseSeq[0]].t_start)
+      .map((r, i) => ({ ...r, rep_id: i + 1 }));
+    set({ session: { ...sess, reps }, reps_dirty: true });
+  },
+
+  updateRep(rep_id, patch) {
+    const st = get();
+    const sess = st.session;
+    if (!sess) return;
+    const reps = sess.reps.map((r) =>
+      r.rep_id === rep_id ? bumpProvenance({ ...r, ...patch }) : r
+    );
+    set({ session: { ...sess, reps }, reps_dirty: true });
+  },
+
+  // ── v6 rep labelling ───────────────────────────────────────────
+  setRepCategory(rep_id, category) {
+    const st = get();
+    const sess = st.session;
+    if (!sess) return;
+    const before = sess.reps.find((r) => r.rep_id === rep_id)?.category;
+    const reps = sess.reps.map((r) =>
+      r.rep_id === rep_id ? bumpProvenance({ ...r, category }) : r
+    );
+    set({
+      session: { ...sess, reps },
+      reps_dirty: true,
+      pending_log: [
+        ...st.pending_log,
+        logEntry("rep.category_set", {
+          rep_id,
+          before: { category: before },
+          after: { category },
+        }),
+      ],
+    });
+  },
+
+  setRepValidity(rep_id, validity, reason = null) {
+    const st = get();
+    const sess = st.session;
+    if (!sess) return;
+    const before = sess.reps.find((r) => r.rep_id === rep_id);
+    const reps = sess.reps.map((r) =>
+      r.rep_id === rep_id
+        ? bumpProvenance({
+            ...r,
+            validity,
+            validity_reason: reason ?? r.validity_reason,
+          })
+        : r
+    );
+    set({
+      session: { ...sess, reps },
+      reps_dirty: true,
+      pending_log: [
+        ...st.pending_log,
+        logEntry("rep.validity_set", {
+          rep_id,
+          before: {
+            validity: before?.validity,
+            reason: before?.validity_reason,
+          },
+          after: { validity, reason },
+        }),
+      ],
+    });
+  },
+
+  setRepReviewed(rep_id, reviewed) {
+    const st = get();
+    const sess = st.session;
+    if (!sess) return;
+    const reps = sess.reps.map((r) =>
+      r.rep_id === rep_id ? bumpProvenance({ ...r, reviewed }) : r
+    );
+    set({
+      session: { ...sess, reps },
+      reps_dirty: true,
+      pending_log: [
+        ...st.pending_log,
+        logEntry("rep.reviewed_set", { rep_id, after: { reviewed } }),
+      ],
+    });
+  },
+
+  toggleRepReviewed(rep_id) {
+    const st = get();
+    const sess = st.session;
+    if (!sess) return;
+    const cur = sess.reps.find((r) => r.rep_id === rep_id)?.reviewed ?? false;
+    get().setRepReviewed(rep_id, !cur);
+  },
+
+  setRepGrinder(rep_id, is_grinder) {
+    const st = get();
+    const sess = st.session;
+    if (!sess) return;
+    const reps = sess.reps.map((r) =>
+      r.rep_id === rep_id ? bumpProvenance({ ...r, is_grinder }) : r
+    );
+    set({
+      session: { ...sess, reps },
+      reps_dirty: true,
+      pending_log: [
+        ...st.pending_log,
+        logEntry("rep.grinder_set", { rep_id, after: { is_grinder } }),
+      ],
+    });
+  },
+
+  setRepPaused(rep_id, is_paused) {
+    const st = get();
+    const sess = st.session;
+    if (!sess) return;
+    const reps = sess.reps.map((r) =>
+      r.rep_id === rep_id ? bumpProvenance({ ...r, is_paused }) : r
+    );
+    set({
+      session: { ...sess, reps },
+      reps_dirty: true,
+      pending_log: [
+        ...st.pending_log,
+        logEntry("rep.paused_set", { rep_id, after: { is_paused } }),
+      ],
+    });
+  },
+
+  // ── Non-rep intervals ─────────────────────────────────────────
+  addNonRepInterval(it) {
+    const st = get();
+    const sess = st.session;
+    if (!sess) return;
+    const intervals = [...sess.nonRepIntervals, it];
+    set({
+      session: { ...sess, nonRepIntervals: intervals },
+      intervals_dirty: true,
+      pending_log: [
+        ...st.pending_log,
+        logEntry("non_rep_interval.add", { interval: it }),
+      ],
+    });
+  },
+  removeNonRepInterval(idx) {
+    const st = get();
+    const sess = st.session;
+    if (!sess) return;
+    const removed = sess.nonRepIntervals[idx];
+    const intervals = sess.nonRepIntervals.filter((_, i) => i !== idx);
+    set({
+      session: { ...sess, nonRepIntervals: intervals },
+      intervals_dirty: true,
+      pending_log: [
+        ...st.pending_log,
+        logEntry("non_rep_interval.delete", { interval: removed }),
+      ],
+    });
+  },
+  updateNonRepInterval(idx, patch) {
+    const st = get();
+    const sess = st.session;
+    if (!sess) return;
+    const intervals = sess.nonRepIntervals.map((x, i) =>
+      i === idx ? { ...x, ...patch } : x
+    );
+    set({
+      session: { ...sess, nonRepIntervals: intervals },
+      intervals_dirty: true,
+    });
+  },
+
+  updateSetInfo(set_id, patch) {
+    const st = get();
+    const sess = st.session;
+    if (!sess) return;
+    const sets = sess.info.sets.map((s) =>
+      s.set_id === set_id ? { ...s, ...patch } : s
+    );
+    set({
+      session: { ...sess, info: { ...sess.info, sets } },
+      meta_dirty: true,
+      pending_log: [
+        ...st.pending_log,
+        logEntry("set.gt_entered", { set_id, patch }),
+      ],
+    });
+  },
+
+  updateInfo(patch) {
+    const st = get();
+    const sess = st.session;
+    if (!sess) return;
+    set({
+      session: { ...sess, info: { ...sess.info, ...patch } },
+      meta_dirty: true,
+    });
+  },
+
+  setReviewPhase(phase) {
+    const st = get();
+    const sess = st.session;
+    if (!sess) return;
+    const before = sess.reviewPhase;
+    set({
+      session: { ...sess, reviewPhase: phase },
+      reps_dirty: true,
+      pending_log: [
+        ...st.pending_log,
+        logEntry("session.review_phase_advanced", {
+          before: { phase: before },
+          after: { phase },
+        }),
+      ],
+    });
   },
 
   // ── Punch mode ────────────────────────────────────────────────
@@ -603,52 +960,73 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
     const st = get();
     const sess = st.session;
     if (!sess) return;
+    const orientation = sess.exercise_orientation;
+    const phaseSeq = chronologicalPhases(orientation);
     const p = st.punch;
     const expected = p.expected;
     const t = st.playhead_t_s;
     const stamps = { ...p.stamps, [expected]: t };
     let nextExpected: PunchKey = expected;
-    if (p.auto_advance && expected < 5) {
+    if (p.auto_advance && expected < 5)
       nextExpected = (expected + 1) as PunchKey;
-    }
 
-    // If we now have all 5, commit a new rep.
-    if (stamps[1] != null && stamps[2] != null && stamps[3] != null &&
-        stamps[4] != null && stamps[5] != null) {
+    if (
+      stamps[1] != null &&
+      stamps[2] != null &&
+      stamps[3] != null &&
+      stamps[4] != null &&
+      stamps[5] != null
+    ) {
       const reps = cloneReps(sess.reps);
       const new_id = reps.length ? Math.max(...reps.map((r) => r.rep_id)) + 1 : 1;
       const set_id =
-        st.active_set_id !== "all" ? st.active_set_id : (reps.length ? reps[reps.length - 1].set_id : 1);
-      // Ensure ascending order; if not, reject.
-      const t1 = stamps[1]!, t2 = stamps[2]!, t3 = stamps[3]!, t4 = stamps[4]!, t5 = stamps[5]!;
+        st.active_set_id !== "all"
+          ? (st.active_set_id as number)
+          : reps.length
+            ? reps[reps.length - 1].set_id
+            : 1;
+      const t1 = stamps[1]!;
+      const t2 = stamps[2]!;
+      const t3 = stamps[3]!;
+      const t4 = stamps[4]!;
+      const t5 = stamps[5]!;
       if (!(t1 < t2 && t2 < t3 && t3 < t4 && t4 < t5)) {
-        // Order violated — keep stamps so user can re-stamp out-of-order ones.
         set({ punch: { ...p, stamps, expected: nextExpected } });
         return;
       }
-      const newRep: RepAnnotation = {
-        rep_id: new_id,
+      // Map stamps 1..5 to the chronological phase boundaries (rep_start, b1, b2, b3, b4) plus rep_end at t5.
+      // ts = [rep_start, end_p0, end_p1, end_p2, end_p3, end_p4]
+      const ts = [t1, t1, t2, t3, t4, t5]; // pre_rep_hold is zero-width by default
+      const newRep: RepAnnotation = blankRep(
+        new_id,
         set_id,
-        concentric: { t_start: t1, t_end: t2, source: "manual" },
-        top_rest:   { t_start: t2, t_end: t3, source: "manual" },
-        eccentric:  { t_start: t3, t_end: t4, source: "manual" },
-        rest:       { t_start: t4, t_end: t5, source: "manual" },
-        mean_concentric_velocity: 0,
-        peak_concentric_velocity: 0,
-        rom_m: 0,
-        confidence: 1,
-      };
-      // Insert in chronological order.
+        ts[0],
+        0,
+        phaseSeq,
+        "punch"
+      );
+      for (let k = 0; k < phaseSeq.length; ++k) {
+        newRep[phaseSeq[k]].t_start = ts[k];
+        newRep[phaseSeq[k]].t_end = ts[k + 1];
+      }
+      recomputeDwellMs(newRep);
+
       let insertAt = 0;
-      while (insertAt < reps.length && reps[insertAt].concentric.t_start < t1)
+      while (
+        insertAt < reps.length &&
+        reps[insertAt][phaseSeq[0]].t_start < t1
+      )
         ++insertAt;
       reps.splice(insertAt, 0, newRep);
       set({
         session: { ...sess, reps },
         reps_dirty: true,
         selected_rep_id: new_id,
-        // Continue the chain: t5 of this rep is the t1 of the next.
         punch: { ...p, stamps: { 1: t5 }, expected: 2 },
+        pending_log: [
+          ...st.pending_log,
+          logEntry("rep.insert", { rep_id: new_id, via: "punch" }),
+        ],
       });
       return;
     }
@@ -656,22 +1034,120 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
     set({ punch: { ...p, stamps, expected: nextExpected } });
   },
 
-  clearDirty: () => set({ reps_dirty: false, meta_dirty: false }),
+  clearDirty: () =>
+    set({ reps_dirty: false, meta_dirty: false, intervals_dirty: false }),
+  takePendingLog() {
+    const cur = get().pending_log;
+    set({ pending_log: [] });
+    return cur;
+  },
   setLoading: (b) => set({ loading: b }),
   setLoadError: (e) => set({ loadError: e }),
 }));
 
+// ──────────────────────────────────────────────────────────────────
+// Helpers
+// ──────────────────────────────────────────────────────────────────
 
 function cloneReps(reps: RepAnnotation[]): RepAnnotation[] {
   return reps.map((r) => ({
     ...r,
+    pre_rep_hold: { ...r.pre_rep_hold },
     concentric: { ...r.concentric },
-    top_rest: { ...r.top_rest },
+    top_dwell: { ...r.top_dwell },
     eccentric: { ...r.eccentric },
-    rest: { ...r.rest },
+    bottom_dwell: { ...r.bottom_dwell },
+    edit_provenance: { ...r.edit_provenance },
   }));
 }
 
 function cloneInfo(info: SessionInfo): SessionInfo {
   return JSON.parse(JSON.stringify(info)) as SessionInfo;
+}
+
+function recomputeDwellMs(r: RepAnnotation): RepAnnotation {
+  r.pre_rep_hold_ms = Math.max(
+    0,
+    Math.round((r.pre_rep_hold.t_end - r.pre_rep_hold.t_start) * 1000)
+  );
+  r.top_dwell_ms = Math.max(
+    0,
+    Math.round((r.top_dwell.t_end - r.top_dwell.t_start) * 1000)
+  );
+  r.bottom_dwell_ms = Math.max(
+    0,
+    Math.round((r.bottom_dwell.t_end - r.bottom_dwell.t_start) * 1000)
+  );
+  return r;
+}
+
+function bumpProvenance(r: RepAnnotation): RepAnnotation {
+  r.edit_provenance = {
+    ...r.edit_provenance,
+    annotation_source:
+      r.edit_provenance.annotation_source === "auto" ||
+      r.edit_provenance.annotation_source === "migrated_v5"
+        ? "studio_edited"
+        : r.edit_provenance.annotation_source,
+    operator_edits_count: r.edit_provenance.operator_edits_count + 1,
+    last_edited_at_iso: nowIso(),
+    last_edited_by: r.edit_provenance.last_edited_by || "operator@studio",
+  };
+  return r;
+}
+
+function repBoundsArr(r: RepAnnotation, orientation: ExerciseOrientation): number[] {
+  const phases = chronologicalPhases(orientation);
+  return [r[phases[0]].t_start, r[phases[phases.length - 1]].t_end];
+}
+
+function blankPhase(t_start: number, t_end: number): PhaseSegment {
+  return { t_start, t_end, source: "manual" };
+}
+
+function blankRep(
+  rep_id: number,
+  set_id: number,
+  t_start: number,
+  tStep: number,
+  phaseSeq: ReturnType<typeof chronologicalPhases>,
+  source: "manual" | "punch" = "manual"
+): RepAnnotation {
+  const r: RepAnnotation = {
+    rep_id,
+    set_id,
+    category: "unknown",
+    validity: "valid",
+    validity_reason: null,
+    reviewed: false,
+    is_grinder: false,
+    is_paused: false,
+    pre_rep_hold: blankPhase(t_start, t_start),
+    concentric: blankPhase(t_start, t_start),
+    top_dwell: blankPhase(t_start, t_start),
+    eccentric: blankPhase(t_start, t_start),
+    bottom_dwell: blankPhase(t_start, t_start),
+    mean_concentric_velocity: 0,
+    peak_concentric_velocity: 0,
+    rom_m: 0,
+    bottom_dwell_ms: 0,
+    top_dwell_ms: 0,
+    pre_rep_hold_ms: 0,
+    confidence: 1,
+    edit_provenance: {
+      auto_segmenter_version: "",
+      annotation_source: source === "punch" ? "punch" : "manual",
+      operator_edits_count: 0,
+      last_edited_by: "operator@studio",
+      last_edited_at_iso: nowIso(),
+    },
+  };
+  let cur = t_start;
+  for (const p of phaseSeq) {
+    r[p].t_start = cur;
+    cur += tStep;
+    r[p].t_end = cur;
+  }
+  recomputeDwellMs(r);
+  return r;
 }

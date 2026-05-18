@@ -13,6 +13,7 @@
 #include <deque>
 #include <chrono>
 #include <atomic>
+#include <mutex>
 #include "sensors/IMUReader.h"
 #include "sensors/MarkerTracker.h"
 #include "app/Config.h"
@@ -71,13 +72,17 @@ public:
 
     // Finish tap test and compute offset
     SyncResult finish_tap_test();
-    SyncResult get_sync_result() const { return sync_result_; }
+    SyncResult get_sync_result() const {
+        std::lock_guard<std::mutex> lk(anchor_mutex_); return sync_result_;
+    }
 
     // ========================================================================
     // Drift Monitoring
     // ========================================================================
     void update_drift(uint64_t esp_us, double host_s);
-    double get_current_drift_ppm() const { return current_drift_ppm_; }
+    double get_current_drift_ppm() const {
+        std::lock_guard<std::mutex> lk(anchor_mutex_); return current_drift_ppm_;
+    }
 
     // ========================================================================
     // Hardware-FSYNC anchor pairs (canonical sync)
@@ -89,20 +94,59 @@ public:
     void register_imu_fsync_event(uint64_t esp_us, double host_s);
     void register_camera_frame   (double cam_hw_s,   double host_s);
 
+    // Drop the FSYNC anchor queues and pair history. Internal helper; most
+    // callers should use arm_anchor() which combines this with the
+    // recording-boundary handshake.
+    void reset_anchor_state();
+
+    // Arm the FSYNC anchor for a new recording. Clears any pre-recording
+    // residue, records the recording-boundary wall-clock, and gates
+    // subsequent register_imu_fsync_event / register_camera_frame so they
+    // ignore events whose physical instant predates this boundary. Call
+    // this AFTER both the IMU and camera callbacks are wired — between
+    // wiring and arming, callbacks can fire and would otherwise enqueue
+    // pre-recording events (especially camera frames sitting in
+    // librealsense's internal queue at start-of-recording).
+    //
+    // wall_clock_now_s: current wall-clock seconds (system_clock::now);
+    // used to gate the cam_hw_s of incoming camera frames so stale frames
+    // delivered post-arm but exposed pre-arm are rejected.
+    void arm_anchor(double wall_clock_now_s);
+
+    // Stop accepting new FSYNC anchor events. Call from stop_recording so
+    // events delivered during teardown don't poison the deques for a
+    // subsequent recording.
+    void disarm_anchor();
+
+    bool is_anchor_armed() const { return anchor_armed_.load(std::memory_order_acquire); }
+
     // True iff we have ≥2 paired FSYNC↔frame events and the affine fit is fresh.
-    bool has_hw_anchor() const { return hw_anchor_valid_; }
+    bool has_hw_anchor() const {
+        std::lock_guard<std::mutex> lk(anchor_mutex_); return hw_anchor_valid_;
+    }
     // a (slope, sec/µs ≈ 1e-6) and b (intercept, sec) for cam_hw_s = a·esp_us + b
-    double hw_anchor_a() const { return hw_anchor_a_; }
-    double hw_anchor_b() const { return hw_anchor_b_; }
-    int    hw_anchor_pair_count() const { return (int)hw_pairs_.size(); }
+    double hw_anchor_a() const {
+        std::lock_guard<std::mutex> lk(anchor_mutex_); return hw_anchor_a_;
+    }
+    double hw_anchor_b() const {
+        std::lock_guard<std::mutex> lk(anchor_mutex_); return hw_anchor_b_;
+    }
+    int hw_anchor_pair_count() const {
+        std::lock_guard<std::mutex> lk(anchor_mutex_); return (int)hw_pairs_.size();
+    }
 
     // ========================================================================
     // Auto-rearm: monitor drift; if it exceeds auto_rearm_drift_ppm for
     // auto_rearm_sustain_s seconds, set rearm_required_ true. The GUI inspects
     // this flag, raises a banner, and the operator must run a fresh tap-test.
     // ========================================================================
-    bool rearm_required() const { return rearm_required_; }
-    void clear_rearm()           { rearm_required_ = false; rearm_excess_start_ = 0.0; }
+    bool rearm_required() const {
+        std::lock_guard<std::mutex> lk(anchor_mutex_); return rearm_required_;
+    }
+    void clear_rearm() {
+        std::lock_guard<std::mutex> lk(anchor_mutex_);
+        rearm_required_ = false; rearm_excess_start_ = 0.0;
+    }
 
 private:
     SyncConfig config_;
@@ -140,7 +184,21 @@ private:
     // Hardware-FSYNC anchor pairs.
     // imu_fsync_events_: (esp_us, host_s) for each FSYNC-tagged IMU sample.
     // cam_frame_events_: (cam_hw_s, host_s) for each camera frame.
-    // Pairing is by host_s nearest neighbour. Linear fit refreshed every N pairs.
+    // Pairing is by ordinal FIFO once both queues are armed at the same
+    // physical instant via arm_anchor(); see try_pair_and_refit_.
+    //
+    // anchor_mutex_ protects every field below from concurrent access by
+    // the IMU callback thread (register_imu_fsync_event, esp_to_unified)
+    // and the camera worker thread (register_camera_frame). Before the
+    // fix landed, the OLD pair-and-fit only popped from deques — fairly
+    // benign racing — but the new ordinal path mutates hw_pairs_ via
+    // erase()/insert() during outlier pruning, and concurrent vector
+    // mutations are UB and crash. esp_to_unified is the hot path
+    // (~1 kHz from the IMU callback); a plain std::mutex costs <100 ns
+    // per acquire on x86, so ~0.01 % CPU at 1 kHz — negligible.
+    mutable std::mutex anchor_mutex_;
+    std::atomic<bool> anchor_armed_{false};
+    double            anchor_arm_wall_s_ = 0.0;  // gate threshold (wall clock at arm)
     std::deque<std::pair<uint64_t, double>> imu_fsync_events_;
     std::deque<std::pair<double, double>>   cam_frame_events_;
     std::vector<std::pair<uint64_t, double>> hw_pairs_;  // (esp_us, cam_hw_s)
@@ -154,7 +212,12 @@ private:
     int    hw_anchor_consecutive_rejections_ = 0;
     static constexpr int HW_ANCHOR_MAX_REJECTIONS = 4;
     static constexpr size_t HW_PAIR_LIMIT = 256;
+
+    // try_pair_and_refit_ and reset_anchor_state_locked_ require
+    // anchor_mutex_ to be held by the caller. They never lock or unlock
+    // themselves to avoid deadlock with arm_anchor / register_*.
     void try_pair_and_refit_();
+    void reset_anchor_state_locked_();
 };
 
 } // namespace vbt

@@ -92,6 +92,19 @@ bool CameraReader::open(const CameraConfig& config) {
         auto device = profile_.get_device();
         auto sensor = device.first<rs2::depth_sensor>();
 
+        // Pin GLOBAL_TIME on every stream that supports it. librealsense
+        // defaults this to ON, but pinning it makes the contract explicit and
+        // survives a driver upgrade — without it, hw_timestamp_s could
+        // silently switch to RS2_TIMESTAMP_DOMAIN_HARDWARE_CLOCK (device
+        // start-relative seconds), which would break the wall-clock-domain
+        // assumption in SyncEngine::cam_to_unified.
+        for (auto& s : profile_.get_device().query_sensors()) {
+            if (s.supports(RS2_OPTION_GLOBAL_TIME_ENABLED)) {
+                try { s.set_option(RS2_OPTION_GLOBAL_TIME_ENABLED, 1.0f); }
+                catch (...) { /* sensor doesn't allow runtime change; ignore */ }
+            }
+        }
+
         if (sensor.supports(RS2_OPTION_EMITTER_ENABLED))
             sensor.set_option(RS2_OPTION_EMITTER_ENABLED, config_.emitter_on ? 1.0f : 0.0f);
         if (sensor.supports(RS2_OPTION_ENABLE_AUTO_EXPOSURE))

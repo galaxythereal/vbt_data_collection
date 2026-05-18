@@ -1,34 +1,52 @@
 /**
- * Punch-stamp annotation mode. Replaces dragging tiny lines with
- * "watch the video, press a number when you see the boundary."
+ * Punch-stamp annotation mode. v6, orientation-aware.
  *
- *   1   bottom rest → concentric        (rep BEGINS)
- *   2   concentric  → top_rest          (peak of pull / lockout)
- *   3   top_rest    → eccentric         (start of descent)
- *   4   eccentric   → rest              (return to bottom)
- *   5   rest end    (= next rep start)
+ * Top-start lifts (squat / bench / OHP):
+ *   1   rep starts (= top of rack, beginning of descent)
+ *   2   bar reaches BOTTOM
+ *   3   bar starts ascending (= bottom dwell ends)
+ *   4   bar reaches TOP / lockout
+ *   5   rep ends (= next rep's #1)
  *
- * After all 5 are stamped the rep is committed; stamp #5 also serves
- * as the next rep's #1, so consecutive reps need only 4 punches each.
+ * Bottom-start lifts (deadlift / row / clean):
+ *   1   rep starts (= bar leaves floor / start of pull)
+ *   2   bar reaches TOP / lockout
+ *   3   bar starts descending (= top dwell ends)
+ *   4   bar returns to BOTTOM
+ *   5   rep ends (= next rep's #1)
  *
- * Bigger keys (1..5) are easier than precision dragging. The wizard
- * highlights the key the operator should press next.
+ * Stamp #5 also serves as the next rep's #1, so consecutive reps need
+ * only 4 punches each.
  */
 import { useSessionStore, type PunchKey } from "../store/session";
 import { sessionT0 } from "../signal/timeUtils";
+import type { ExerciseOrientation } from "../types/session";
 
-const KEY_DEFS: {
+interface KeyDef {
   key: PunchKey;
   label: string;
   hint: string;
   color: string;
-}[] = [
-  { key: 1, label: "1", hint: "rest → CONCENTRIC start",  color: "var(--conc)" },
-  { key: 2, label: "2", hint: "concentric → top_rest",    color: "var(--accent)" },
-  { key: 3, label: "3", hint: "top_rest → ECCENTRIC",     color: "var(--ecc)" },
-  { key: 4, label: "4", hint: "eccentric → rest",         color: "var(--rest)" },
-  { key: 5, label: "5", hint: "rest end (rep finished)",  color: "var(--playhead)" },
-];
+}
+
+function keyDefsFor(orientation: ExerciseOrientation): KeyDef[] {
+  if (orientation === "top_start") {
+    return [
+      { key: 1, label: "1", hint: "rep start (top, descent begins)", color: "var(--ecc)" },
+      { key: 2, label: "2", hint: "bottom reached",                  color: "var(--rest)" },
+      { key: 3, label: "3", hint: "ascent begins (concentric)",      color: "var(--conc)" },
+      { key: 4, label: "4", hint: "lockout reached (top)",           color: "var(--accent)" },
+      { key: 5, label: "5", hint: "rep ends (= next rep's #1)",      color: "var(--playhead)" },
+    ];
+  }
+  return [
+    { key: 1, label: "1", hint: "rep start (floor, pull begins)", color: "var(--conc)" },
+    { key: 2, label: "2", hint: "lockout reached (top)",          color: "var(--accent)" },
+    { key: 3, label: "3", hint: "descent begins (eccentric)",     color: "var(--ecc)" },
+    { key: 4, label: "4", hint: "bottom reached",                 color: "var(--rest)" },
+    { key: 5, label: "5", hint: "rep ends (= next rep's #1)",     color: "var(--playhead)" },
+  ];
+}
 
 export function PunchAnnotator() {
   const session = useSessionStore((s) => s.session);
@@ -54,6 +72,7 @@ export function PunchAnnotator() {
     );
   }
 
+  const KEY_DEFS = keyDefsFor(session.exercise_orientation);
   const t0 = sessionT0(session);
   const stampList = (Object.entries(punch.stamps) as [string, number][])
     .map(([k, v]) => ({ k: parseInt(k, 10) as PunchKey, t: v }))

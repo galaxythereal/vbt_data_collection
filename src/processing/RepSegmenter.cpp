@@ -411,25 +411,48 @@ void RepSegmenter::handle_extremum(int type_int, double t, float pos) {
     rep.concentric.source = "camera";
     rep.eccentric.source  = "camera";
     if (first_confirmed_ext_ == ExtType::TOP) {
+        // Top-start (squat / bench / OHP): rep is one full cycle starting AND
+        // ending at the TOP. Eccentric (descent) comes first in time,
+        // concentric (ascent) second.
         rep.eccentric.t_start_s  = cycle_start_t_;
         rep.eccentric.t_end_s    = midpoint_t_;
         rep.concentric.t_start_s = midpoint_t_;
         rep.concentric.t_end_s   = t;
     } else {
+        // Bottom-start (deadlift / row / clean): rep starts AND ends at the
+        // BOTTOM. Concentric (pull / lift) comes first, eccentric (lower) second.
         rep.concentric.t_start_s = cycle_start_t_;
         rep.concentric.t_end_s   = midpoint_t_;
         rep.eccentric.t_start_s  = midpoint_t_;
         rep.eccentric.t_end_s    = t;
     }
-    // Default top-rest = zero-width band at the concentric→eccentric pivot.
-    rep.top_rest.t_start_s = rep.concentric.t_end_s;
-    rep.top_rest.t_end_s   = rep.eccentric.t_start_s;
+    // top_rest / rest are interpreted as "dwell at the TOP" / "dwell at the
+    // BOTTOM of the cycle" respectively, NOT as positions in the struct's
+    // chronological order. The v5 writer mis-set both:
+    //   - top_rest was anchored across the cycle for top-start lifts, giving
+    //     t_start > t_end (inverted interval).
+    //   - rest was always zero-width at t (the cycle-end extremum).
+    // v6 fix: anchor each dwell at the correct extremum for the orientation,
+    // emitted as a zero-width band the studio can drag wider in review.
+    if (first_confirmed_ext_ == ExtType::TOP) {
+        // Top-start: TOPs are at cycle_start_t_ and t; BOTTOM is at midpoint_t_.
+        // Live segmenter has no way to know if the lifter paused — emit
+        // zero-width dwells the operator can widen post-session.
+        rep.top_rest.t_start_s = t;             // dwell at the END TOP (= next rep's start)
+        rep.top_rest.t_end_s   = t;
+        rep.rest.t_start_s     = midpoint_t_;   // dwell at the BOTTOM of this rep
+        rep.rest.t_end_s       = midpoint_t_;
+    } else {
+        // Bottom-start: BOTTOMs are at cycle_start_t_ and t; TOP is at midpoint_t_.
+        rep.top_rest.t_start_s = midpoint_t_;   // dwell at the TOP (lockout)
+        rep.top_rest.t_end_s   = midpoint_t_;
+        rep.rest.t_start_s     = t;             // dwell at the END BOTTOM (= rest before next pull)
+        rep.rest.t_end_s       = t;
+    }
     const float disp = std::abs(midpoint_pos_ - cycle_start_pos_);
     rep.concentric.peak_velocity_mps = rep_concentric_peak_vel_;
     rep.concentric.displacement_m = disp;
     rep.eccentric.displacement_m  = disp;
-    rep.rest.t_start_s = t;
-    rep.rest.t_end_s   = t;
     rep.peak_concentric_velocity = rep_concentric_peak_vel_;
     rep.mean_concentric_velocity = rep_concentric_peak_vel_ * 0.7f;
     rep.rom_m = disp;

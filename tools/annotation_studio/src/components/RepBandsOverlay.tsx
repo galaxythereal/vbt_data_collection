@@ -1,13 +1,6 @@
 /**
- * SVG overlay that floats above a uPlot chart and renders:
- *   • Coloured rep bands (concentric / top_rest / eccentric / rest)
- *   • Draggable boundary handles (wider hit zone)
- *   • The playhead vertical line + triangular cap
- *   • Zero-crossings + peak markers (small dots / triangles)
- *
- * FIXED: Uses window-level pointermove/pointerup listeners instead of
- * SVG element events for reliable drag tracking. The old approach had
- * pointer-events issues where drags would silently drop.
+ * SVG overlay above a uPlot chart. v6 schema. Renders coloured phase
+ * bands, drag handles, playhead, and zero-crossing markers.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import type uPlot from "uplot";
@@ -16,7 +9,12 @@ import {
   computeCleanedSignal,
   defaultCleanConfig,
 } from "../signal/cleanSignal";
-import type { RepAnnotation } from "../types/session";
+import type {
+  ExerciseOrientation,
+  PhaseFieldName,
+  RepAnnotation,
+} from "../types/session";
+import { chronoPhaseInfo } from "../types/session";
 
 interface Props {
   plot: uPlot | null;
@@ -24,14 +22,7 @@ interface Props {
   overlayKey: number;
 }
 
-const HANDLE_HIT_W = 18; // wider hit zone for easier grabbing
-const HANDLE_DEFS: { kind: HandleKind; label: string; color: string }[] = [
-  { kind: "concentric_start", label: "C", color: "#1f6feb" },
-  { kind: "concentric_end", label: "↑", color: "#a5d6ff" },
-  { kind: "top_rest_end", label: "T", color: "#aa8cff" },
-  { kind: "eccentric_end", label: "↓", color: "#f0a3d6" },
-  { kind: "rest_end", label: "R", color: "#6e7681" },
-];
+const HANDLE_HIT_W = 18;
 
 export function RepBandsOverlay({ plot, kind, overlayKey }: Props) {
   const session = useSessionStore((s) => s.session);
@@ -46,6 +37,10 @@ export function RepBandsOverlay({ plot, kind, overlayKey }: Props) {
   const snap = useSessionStore((s) => s.snap_to_zero_cross);
   const setActiveSet = useSessionStore((s) => s.setActiveSet);
 
+  const orientation: ExerciseOrientation =
+    session?.exercise_orientation ?? "top_start";
+  const phaseInfo = useMemo(() => chronoPhaseInfo(orientation), [orientation]);
+
   const cleaned = useMemo(() => {
     if (!session || !session.markers.length) return null;
     return computeCleanedSignal(session.markers, defaultCleanConfig);
@@ -53,7 +48,10 @@ export function RepBandsOverlay({ plot, kind, overlayKey }: Props) {
 
   const overlayRef = useRef<SVGSVGElement | null>(null);
   const [, force] = useState(0);
-  useEffect(() => force((x) => x + 1), [overlayKey, playhead, session?.reps, dragging, selected]);
+  useEffect(
+    () => force((x) => x + 1),
+    [overlayKey, playhead, session?.reps, dragging, selected]
+  );
 
   if (!plot || !session) return null;
 
@@ -67,11 +65,9 @@ export function RepBandsOverlay({ plot, kind, overlayKey }: Props) {
   function valToPos(t: number): number {
     return plot!.valToPos(t, "x");
   }
-
   function posToVal(px: number): number {
     return plot!.posToVal(px, "x");
   }
-
   function snapVal(t: number): number {
     if (!snap || !cleaned) return t;
     const TOL = 0.15;
@@ -90,7 +86,6 @@ export function RepBandsOverlay({ plot, kind, overlayKey }: Props) {
     return best;
   }
 
-  // ── Drag plumbing — uses window listeners for reliability ──────
   function onHandlePointerDown(
     e: React.PointerEvent<SVGRectElement>,
     rep: RepAnnotation,
@@ -111,18 +106,15 @@ export function RepBandsOverlay({ plot, kind, overlayKey }: Props) {
       if (ev.altKey) t = snapVal(t);
       setBoundary(rep.rep_id, handle, t);
     };
-
     const onUp = () => {
       setDragging(null);
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
     };
-
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
   }
 
-  // Click empty bg → seek
   function onBgClick(e: React.MouseEvent<SVGSVGElement>) {
     if (dragging) return;
     const rect = overlayRef.current!.getBoundingClientRect();
@@ -140,24 +132,27 @@ export function RepBandsOverlay({ plot, kind, overlayKey }: Props) {
       onClick={onBgClick}
       style={{ pointerEvents: "none" }}
     >
-      <g
-        transform={`translate(${left}, ${top})`}
-        style={{ pointerEvents: "auto" }}
-      >
+      <g transform={`translate(${left}, ${top})`} style={{ pointerEvents: "auto" }}>
         <defs>
           <clipPath id={`bands-clip-${kind}`}>
             <rect x={0} y={0} width={width} height={height} />
           </clipPath>
         </defs>
 
-        {/* Bands */}
         <g clipPath={`url(#bands-clip-${kind})`}>
           {session.reps.map((r) => (
-            <RepBand key={r.rep_id} r={r} y={0} h={height} valToPos={valToPos} selected={selected === r.rep_id} />
+            <RepBand
+              key={r.rep_id}
+              r={r}
+              y={0}
+              h={height}
+              phaseNames={phaseInfo.map((p) => p.name)}
+              valToPos={valToPos}
+              selected={selected === r.rep_id}
+            />
           ))}
         </g>
 
-        {/* Detection markers — only on velocity chart */}
         {kind === "velocity" && cleaned && (
           <g clipPath={`url(#bands-clip-${kind})`} pointerEvents="none">
             {cleaned.zeroCrossings.map((i, k) => (
@@ -189,23 +184,25 @@ export function RepBandsOverlay({ plot, kind, overlayKey }: Props) {
           </g>
         )}
 
-        {/* Drag handles — render LAST so they sit on top */}
+        {/* Drag handles — one per phase end in chronological order */}
         <g clipPath={`url(#bands-clip-${kind})`}>
           {session.reps.map((r) =>
-            HANDLE_DEFS.map((h) => {
-              const t = handleTime(r, h.kind);
+            phaseInfo.map((info) => {
+              const t = r[info.name].t_end;
               const x = valToPos(t);
               if (x < -HANDLE_HIT_W || x > width + HANDLE_HIT_W) return null;
               const isSelected = selected === r.rep_id;
-              const isDragging = dragging?.rep_id === r.rep_id && dragging?.handle === h.kind;
+              const isDragging =
+                dragging?.rep_id === r.rep_id &&
+                dragging?.handle === info.rightHandle;
               return (
-                <g key={`${r.rep_id}-${h.kind}`}>
+                <g key={`${r.rep_id}-${info.rightHandle}`}>
                   <line
                     x1={x}
                     x2={x}
                     y1={0}
                     y2={height}
-                    stroke={isDragging ? "#fbe24a" : h.color}
+                    stroke={isDragging ? "#fbe24a" : info.color}
                     strokeWidth={isSelected ? 2 : 1}
                     strokeDasharray={isSelected ? "0" : "3 3"}
                     opacity={isSelected ? 1 : 0.55}
@@ -218,24 +215,24 @@ export function RepBandsOverlay({ plot, kind, overlayKey }: Props) {
                     height={height}
                     fill="transparent"
                     style={{ cursor: "ew-resize" }}
-                    onPointerDown={(e) => onHandlePointerDown(e, r, h.kind)}
+                    onPointerDown={(e) =>
+                      onHandlePointerDown(e, r, info.rightHandle as HandleKind)
+                    }
                   />
-                  {/* Visible handle cap */}
                   <circle
                     cx={x}
                     cy={isSelected ? 10 : 7}
                     r={isSelected ? 6 : 4}
-                    fill={isDragging ? "#fbe24a" : h.color}
+                    fill={isDragging ? "#fbe24a" : info.color}
                     stroke="#0d1117"
                     strokeWidth={1.5}
                     pointerEvents="none"
                   />
-                  {/* Bottom cap too for easier visibility */}
                   <circle
                     cx={x}
                     cy={height - (isSelected ? 10 : 7)}
                     r={isSelected ? 5 : 3}
-                    fill={isDragging ? "#fbe24a" : h.color}
+                    fill={isDragging ? "#fbe24a" : info.color}
                     stroke="#0d1117"
                     strokeWidth={1}
                     pointerEvents="none"
@@ -247,7 +244,6 @@ export function RepBandsOverlay({ plot, kind, overlayKey }: Props) {
           )}
         </g>
 
-        {/* Playhead — drawn last on top of everything */}
         <g pointerEvents="none">
           <line
             x1={valToPos(playhead)}
@@ -267,90 +263,120 @@ export function RepBandsOverlay({ plot, kind, overlayKey }: Props) {
   );
 }
 
-function handleTime(r: RepAnnotation, k: HandleKind): number {
-  switch (k) {
-    case "concentric_start":
-      return r.concentric.t_start;
-    case "concentric_end":
-      return r.concentric.t_end;
-    case "top_rest_end":
-      return r.top_rest.t_end;
-    case "eccentric_end":
-      return r.eccentric.t_end;
-    case "rest_end":
-      return r.rest.t_end;
-  }
-}
-
 function RepBand({
   r,
   y,
   h,
+  phaseNames,
   valToPos,
   selected,
 }: {
   r: RepAnnotation;
   y: number;
   h: number;
+  phaseNames: PhaseFieldName[];
   valToPos: (t: number) => number;
   selected: boolean;
 }) {
-  const opa = selected ? 0.32 : 0.18;
+  // More visible: 35% baseline (was 18%), 55% when selected.
+  const opa = selected ? 0.55 : 0.35;
   const stroke = selected ? "#fbe24a" : "transparent";
-  const segs: { a: number; b: number; fill: string }[] = [
-    {
-      a: r.concentric.t_start,
-      b: r.concentric.t_end,
-      fill: `rgba(31, 111, 235, ${opa})`,
-    },
-    {
-      a: r.top_rest.t_start,
-      b: r.top_rest.t_end,
-      fill: `rgba(170, 140, 255, ${opa})`,
-    },
-    {
-      a: r.eccentric.t_start,
-      b: r.eccentric.t_end,
-      fill: `rgba(219, 97, 162, ${opa})`,
-    },
-    {
-      a: r.rest.t_start,
-      b: r.rest.t_end,
-      fill: `rgba(110, 118, 129, ${opa * 0.6})`,
-    },
-  ];
+  const phaseColors: Record<PhaseFieldName, string> = {
+    pre_rep_hold: `rgba(110, 118, 129, ${opa * 0.7})`,
+    concentric: `rgba(31, 111, 235, ${opa})`,
+    top_dwell: `rgba(170, 140, 255, ${opa})`,
+    eccentric: `rgba(219, 97, 162, ${opa})`,
+    bottom_dwell: `rgba(110, 118, 129, ${opa * 0.7})`,
+  };
+  // Letter to print at the band's centre (helps when colours look similar)
+  const phaseLetter: Record<PhaseFieldName, string> = {
+    pre_rep_hold: "P",
+    concentric: "C",
+    top_dwell: "T",
+    eccentric: "E",
+    bottom_dwell: "B",
+  };
   return (
     <g>
-      {segs.map((s, i) => {
-        const x0 = valToPos(s.a);
-        const x1 = valToPos(s.b);
-        if (!Number.isFinite(x0) || !Number.isFinite(x1) || x1 - x0 < 0.5)
-          return null;
+      {phaseNames.map((name) => {
+        const seg = r[name];
+        const x0 = valToPos(seg.t_start);
+        const x1 = valToPos(seg.t_end);
+        if (!Number.isFinite(x0) || !Number.isFinite(x1)) return null;
+        const w = x1 - x0;
+        if (w < 0.5) {
+          // Zero-width: still draw a 2px vertical tick so the boundary is visible.
+          return (
+            <line
+              key={`tick-${name}`}
+              x1={x0}
+              x2={x0}
+              y1={y}
+              y2={y + h}
+              stroke={phaseColors[name].replace(/[\d.]+\)$/, "1)")}
+              strokeWidth={2}
+              opacity={0.6}
+              pointerEvents="none"
+            />
+          );
+        }
         return (
-          <rect
-            key={i}
-            x={x0}
-            y={y}
-            width={x1 - x0}
-            height={h}
-            fill={s.fill}
-            pointerEvents="none"
-          />
+          <g key={name}>
+            <rect
+              x={x0}
+              y={y}
+              width={w}
+              height={h}
+              fill={phaseColors[name]}
+              pointerEvents="none"
+            />
+            {w > 24 && (
+              <text
+                x={x0 + w / 2}
+                y={y + 14}
+                fontSize="10"
+                fontWeight="700"
+                fill="#fff"
+                textAnchor="middle"
+                opacity={0.75}
+                pointerEvents="none"
+              >
+                {phaseLetter[name]}
+              </text>
+            )}
+          </g>
         );
       })}
-      {selected && (
-        <rect
-          x={valToPos(r.concentric.t_start)}
-          y={y + 1}
-          width={valToPos(r.rest.t_end) - valToPos(r.concentric.t_start)}
-          height={h - 2}
-          fill="transparent"
-          stroke={stroke}
-          strokeWidth={1}
-          strokeDasharray="4 3"
-          pointerEvents="none"
-        />
-      )}
+      {selected &&
+        (() => {
+          const first = r[phaseNames[0]];
+          const last = r[phaseNames[phaseNames.length - 1]];
+          return (
+            <g>
+              <rect
+                x={valToPos(first.t_start)}
+                y={y + 1}
+                width={valToPos(last.t_end) - valToPos(first.t_start)}
+                height={h - 2}
+                fill="transparent"
+                stroke={stroke}
+                strokeWidth={1.5}
+                strokeDasharray="4 3"
+                pointerEvents="none"
+              />
+              <text
+                x={valToPos(first.t_start) + 4}
+                y={y + 12}
+                fontSize="11"
+                fontWeight="700"
+                fill="#fbe24a"
+                pointerEvents="none"
+              >
+                R{r.rep_id}
+              </text>
+            </g>
+          );
+        })()}
     </g>
   );
 }
