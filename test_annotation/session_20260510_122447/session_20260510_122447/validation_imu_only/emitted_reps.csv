@@ -1,2 +1,0 @@
-rep_id,t_start,t_end,t_emit,emit_latency_s,duration_s,peak_concentric_velocity,peak_eccentric_velocity,mean_concentric_velocity,rom_m,concentric_duration_s
-1,22.989413,26.788603,26.989041,0.2004380000000019,3.7991899999999994,1.7245514635860353,-1.3797407165004163,0.9527790235718081,1.2668241168687129,1.614139999998958

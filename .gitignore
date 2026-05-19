@@ -24,3 +24,6 @@ tools/annotation_studio/node_modules
 # Runtime
 imgui.ini
 
+test_annotation/
+tools/annotation_studio/dist/
+tools/annotation_studio/src-tauri/target/
