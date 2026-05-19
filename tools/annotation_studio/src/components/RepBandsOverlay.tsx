@@ -26,7 +26,6 @@ const HANDLE_HIT_W = 18;
 
 export function RepBandsOverlay({ plot, kind, overlayKey }: Props) {
   const session = useSessionStore((s) => s.session);
-  const playhead = useSessionStore((s) => s.playhead_t_s);
   const selected = useSessionStore((s) => s.selected_rep_id);
   const dragging = useSessionStore((s) => s.dragging);
   const setDragging = useSessionStore((s) => s.setDragging);
@@ -48,9 +47,12 @@ export function RepBandsOverlay({ plot, kind, overlayKey }: Props) {
 
   const overlayRef = useRef<SVGSVGElement | null>(null);
   const [, force] = useState(0);
+  // Playhead changes are handled by the dedicated <PlayheadLine> component
+  // below so the bands/handles/zero-crossings SVG doesn't re-render at
+  // ~15 Hz during playback.
   useEffect(
     () => force((x) => x + 1),
-    [overlayKey, playhead, session?.reps, dragging, selected]
+    [overlayKey, session?.reps, dragging, selected]
   );
 
   if (!plot || !session) return null;
@@ -244,22 +246,33 @@ export function RepBandsOverlay({ plot, kind, overlayKey }: Props) {
           )}
         </g>
 
-        <g pointerEvents="none">
-          <line
-            x1={valToPos(playhead)}
-            x2={valToPos(playhead)}
-            y1={0}
-            y2={height}
-            stroke="#fbe24a"
-            strokeWidth={1.5}
-          />
-          <polygon
-            points={`${valToPos(playhead) - 6},${height + 1} ${valToPos(playhead) + 6},${height + 1} ${valToPos(playhead)},${height + 9}`}
-            fill="#fbe24a"
-          />
-        </g>
+        <PlayheadLine plot={plot} height={height} />
       </g>
     </svg>
+  );
+}
+
+// Isolated playhead line — subscribes to playhead independently so it can
+// re-render at the playhead push rate without dragging the bands/handles
+// tree along. Reads `plot.valToPos` directly each render.
+function PlayheadLine({
+  plot,
+  height,
+}: {
+  plot: uPlot;
+  height: number;
+}) {
+  const playhead = useSessionStore((s) => s.playhead_t_s);
+  const x = plot.valToPos(playhead, "x");
+  if (!Number.isFinite(x)) return null;
+  return (
+    <g pointerEvents="none">
+      <line x1={x} x2={x} y1={0} y2={height} stroke="#fbe24a" strokeWidth={1.5} />
+      <polygon
+        points={`${x - 6},${height + 1} ${x + 6},${height + 1} ${x},${height + 9}`}
+        fill="#fbe24a"
+      />
+    </g>
   );
 }
 

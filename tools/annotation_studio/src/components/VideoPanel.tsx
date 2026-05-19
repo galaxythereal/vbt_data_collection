@@ -44,13 +44,23 @@ export function VideoPanel() {
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const ignoreNextFrameTick = useRef(false);
+  // Tracks whether the video element is in the middle of a seek operation.
+  // rVFC must not update the store playhead during a seek — doing so triggers
+  // the inbound seek effect which re-seeks and creates a feedback loop.
+  const isSeekingRef = useRef(false);
   const playingRef = useRef(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [playbackRate, setPlaybackRate] = useState(1);
-  // Throttle store playhead writes during playback to 30 Hz so the rest of
-  // the studio (Timeline, Charts, RepTable, StateStrip) doesn't re-render
-  // at 90+ fps — that's the source of the stutter/lag.
+  // Throttle store playhead writes during playback so the rest of the studio
+  // (Timeline, Charts, RepTable, StateStrip) doesn't re-render at 90+ fps.
+  // Pinned at ~15 Hz which is still smooth visually but ~half the prior cost.
   const lastStorePushMs = useRef(0);
+  // The most recent playhead value the rVFC tick pushed to the store. The
+  // inbound seek effect compares against this to identify "echoes" (the
+  // playhead change we caused ourselves) vs. external jumps (clicks,
+  // hotkeys). Float equality is safe because we always push exact values
+  // from `lookup.timeOfFrame(idx)`.
+  const lastRvfcPushT = useRef<number>(NaN);
   // Local high-resolution playhead — drives the in-panel overlays (phase
   // badge, frame counter, scrubber playhead). Updated every video frame
   // without going through the store.
@@ -61,19 +71,36 @@ export function VideoPanel() {
     [session]
   );
 
-  // Inbound seek: external playhead changes seek the video. Now also works
-  // during playback IF the playhead jumped more than 0.15 s (a deliberate
-  // scrub) — small in-band drift is ignored so we don't fight rVFC.
+  // Inbound seek: external playhead changes seek the video. During playback
+  // we identify "echoes" (the playhead change that came from our own rVFC
+  // tick) by exact-equality with `lastRvfcPushT` — those must NOT re-seek
+  // the video or it fights playback and visibly stutters/jumps backward
+  // (the "video loops over the selected rep" bug).
+  //
+  // Belt-and-braces: if two rVFC ticks land between renders, React may
+  // commit them in separate passes — the effect can then see a stale
+  // `playhead` while `lastRvfcPushT` already points at the newer tick. In
+  // that case the exact-equality check fails and we'd seek BACKWARD by a
+  // tiny amount, which the next tick undoes, producing visible looping.
+  // We catch this by refusing to seek backward during playback when the
+  // gap is smaller than `0.1s × playbackRate` — a window comfortably
+  // larger than any rVFC race but much smaller than a deliberate jump.
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !lookup) return;
     if (lookup.count === 0) return;
+    if (isSeekingRef.current) return;
+    if (playingRef.current && lastRvfcPushT.current === playhead) return;
     const idx = lookup.nearestFrameIdx(playhead);
     if (idx < 0) return;
     const want = (idx / Math.max(1, lookup.count - 1)) * (video.duration || 0);
-    const delta = Math.abs(video.currentTime - want);
-    if (playingRef.current && delta < 0.15) return; // ignore tiny rVFC echoes
-    if (delta <= 0.002) return;
+    const signed = want - video.currentTime;
+    if (Math.abs(signed) <= 0.002) return;
+    if (playingRef.current && signed < 0) {
+      const backwardBudget = 0.1 * Math.max(1, video.playbackRate || 1);
+      if (-signed < backwardBudget) return;
+    }
+    isSeekingRef.current = true;
     ignoreNextFrameTick.current = true;
     try {
       video.currentTime = want;
@@ -96,7 +123,7 @@ export function VideoPanel() {
     };
     if (!v.requestVideoFrameCallback) return;
     let cancelled = false;
-    const STORE_PUSH_MIN_MS = 33; // 30 Hz cap on store updates during play
+    const STORE_PUSH_MIN_MS = 66; // ~15 Hz cap on store updates during play
     const tick = (
       _now: number,
       meta: { mediaTime: number; presentedFrames: number }
@@ -104,17 +131,19 @@ export function VideoPanel() {
       if (cancelled) return;
       if (ignoreNextFrameTick.current) {
         ignoreNextFrameTick.current = false;
-      } else if (playingRef.current && lookup.count > 0) {
+      } else if (playingRef.current && !isSeekingRef.current && lookup.count > 0) {
         const dur = video.duration || 1;
         const idx = Math.round((meta.mediaTime / dur) * (lookup.count - 1));
         const t = lookup.timeOfFrame(idx);
         if (Number.isFinite(t) && t > 0) {
           // Local fast-path
           setLocalPlayhead(t);
-          // Throttled global push
+          // Throttled global push. Record the pushed value so the inbound
+          // seek effect can recognise (and skip) its own echo.
           const now = performance.now();
           if (now - lastStorePushMs.current > STORE_PUSH_MIN_MS) {
             lastStorePushMs.current = now;
+            lastRvfcPushT.current = t;
             setPlayhead(t);
           }
         }
@@ -134,8 +163,12 @@ export function VideoPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isPlaying]);
 
-  // Mirror external playhead changes into the local fast-path.
+  // Mirror external playhead changes into the local fast-path. Skipped
+  // during playback because the rVFC tick already drives `localPlayhead`
+  // directly and the store push echo would just trigger a redundant render
+  // every ~66 ms.
   useEffect(() => {
+    if (playingRef.current) return;
     setLocalPlayhead(playhead);
   }, [playhead]);
 
@@ -238,7 +271,11 @@ export function VideoPanel() {
             setIsPlaying(false);
           }}
           onSeeking={() => {
+            isSeekingRef.current = true;
             ignoreNextFrameTick.current = true;
+          }}
+          onSeeked={() => {
+            isSeekingRef.current = false;
           }}
           onRateChange={(e) =>
             setPlaybackRate((e.target as HTMLVideoElement).playbackRate)
@@ -387,10 +424,11 @@ export function VideoPanel() {
               fitRep(next);
             }
           }}
+          onDeselect={() => setSelectedRep(null)}
         />
       ) : (
         <div className="shrink-0 border-t border-[var(--border)] bg-[var(--bg-1)] px-3 py-2 text-[10px] text-[var(--text-dim)]">
-          No rep selected — click a clip in the timeline or use Z / X
+          No rep selected — click a clip in the timeline or use Z / X. The video scrubs freely.
         </div>
       )}
     </div>
@@ -460,6 +498,7 @@ function RepDock({
   seekTo,
   onPrev,
   onNext,
+  onDeselect,
 }: {
   rep: RepAnnotation;
   orientation: ExerciseOrientation;
@@ -471,6 +510,7 @@ function RepDock({
   seekTo: (t: number) => void;
   onPrev: () => void;
   onNext: () => void;
+  onDeselect: () => void;
 }) {
   const phaseInfo = useMemo(() => chronoPhaseInfo(orientation), [orientation]);
   const tStart = repChronoStart(rep, orientation);
@@ -507,6 +547,13 @@ function RepDock({
           title="Next rep (X)"
         >
           ›
+        </button>
+        <button
+          onClick={onDeselect}
+          className="transport-btn !w-5 !h-5 text-[10px] text-[var(--text-dim)]"
+          title="Deselect rep (Esc) — lets the video scrub freely"
+        >
+          ✕
         </button>
 
         <span

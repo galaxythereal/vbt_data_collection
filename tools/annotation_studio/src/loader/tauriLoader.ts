@@ -18,12 +18,13 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type {
   ImuRow,
   MarkerRow,
-  RepAnnotation,
   SessionData,
   SessionInfo,
   VideoFrameRow,
 } from "../types/session";
-import { defaultSessionInfo, normalizeRep } from "./schemaDefaults";
+import { orientationOf } from "../types/session";
+import { defaultSessionInfo, normalizeSetInfo } from "./schemaDefaults";
+import { parseNonRepIntervals, parseRepsJson } from "./sessionLoader";
 
 export function isTauri(): boolean {
   return (
@@ -194,7 +195,15 @@ export async function loadSessionByPath(dir: string): Promise<SessionData> {
   }
   try {
     const parsed = JSON.parse(metaText) as Partial<SessionInfo>;
-    data.info = { ...defaultSessionInfo(), ...parsed } as SessionInfo;
+    const info = { ...defaultSessionInfo(), ...parsed } as SessionInfo;
+    info.sets = (parsed.sets ?? []).map((s, i) =>
+      normalizeSetInfo(s as Partial<SessionInfo["sets"][0]>, s?.set_id ?? i + 1)
+    );
+    if (!info.exercise_orientation) {
+      info.exercise_orientation = orientationOf(info.exercise);
+    }
+    data.info = info;
+    data.exercise_orientation = info.exercise_orientation ?? "top_start";
   } catch (e) {
     diagnostics.errors.push(`metadata.json parse failed: ${(e as Error).message}`);
   }
@@ -204,8 +213,17 @@ export async function loadSessionByPath(dir: string): Promise<SessionData> {
   );
   if (repsText) {
     try {
-      const arr = JSON.parse(repsText) as Partial<RepAnnotation>[];
-      data.reps = arr.map((r) => normalizeRep(r));
+      // The save format is the v6 object {schema_version, reps: [...], ...}.
+      // Going through `parseRepsJson` also handles the legacy bare-array
+      // shape and normalizes every rep into v6 in-memory form.
+      const r = parseRepsJson(
+        repsText,
+        data.info.exercise,
+        data.exercise_orientation
+      );
+      data.reps = r.reps;
+      data.rejectedReps = r.rejected;
+      data.reviewPhase = r.reviewPhase;
     } catch (e) {
       diagnostics.errors.push(
         `rep_segments.json parse failed: ${(e as Error).message}`
@@ -222,8 +240,12 @@ export async function loadSessionByPath(dir: string): Promise<SessionData> {
   );
   if (candidateText) {
     try {
-      const arr = JSON.parse(candidateText) as Partial<RepAnnotation>[];
-      data.candidateReps = arr.map((r) => normalizeRep(r));
+      const r = parseRepsJson(
+        candidateText,
+        data.info.exercise,
+        data.exercise_orientation
+      );
+      data.candidateReps = r.reps;
       diagnostics.warnings.push(
         `Loaded ${data.candidateReps.length} proposed reps from rep_segments.candidate.json.`
       );
@@ -232,6 +254,13 @@ export async function loadSessionByPath(dir: string): Promise<SessionData> {
         `rep_segments.candidate.json parse failed: ${(e as Error).message}`
       );
     }
+  }
+
+  const nriText = await readTextSafe(
+    joinPath(dir, "annotations", "non_rep_intervals.json")
+  );
+  if (nriText) {
+    data.nonRepIntervals = parseNonRepIntervals(nriText);
   }
 
   const imuText = await readTextSafe(joinPath(dir, "imu", "raw_imu.csv"));

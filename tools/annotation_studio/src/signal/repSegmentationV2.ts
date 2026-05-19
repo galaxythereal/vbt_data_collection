@@ -28,6 +28,7 @@
  */
 import type { CleanedSignal } from "./cleanSignal";
 import type { LegacyRepShape } from "./repSegmentation";
+import type { ExerciseOrientation } from "../types/session";
 
 const BOTTOM_START = new Set([
   "snatch", "deadlift", "barbell_row", "pendlay_row", "bent_over_row",
@@ -68,6 +69,30 @@ export interface RepSegV2Config {
   top_start_min_descent_s: number;
   top_start_synthetic_ecc_cap_s: number;
   consistency_band: number;
+  /**
+   * Post-process: trim setup motion from rep 1's concentric AND rerack
+   * motion from rep N's eccentric using a "median BOTTOM" position match.
+   *
+   * For bottom-start exercises whose bar starts well below the rep's
+   * "ready" BOTTOM position (curls, cleans, snatches lifted from the floor)
+   * the synthetic-BOTTOM seed anchors at the floor, inflating rep 1's
+   * concentric to include the setup lift. Symmetrically, after the last
+   * rep the athlete typically lowers the bar back to the floor — the
+   * segmenter sees that as part of rep N's eccentric, inflating it.
+   *
+   * We use the operator's observation that every working rep returns to
+   * the same BOTTOM: compute the median BOTTOM of intermediate reps, then
+   *  - walk forward through rep 1's concentric to the first position
+   *    matching that median → that's the real start of rep 1.
+   *  - walk forward through rep N's eccentric to the first position
+   *    matching that median → that's the real end of rep N.
+   *
+   * No-op for deadlifts (floor IS the rep BOTTOM, so positions match),
+   * for top-start lifts (no synthetic floor seed), and for single-rep sets.
+   */
+  recover_first_rep: boolean;
+  /** Tolerance (as a fraction of rep's ROM) for the BOTTOM-position match. */
+  recover_first_rep_pos_tol: number;
 }
 
 export const defaultRepSegV2Config: RepSegV2Config = {
@@ -85,6 +110,8 @@ export const defaultRepSegV2Config: RepSegV2Config = {
   top_start_min_descent_s: 0.20,
   top_start_synthetic_ecc_cap_s: 2.0,
   consistency_band: 0.35,
+  recover_first_rep: true,
+  recover_first_rep_pos_tol: 0.20,
 };
 
 /** Preset names matching `scripts/rep_segmenter_v3.py --preset`. */
@@ -159,6 +186,54 @@ function findExtrema(sig: CleanedSignal, cfg: RepSegV2Config): Extremum[] {
     lastT = t[c];
   }
   return out;
+}
+
+/**
+ * For bottom-start lifts: synthesize a BOTTOM extremum at the start of the
+ * trace so the first concentric is captured. We pick the latest moment in
+ * the early stillness span (the bar resting on the floor before liftoff);
+ * if there is no stillness span before the first TOP, fall back to the
+ * minimum position in the window leading up to that TOP.
+ */
+function makeSyntheticBottomSeed(
+  sig: CleanedSignal,
+  stillness: [number, number][],
+  firstTop: Extremum,
+  cfg: RepSegV2Config
+): Extremum | null {
+  const t0 = sig.t.length ? sig.t[0] : 0;
+  // Prefer the end of the first stillness span before the TOP (last moment
+  // of "bar on floor"). That's the closest analog to a real BOTTOM.
+  let seedT: number | null = null;
+  for (const [a, b] of stillness) {
+    if (b > firstTop.t) break;
+    if (a >= t0 - 1e-6) seedT = b;
+  }
+  if (seedT == null) {
+    // No stillness — pick the lowest position before the first TOP within
+    // a reasonable window. That window must end *before* firstTop so the
+    // seed precedes mid in the cycle walker.
+    const lo = lowerBound(sig.t, Math.max(t0, firstTop.t - 2.0));
+    const hi = Math.min(firstTop.idx, sig.pos_up.length);
+    if (hi - lo < 2) return null;
+    let minPos = Infinity, minIdx = lo;
+    for (let i = lo; i < hi; ++i) {
+      if (sig.pos_up[i] < minPos) { minPos = sig.pos_up[i]; minIdx = i; }
+    }
+    // Only synthesize if there's a meaningful descent below the TOP — i.e.
+    // the bar actually went up from this point. Otherwise we'd manufacture
+    // ghost reps when the trace barely changes.
+    if (firstTop.pos - minPos < cfg.min_rep_displacement_m * 0.5) return null;
+    return { type: "BOTTOM", t: sig.t[minIdx], pos: minPos, idx: minIdx };
+  }
+  const idx = lowerBound(sig.t, seedT);
+  const safeIdx = Math.min(idx, sig.pos_up.length - 1);
+  return {
+    type: "BOTTOM",
+    t: sig.t[safeIdx],
+    pos: sig.pos_up[safeIdx],
+    idx: safeIdx,
+  };
 }
 
 function findStillnessSpans(sig: CleanedSignal, cfg: RepSegV2Config): [number, number][] {
@@ -256,20 +331,49 @@ function repWindowMetrics(
   };
 }
 
+/**
+ * Segment cleaned signal into reps.
+ *
+ * `orientationOverride` (when provided) wins over the exercise-name lookup.
+ * Pass `session.exercise_orientation` here so the operator's choice — set in
+ * MetadataEditor / metadata.json — controls segmentation, even for unusual
+ * exercises or mislabelled sessions.
+ */
 export function segmentV2(
   sig: CleanedSignal,
   exercise: string,
-  cfg: RepSegV2Config = defaultRepSegV2Config
+  cfg: RepSegV2Config = defaultRepSegV2Config,
+  orientationOverride?: ExerciseOrientation
 ): LegacyRepShape[] {
-  const orientation = orientationFor(exercise);
+  const orientation: Orientation =
+    orientationOverride === "top_start"
+      ? "top"
+      : orientationOverride === "bottom_start"
+        ? "bottom"
+        : orientationFor(exercise);
   const extrema = findExtrema(sig, cfg);
   const stillness = findStillnessSpans(sig, cfg);
   if (!extrema.length) return [];
   const t0 = sig.t.length ? sig.t[0] : 0;
 
+  // For bottom-start lifts (deadlift, row, clean…) the bar typically begins
+  // at rest on the floor — no detectable BOTTOM extremum precedes the first
+  // concentric, because the trace is flat. The old code waited for a BOTTOM
+  // before counting, which made the first rep disappear ("doesn't start
+  // counting until top"). Synthesize a BOTTOM at the first stillness span
+  // (or at t0) so the first concentric registers.
+  const syntheticSeed: Extremum | null =
+    orientation === "bottom" && extrema[0].type === "TOP"
+      ? makeSyntheticBottomSeed(sig, stillness, extrema[0], cfg)
+      : null;
+
   // Trim setup
   const pruned: Extremum[] = [];
   let seenBottom = false;
+  if (syntheticSeed) {
+    pruned.push(syntheticSeed);
+    seenBottom = true;
+  }
   for (const ex of extrema) {
     if (ex.t - t0 < cfg.setup_ignore_s && !seenBottom) continue;
     if (!seenBottom && ex.type !== "BOTTOM") continue;
@@ -373,7 +477,212 @@ export function segmentV2(
       confidence: c.confidence,
     });
   }
+  if (cfg.recover_first_rep) {
+    const trimmedFirst = recoverFirstRep(sig, out, cfg);
+    return trimRerackFromLastRep(sig, trimmedFirst, cfg);
+  }
   return out;
+}
+
+/**
+ * Trim setup motion out of rep 1's concentric.
+ *
+ * For bottom-start exercises whose bar starts well below the rep's "ready"
+ * BOTTOM position (curls, cleans, snatches lifted from the floor), the
+ * synthetic-BOTTOM seed in `segmentV2` anchors at the floor. The resulting
+ * rep 1 has a correct TOP/eccentric but an inflated concentric that begins
+ * way down at the floor and includes the entire setup ascent.
+ *
+ * Recovery strategy (uses the operator's observation that every working
+ * rep returns to the same BOTTOM):
+ *   1. Compute the median BOTTOM position from reps 2..N (their
+ *      concentric.t_start positions).
+ *   2. If rep 1's concentric.t_start position is meaningfully below this
+ *      median, walk forward through rep 1's concentric to find the FIRST
+ *      moment the position matched the median (within tolerance).
+ *   3. Set rep 1's concentric.t_start to that moment; recompute velocity
+ *      and ROM. The portion before is true setup and is excluded.
+ *
+ * No-op when:
+ *   - There are fewer than 2 reps (can't establish a reference).
+ *   - Rep 1 already starts at the median BOTTOM (deadlifts, top-start lifts).
+ *   - The forward scan never reaches the median (would mean the lift was
+ *     monotonic with no resting position, which doesn't match the
+ *     "setup-then-reps" pattern this is designed for).
+ */
+function recoverFirstRep(
+  sig: CleanedSignal,
+  reps: LegacyRepShape[],
+  cfg: RepSegV2Config
+): LegacyRepShape[] {
+  if (reps.length < 2) return reps;
+  const r1 = reps[0];
+  const r1StartIdx = lowerBound(sig.t, r1.concentric.t_start);
+  const r1TopIdx = lowerBound(sig.t, r1.concentric.t_end);
+  if (r1StartIdx >= sig.pos_up.length || r1TopIdx <= r1StartIdx) return reps;
+
+  // Reference BOTTOM: median of subsequent reps' concentric.t_start positions.
+  const bottomSamples: number[] = [];
+  for (let i = 1; i < reps.length; ++i) {
+    const idx = lowerBound(sig.t, reps[i].concentric.t_start);
+    if (idx < sig.pos_up.length) bottomSamples.push(sig.pos_up[idx]);
+  }
+  if (bottomSamples.length === 0) return reps;
+  const medianBottom = median(bottomSamples);
+
+  const r1StartPos = sig.pos_up[r1StartIdx];
+  const tol = Math.max(0.015, r1.rom_m * cfg.recover_first_rep_pos_tol);
+
+  // Already at the reference BOTTOM → no setup to trim (deadlift / top-start).
+  if (Math.abs(r1StartPos - medianBottom) <= tol) return reps;
+  // Only trim when r1 starts BELOW the median — the "lifted from floor"
+  // scenario. If it starts above, something else is going on; don't touch.
+  if (r1StartPos > medianBottom) return reps;
+
+  // The TOP of r1 must be clearly above the median BOTTOM — otherwise we
+  // can't trust that what we'd keep is a real rep.
+  const r1TopPos = sig.pos_up[Math.min(r1TopIdx, sig.pos_up.length - 1)];
+  if (r1TopPos - medianBottom < cfg.min_rep_displacement_m) return reps;
+
+  // Walk forward through r1's concentric: first sample within tol of median.
+  let trimIdx = -1;
+  for (let i = r1StartIdx; i < r1TopIdx; ++i) {
+    if (Math.abs(sig.pos_up[i] - medianBottom) <= tol) {
+      trimIdx = i;
+      break;
+    }
+  }
+  if (trimIdx < 0) return reps; // never reached the reference — bail
+  if (trimIdx - r1StartIdx < 2) return reps; // nothing to trim
+
+  // Recompute velocities for the trimmed concentric (trim → top).
+  let peakV = 0;
+  let sumPos = 0;
+  let nPos = 0;
+  for (let i = trimIdx; i <= r1TopIdx && i < sig.vz.length; ++i) {
+    const vi = sig.vz[i];
+    if (vi > peakV) peakV = vi;
+    if (vi > 0.05) { sumPos += vi; nPos++; }
+  }
+  // Recompute ROM over the trimmed rep (trim → eccentric.t_end).
+  const r1EccEndIdx = Math.min(
+    lowerBound(sig.t, r1.eccentric.t_end),
+    sig.pos_up.length - 1
+  );
+  let pmin = Infinity;
+  let pmax = -Infinity;
+  for (let i = trimIdx; i <= r1EccEndIdx; ++i) {
+    const p = sig.pos_up[i];
+    if (p < pmin) pmin = p;
+    if (p > pmax) pmax = p;
+  }
+  const rom = Number.isFinite(pmax - pmin) ? pmax - pmin : r1.rom_m;
+
+  const updated: LegacyRepShape = {
+    ...r1,
+    concentric: {
+      ...r1.concentric,
+      t_start: sig.t[trimIdx],
+      peak_vel: peakV,
+      source: "auto_v2_trimmed",
+    },
+    mean_concentric_velocity: nPos ? sumPos / nPos : peakV * 0.7,
+    peak_concentric_velocity: peakV,
+    rom_m: rom,
+  };
+  return [updated, ...reps.slice(1)];
+}
+
+/**
+ * Trim rerack motion out of the last rep's eccentric.
+ *
+ * Mirror of `recoverFirstRep` applied to the trailing edge of the set. The
+ * segmenter sees the bar's descent past the rep's BOTTOM (down to the
+ * floor / rack) as part of the last rep's eccentric phase. We use the
+ * median BOTTOM of intermediate reps to detect where the *real* eccentric
+ * should end (= when the bar first reaches that position on its way down)
+ * and trim everything after as rerack.
+ */
+function trimRerackFromLastRep(
+  sig: CleanedSignal,
+  reps: LegacyRepShape[],
+  cfg: RepSegV2Config
+): LegacyRepShape[] {
+  if (reps.length < 2) return reps;
+  const rN = reps[reps.length - 1];
+  const rNStartIdx = lowerBound(sig.t, rN.concentric.t_start);
+  const rNTopIdx = lowerBound(sig.t, rN.concentric.t_end);
+  const rNEndIdx = Math.min(
+    lowerBound(sig.t, rN.eccentric.t_end),
+    sig.pos_up.length - 1
+  );
+  if (rNTopIdx >= rNEndIdx || rNStartIdx >= sig.pos_up.length) return reps;
+
+  // Reference BOTTOM: median across intermediate reps' eccentric.t_end
+  // (each is the resting position between reps). Uses every rep except
+  // the last — the one we're about to trim.
+  const bottomSamples: number[] = [];
+  for (let i = 0; i < reps.length - 1; ++i) {
+    const idx = lowerBound(sig.t, reps[i].eccentric.t_end);
+    if (idx < sig.pos_up.length) bottomSamples.push(sig.pos_up[idx]);
+  }
+  if (bottomSamples.length === 0) return reps;
+  const medianBottom = median(bottomSamples);
+
+  const rNEndPos = sig.pos_up[rNEndIdx];
+  const tol = Math.max(0.015, rN.rom_m * cfg.recover_first_rep_pos_tol);
+
+  // Already at the median → no rerack to trim (top-start, deadlift).
+  if (Math.abs(rNEndPos - medianBottom) <= tol) return reps;
+  // Only trim if rep N ends BELOW the median — the "lowered past resting
+  // to the floor" scenario. Don't touch the other direction (would be
+  // unusual / would risk truncating a legitimate descent).
+  if (rNEndPos > medianBottom) return reps;
+
+  // The TOP of rep N must be above the median by at least the rep gate —
+  // otherwise we can't be sure there's a real rep to keep.
+  const rNTopPos = sig.pos_up[Math.min(rNTopIdx, sig.pos_up.length - 1)];
+  if (rNTopPos - medianBottom < cfg.min_rep_displacement_m) return reps;
+
+  // Walk forward through rep N's eccentric: first sample within tol of
+  // median. That's when the bar first passed through ready position on
+  // its way to the floor.
+  let trimIdx = -1;
+  for (let i = rNTopIdx; i <= rNEndIdx; ++i) {
+    if (Math.abs(sig.pos_up[i] - medianBottom) <= tol) {
+      trimIdx = i;
+      break;
+    }
+  }
+  if (trimIdx < 0) return reps;
+  if (rNEndIdx - trimIdx < 2) return reps; // nothing meaningful to trim
+
+  // Recompute ROM over the trimmed rep (start → trim).
+  let pmin = Infinity;
+  let pmax = -Infinity;
+  for (let i = rNStartIdx; i <= trimIdx; ++i) {
+    const p = sig.pos_up[i];
+    if (p < pmin) pmin = p;
+    if (p > pmax) pmax = p;
+  }
+  const rom = Number.isFinite(pmax - pmin) ? pmax - pmin : rN.rom_m;
+
+  const trimT = sig.t[trimIdx];
+  const updated: LegacyRepShape = {
+    ...rN,
+    eccentric: {
+      ...rN.eccentric,
+      t_end: trimT,
+      source: "auto_v2_trimmed",
+    },
+    rest: {
+      t_start: trimT,
+      t_end: trimT,
+      source: "auto_v2_trimmed",
+    },
+    rom_m: rom,
+  };
+  return [...reps.slice(0, -1), updated];
 }
 
 function makeCycle(

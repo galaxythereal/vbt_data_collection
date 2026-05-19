@@ -7,6 +7,8 @@
  *   Shift+← / →    frame step ±10
  *   Z / X          previous / next rep
  *   F              toggle focus on selected rep
+ *   Esc            clear selection + focus (frees the video to play past
+ *                  rep boundaries without auto-snapping)
  *
  * REP MANIPULATION (operate on selected rep)
  *   N / Insert     insert rep at playhead
@@ -145,6 +147,20 @@ export function Hotkeys() {
       const sess = st.session;
       if (!sess) return;
       const orientation: ExerciseOrientation = sess.exercise_orientation;
+
+      // Esc — clear selection + drop focus. Useful when the video appears
+      // pinned to a rep and the operator wants to scrub freely.
+      if (e.key === "Escape") {
+        if (
+          st.selected_rep_id != null ||
+          st.focused_rep_id != null
+        ) {
+          e.preventDefault();
+          if (st.focused_rep_id != null) st.setFocusedRep(null);
+          if (st.selected_rep_id != null) st.setSelectedRep(null);
+          return;
+        }
+      }
 
       // Tag-prefix mode: if T pressed previously, treat next key as category.
       const now = performance.now();

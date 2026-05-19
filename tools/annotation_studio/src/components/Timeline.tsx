@@ -69,7 +69,8 @@ interface StableVars {
 
 export function Timeline() {
   const session = useSessionStore((s) => s.session);
-  const playhead = useSessionStore((s) => s.playhead_t_s);
+  // Playhead is read inside <TimelinePlayheadLine/> + <MinimapPlayhead/>
+  // so this component doesn't re-render at ~15 Hz while the video plays.
   const setPlayhead = useSessionStore((s) => s.setPlayhead);
   const selectedRepId = useSessionStore((s) => s.selected_rep_id);
   const setSelectedRep = useSessionStore((s) => s.setSelectedRep);
@@ -333,7 +334,6 @@ export function Timeline() {
   if (t1 <= t0) return null;
 
   const tToPx = (t: number) => (t - vMin) * pxPerSec;
-  const playheadPx = tToPx(playhead);
   const selectedRep =
     sortedReps.find((r) => r.rep_id === selectedRepId) ?? null;
   const fps = frames && frames.count > 1 ? Math.round(1 / frames.step) : 0;
@@ -407,7 +407,6 @@ export function Timeline() {
         orientation={orientation}
         t0={t0}
         t1={t1}
-        playhead={playhead}
         vMin={vMin}
         vMax={vMax}
         frames={frames}
@@ -469,12 +468,7 @@ export function Timeline() {
               )}
             </div>
           ))}
-          <div
-            className="timeline-playhead"
-            style={{ left: playheadPx, height: "100%" }}
-          >
-            <div className="timeline-playhead-cap" />
-          </div>
+          <TimelinePlayheadLine vMin={vMin} pxPerSec={pxPerSec} withCap />
         </div>
       </div>
 
@@ -527,15 +521,7 @@ export function Timeline() {
           onHandleLeave={onHandleLeave}
         />
 
-        <div
-          className="timeline-playhead"
-          style={{
-            left: playheadPx,
-            top: 0,
-            bottom: 0,
-            height: "100%",
-          }}
-        />
+        <TimelinePlayheadLine vMin={vMin} pxPerSec={pxPerSec} />
 
         {tooltip && (
           <div
@@ -572,7 +558,10 @@ export function Timeline() {
                 shortcut="S"
                 onClick={() => {
                   pushUndo();
-                  splitRep(selectedRepId, playhead);
+                  splitRep(
+                    selectedRepId,
+                    useSessionStore.getState().playhead_t_s
+                  );
                   setContextMenu(null);
                 }}
               />
@@ -624,7 +613,6 @@ function Minimap({
   orientation,
   t0,
   t1,
-  playhead,
   vMin,
   vMax,
   frames,
@@ -636,7 +624,6 @@ function Minimap({
   orientation: ExerciseOrientation;
   t0: number;
   t1: number;
-  playhead: number;
   vMin: number;
   vMax: number;
   frames: FrameLookup | null;
@@ -652,7 +639,6 @@ function Minimap({
     Math.max(0, Math.min(100, ((t - t0) / totalDur) * 100));
   const viewL = toPct(vMin);
   const viewW = Math.max(1, toPct(vMax) - viewL);
-  const phPct = toPct(playhead);
 
   const onPointerDown = (e: React.PointerEvent) => {
     if (!ref.current) return;
@@ -742,7 +728,40 @@ function Minimap({
         className="minimap-viewport"
         style={{ left: `${viewL}%`, width: `${viewW}%` }}
       />
-      <div className="minimap-playhead" style={{ left: `${phPct}%` }} />
+      <MinimapPlayhead t0={t0} totalDur={totalDur} />
+    </div>
+  );
+}
+
+function MinimapPlayhead({
+  t0,
+  totalDur,
+}: {
+  t0: number;
+  totalDur: number;
+}) {
+  const playhead = useSessionStore((s) => s.playhead_t_s);
+  const phPct = Math.max(0, Math.min(100, ((playhead - t0) / totalDur) * 100));
+  return <div className="minimap-playhead" style={{ left: `${phPct}%` }} />;
+}
+
+function TimelinePlayheadLine({
+  vMin,
+  pxPerSec,
+  withCap = false,
+}: {
+  vMin: number;
+  pxPerSec: number;
+  withCap?: boolean;
+}) {
+  const playhead = useSessionStore((s) => s.playhead_t_s);
+  const left = (playhead - vMin) * pxPerSec;
+  return (
+    <div
+      className="timeline-playhead"
+      style={{ left, top: 0, bottom: 0, height: "100%" }}
+    >
+      {withCap && <div className="timeline-playhead-cap" />}
     </div>
   );
 }

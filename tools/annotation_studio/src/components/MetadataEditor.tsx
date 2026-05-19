@@ -10,7 +10,13 @@
  */
 import { useState } from "react";
 import { useSessionStore } from "../store/session";
-import type { SessionInfo, SubjectDaySnapshot, TrainingContext } from "../types/session";
+import type {
+  ExerciseOrientation,
+  SessionInfo,
+  SubjectDaySnapshot,
+  TrainingContext,
+} from "../types/session";
+import { orientationOf } from "../types/session";
 
 export function MetadataEditor() {
   const session = useSessionStore((s) => s.session);
@@ -171,6 +177,13 @@ export function MetadataEditor() {
             className={tw}
             value={i.exercise_variant}
             onChange={(e) => patch({ exercise_variant: e.target.value })}
+          />
+        </Row>
+        <Row label="Orientation">
+          <OrientationPicker
+            value={session.exercise_orientation}
+            inferred={orientationOf(i.exercise)}
+            onChange={(v) => patch({ exercise_orientation: v })}
           />
         </Row>
         <Row label="Bar (kg)">
@@ -450,5 +463,38 @@ function Combo({
         </option>
       ))}
     </select>
+  );
+}
+
+function OrientationPicker({
+  value,
+  inferred,
+  onChange,
+}: {
+  value: ExerciseOrientation;
+  inferred: ExerciseOrientation;
+  onChange: (v: ExerciseOrientation) => void;
+}) {
+  const overridden = value !== inferred;
+  return (
+    <div className="flex items-center gap-2">
+      <select
+        className={tw}
+        value={value}
+        onChange={(e) => onChange(e.target.value as ExerciseOrientation)}
+        title="Top-start: squat / bench / OHP — bar starts racked, descends first. Bottom-start: deadlift / row / clean — bar starts at floor or hang, ascends first."
+      >
+        <option value="top_start">top_start (descends first)</option>
+        <option value="bottom_start">bottom_start (ascends first)</option>
+      </select>
+      <span
+        className={`text-[10px] font-mono ${
+          overridden ? "text-amber-300" : "text-[var(--text-dim)]"
+        }`}
+        title={`Auto-inferred from exercise name: ${inferred}`}
+      >
+        {overridden ? `≠ ${inferred}` : "auto"}
+      </span>
+    </div>
   );
 }

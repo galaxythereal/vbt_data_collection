@@ -30,6 +30,7 @@ import {
 } from "../types/session";
 import { matchByTemplate, matchesToReps } from "../signal/templateMatcher";
 import { RepBandsOverlay } from "./RepBandsOverlay";
+import { VelocityOverview } from "./VelocityOverview";
 
 const CHART_HEIGHT = 140;
 const SYNC_KEY = "vbt-x";
@@ -156,8 +157,7 @@ export function Charts() {
         viewMax={viewMax}
         onChartClick={onChartClick}
       />
-      <ChartWithOverlay
-        kind="acceleration"
+      <VelocityOverview
         session={session}
         cleaned={cleaned}
         viewMin={viewMin}
@@ -373,7 +373,8 @@ function StateStrip({
   const setPlayhead = useSessionStore((s) => s.setPlayhead);
   const setSelectedRep = useSessionStore((s) => s.setSelectedRep);
   const setView = useSessionStore((s) => s.setView);
-  const playhead = useSessionStore((s) => s.playhead_t_s);
+  // Playhead is read inside <StateStripPlayhead/> so the bands+labels of
+  // this strip don't re-render on every playhead push during playback.
 
   useEffect(() => {
     const el = wrapRef.current;
@@ -391,7 +392,6 @@ function StateStrip({
   const span = viewMax - viewMin;
   if (span <= 0) return null;
   const tToPx = (t: number) => ((t - viewMin) / span) * w;
-  const playheadPx = tToPx(playhead);
 
   function bandsFor(r: RepAnnotation): React.ReactElement[] {
     const els: React.ReactElement[] = [];
@@ -490,18 +490,35 @@ function StateStrip({
           </div>
         );
       })}
-      <div
-        style={{
-          position: "absolute",
-          left: playheadPx,
-          top: 0,
-          bottom: 0,
-          width: 2,
-          background: "var(--playhead)",
-          pointerEvents: "none",
-          zIndex: 5,
-        }}
-      />
+      <StateStripPlayhead viewMin={viewMin} span={span} width={w} />
     </div>
+  );
+}
+
+function StateStripPlayhead({
+  viewMin,
+  span,
+  width,
+}: {
+  viewMin: number;
+  span: number;
+  width: number;
+}) {
+  const playhead = useSessionStore((s) => s.playhead_t_s);
+  const left = ((playhead - viewMin) / span) * width;
+  if (!Number.isFinite(left)) return null;
+  return (
+    <div
+      style={{
+        position: "absolute",
+        left,
+        top: 0,
+        bottom: 0,
+        width: 2,
+        background: "var(--playhead)",
+        pointerEvents: "none",
+        zIndex: 5,
+      }}
+    />
   );
 }

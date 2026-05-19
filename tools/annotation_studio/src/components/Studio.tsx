@@ -23,6 +23,7 @@ import { Hotkeys } from "./Hotkeys";
 import { MetadataEditor } from "./MetadataEditor";
 import { ReadinessGate } from "./ReadinessGate";
 import { RepTable } from "./RepTable";
+import { SessionBrowser } from "./SessionBrowser";
 import { SessionPicker } from "./SessionPicker";
 import { SetOperatorForm } from "./SetOperatorForm";
 import { SetTabs } from "./SetTabs";
@@ -94,6 +95,7 @@ export function Studio() {
   const session = useSessionStore((s) => s.session);
   const dirName = session?.dirName ?? "";
   const [metaVisible, setMetaVisible] = useState(true);
+  const [browserVisible, setBrowserVisible] = useState(true);
   const [rightTab, setRightTab] = useState<RightTab>("operator_gt");
 
   // Panel sizes
@@ -108,24 +110,38 @@ export function Studio() {
         <header className="flex items-center gap-3 px-3 py-2 bg-[var(--bg-1)] border-b border-[var(--border)]">
           <span className="font-medium text-[var(--accent)]">VBT Annotation Studio</span>
           <div className="flex-1" />
+          <button
+            onClick={() => setBrowserVisible((v) => !v)}
+            className={`transport-btn text-xs ${browserVisible ? "active" : ""}`}
+            title="Toggle session browser"
+          >
+            ⊞
+          </button>
           <SessionPicker />
         </header>
-        <main className="flex-1 grid place-items-center text-[var(--text-dim)]">
-          <div className="text-center max-w-md">
-            <div className="text-4xl mb-4">📂</div>
-            <p className="mb-2">
-              Open a session folder from{" "}
-              <code className="bg-[var(--bg-2)] px-1.5 py-0.5 rounded text-xs">
-                datasets/sessions/
-              </code>
-            </p>
-            <p className="text-xs opacity-70">
-              Reads <code>metadata.json</code>, <code>rep_segments.json</code>,{" "}
-              <code>raw_imu.csv</code>, <code>marker_positions.csv</code>,{" "}
-              <code>video_frames.csv</code>, <code>ir_video.mp4</code>.
-            </p>
-          </div>
-        </main>
+        <div className="flex-1 flex min-h-0">
+          {browserVisible && (
+            <aside style={{ width: 220, minWidth: 220 }}>
+              <SessionBrowser visible={browserVisible} />
+            </aside>
+          )}
+          <main className="flex-1 grid place-items-center text-[var(--text-dim)]">
+            <div className="text-center max-w-md">
+              <div className="text-4xl mb-4">📂</div>
+              <p className="mb-2">
+                Open a session folder from{" "}
+                <code className="bg-[var(--bg-2)] px-1.5 py-0.5 rounded text-xs">
+                  datasets/sessions/
+                </code>
+              </p>
+              <p className="text-xs opacity-70">
+                Reads <code>metadata.json</code>, <code>rep_segments.json</code>,{" "}
+                <code>raw_imu.csv</code>, <code>marker_positions.csv</code>,{" "}
+                <code>video_frames.csv</code>, <code>ir_video.mp4</code>.
+              </p>
+            </div>
+          </main>
+        </div>
       </div>
     );
   }
@@ -142,6 +158,13 @@ export function Studio() {
         </span>
         <div className="flex-1" />
         <button
+          onClick={() => setBrowserVisible((v) => !v)}
+          className={`transport-btn text-xs ${browserVisible ? "active" : ""}`}
+          title="Toggle session browser"
+        >
+          ⊞
+        </button>
+        <button
           onClick={() => setMetaVisible((v) => !v)}
           className={`transport-btn text-xs ${metaVisible ? "active" : ""}`}
           title="Toggle metadata panel (M)"
@@ -154,8 +177,15 @@ export function Studio() {
       <Toolbar />
       <ReadinessGate />
 
-      {/* Main content area: 3 columns */}
+      {/* Main content area: browser sidebar + 3 columns */}
       <div className="flex-1 flex min-h-0">
+        {/* SESSION BROWSER sidebar */}
+        {browserVisible && (
+          <aside style={{ width: 220, minWidth: 220 }}>
+            <SessionBrowser visible={browserVisible} />
+          </aside>
+        )}
+
         {/* LEFT: Set tabs + Rep table */}
         <aside
           className="flex flex-col min-h-0 bg-[var(--bg-1)] border-r border-[var(--border)]"

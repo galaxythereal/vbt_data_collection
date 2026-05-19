@@ -30,6 +30,7 @@ interface MatchedCycle {
   t_conc_start: number; // bar at bottom (top_start) or floor (bottom_start)
   t_conc_end: number; // bar at top (top_start) or lockout (bottom_start)
   t_ecc_start: number; // top before descent (top_start) — for bottom_start = top_dwell_end
+  t_ecc_end: number;   // bottom after descent (both orientations)
   rom_m: number;
   peak_vel: number;
   correlation: number;
@@ -81,6 +82,35 @@ function findExtrema(
     }
   }
   return { tops, bots };
+}
+
+/**
+ * For bottom_start lifts where the bar starts on the floor (deadlift, clean,
+ * snatch) the position trace is flat before liftoff, so no BOTTOM extremum
+ * is detected before the first TOP. To match the first rep we synthesize a
+ * "prior BOTTOM" at the lowest point in the window leading up to the TOP.
+ * Returns the sample index, or undefined if there isn't a meaningful descent
+ * (guards against ghost reps on truly flat traces).
+ */
+function synthesizePrevBottom(
+  y: Float32Array,
+  topIdx: number,
+  minRomM: number
+): number | undefined {
+  if (topIdx < 3) return undefined;
+  let minPos = Infinity;
+  let minIdx = 0;
+  // Search backward from the TOP to the start of the trace.
+  for (let i = topIdx - 1; i >= 0; --i) {
+    if (y[i] < minPos) {
+      minPos = y[i];
+      minIdx = i;
+    }
+  }
+  // Require a meaningful ascent from the synthetic BOTTOM to the TOP —
+  // otherwise we'd manufacture reps on noise.
+  if (y[topIdx] - minPos < minRomM * 0.5) return undefined;
+  return minIdx;
 }
 
 /** Snap clicked time to the nearest local position extremum (within ±0.8 s). */
@@ -205,8 +235,18 @@ export function matchByTemplate(
   // For top_start: template = previous TOP → seed BOTTOM → next TOP.
   // For bottom_start: template = previous BOTTOM → seed TOP → next BOTTOM.
   const opp = centreKind === "BOTTOM" ? tops : bots;
-  const prevOpp = [...opp].reverse().find((i) => i < seedIdx);
+  const prevOppDetected = [...opp].reverse().find((i) => i < seedIdx);
   const nextOpp = opp.find((i) => i > seedIdx);
+  // For bottom_start, if the seed is the first TOP (bar started at floor and
+  // there's no detected BOTTOM extremum before it), synthesize one from the
+  // earliest minimum position before the seed. This mirrors the synthetic-
+  // BOTTOM logic in repSegmentationV2 so seed mode behaves like auto-segment.
+  const prevOpp =
+    prevOppDetected !== undefined
+      ? prevOppDetected
+      : orientation === "bottom_start" && centreKind === "TOP"
+        ? synthesizePrevBottom(y, seedIdx, opts.min_rom_m ?? 0.05)
+        : undefined;
   if (prevOpp === undefined || nextOpp === undefined)
     return { matches: [], seedKind: snap.kind, templateDurationS: 0 };
 
@@ -242,9 +282,18 @@ export function matchByTemplate(
     const cand = resample(candRaw, N);
     const corr = ncc(templ, cand);
     if (corr < threshold) continue;
-    // Find the bracketing opposite-kind extrema for this match
-    const candPrevOpp = [...opp].reverse().find((i) => i < centreI);
+    // Find the bracketing opposite-kind extrema for this match. For
+    // bottom_start, synthesize a prior BOTTOM if the candidate TOP is the
+    // first one (bar resting at floor before liftoff — no detectable
+    // BOTTOM extremum precedes it).
+    const candPrevOppDetected = [...opp].reverse().find((i) => i < centreI);
     const candNextOpp = opp.find((i) => i > centreI);
+    const candPrevOpp =
+      candPrevOppDetected !== undefined
+        ? candPrevOppDetected
+        : orientation === "bottom_start" && centreKind === "TOP"
+          ? synthesizePrevBottom(y, centreI, opts.min_rom_m ?? 0.05)
+          : undefined;
     if (candPrevOpp === undefined || candNextOpp === undefined) continue;
     if (seenIdx.has(centreI)) continue;
     seenIdx.add(centreI);
@@ -269,15 +318,19 @@ export function matchByTemplate(
     }
 
     // Build a MatchedCycle in the same convention as the python cycle:
-    //   t_conc_start = BOTTOM (for top_start) / floor BOTTOM (for bottom_start)
-    //   t_conc_end   = TOP (for top_start) / lockout TOP (for bottom_start)
-    //   t_ecc_start  = previous TOP (top_start) / N/A
+    //   top_start    — chronological: prev TOP → BOTTOM (centre) → next TOP
+    //                  concentric is BOTTOM → next TOP,
+    //                  eccentric  is prev TOP → BOTTOM.
+    //   bottom_start — chronological: prev BOTTOM → TOP (centre) → next BOTTOM
+    //                  concentric is prev BOTTOM → TOP,
+    //                  eccentric  is TOP → next BOTTOM.
     let cyc: MatchedCycle;
     if (orientation === "top_start") {
       cyc = {
         t_conc_start: t[centreI],
         t_conc_end: t[candNextOpp],
         t_ecc_start: t[candPrevOpp],
+        t_ecc_end: t[centreI],
         rom_m: rom,
         peak_vel: peakV,
         correlation: corr,
@@ -287,6 +340,7 @@ export function matchByTemplate(
         t_conc_start: t[candPrevOpp],
         t_conc_end: t[centreI],
         t_ecc_start: t[centreI],
+        t_ecc_end: t[candNextOpp],
         rom_m: rom,
         peak_vel: peakV,
         correlation: corr,
@@ -351,10 +405,12 @@ export function matchesToReps(
       peak_vel: m.peak_vel,
       source: "auto",
     };
+    // top_start: eccentric is the leading descent (prev TOP → BOTTOM).
+    // bottom_start: eccentric is the trailing descent (TOP → next BOTTOM).
     const eccentric =
       orientation === "top_start"
-        ? phase(m.t_ecc_start, m.t_conc_start)
-        : phase(m.t_conc_end, m.t_conc_end); // we don't have descent data for bottom_start
+        ? phase(m.t_ecc_start, m.t_ecc_end)
+        : phase(m.t_ecc_start, m.t_ecc_end);
     const bottom_dwell = phase(m.t_conc_start, m.t_conc_start);
     const top_dwell = phase(m.t_conc_end, m.t_conc_end);
     const rom = m.rom_m;

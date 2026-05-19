@@ -174,7 +174,7 @@ interface RepsParseResult {
 
 /** Parse rep_segments.json which may be either v6 object form or legacy
  *  bare-array form. Always returns the v6 in-memory shape. */
-function parseRepsJson(
+export function parseRepsJson(
   text: string,
   exercise: string,
   orientationHint?: SessionData["exercise_orientation"]
@@ -201,7 +201,7 @@ function parseRepsJson(
   return { reps, rejected, reviewPhase };
 }
 
-function parseNonRepIntervals(text: string): NonRepInterval[] {
+export function parseNonRepIntervals(text: string): NonRepInterval[] {
   try {
     const parsed = JSON.parse(text);
     const arr = Array.isArray(parsed) ? parsed : parsed?.intervals ?? [];

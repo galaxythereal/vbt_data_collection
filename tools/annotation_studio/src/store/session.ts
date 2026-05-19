@@ -918,10 +918,17 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
     const st = get();
     const sess = st.session;
     if (!sess) return;
-    set({
-      session: { ...sess, info: { ...sess.info, ...patch } },
-      meta_dirty: true,
-    });
+    // `exercise_orientation` lives both inside info (persisted in
+    // metadata.json) AND at the top of SessionData (read by every
+    // segmentation / phase consumer). Keep them in sync when patched.
+    const nextSession = {
+      ...sess,
+      info: { ...sess.info, ...patch },
+      ...(patch.exercise_orientation
+        ? { exercise_orientation: patch.exercise_orientation }
+        : {}),
+    };
+    set({ session: nextSession, meta_dirty: true });
   },
 
   setReviewPhase(phase) {

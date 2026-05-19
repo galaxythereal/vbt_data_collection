@@ -59,13 +59,12 @@ export function Toolbar() {
   const setSeedMode = useSessionStore((s) => s.setSeedMode);
   const seed_click_count = useSessionStore((s) => s.seed_click_count);
   const resetSeedClicks = useSessionStore((s) => s.resetSeedClicks);
+  const intervals_dirty = useSessionStore((s) => s.intervals_dirty);
+  const takePendingLog = useSessionStore((s) => s.takePendingLog);
 
   if (!session) return null;
 
   const dirty = reps_dirty || meta_dirty;
-
-  const intervals_dirty = useSessionStore((s) => s.intervals_dirty);
-  const takePendingLog = useSessionStore((s) => s.takePendingLog);
 
   async function onSave() {
     if (!session) return;
@@ -73,7 +72,7 @@ export function Toolbar() {
     try {
       const pending = takePendingLog();
       const r = await saveSession(session, {
-        saveReps: reps_dirty,
+        saveReps: reps_dirty || session.reps.length > 0,
         saveMeta: meta_dirty,
         saveIntervals: intervals_dirty,
         appendLog: pending,
@@ -183,7 +182,7 @@ export function Toolbar() {
           const orientation = session.exercise_orientation;
           const cfg = applyPresetV2(autoV2Cfg, currentPreset);
           const legacy = useV2
-            ? segmentV2(cleaned, session.info.exercise || "", cfg)
+            ? segmentV2(cleaned, session.info.exercise || "", cfg, orientation)
             : segmentCleanedSignal(cleaned, autoCfg);
           const upgraded = legacy.map((r) => normalizeRep(r, orientation, "auto"));
           replaceReps(upgraded);
@@ -229,7 +228,12 @@ export function Toolbar() {
             min_rep_displacement_m: Math.max(0.03, refRom * 0.6),
             consistency_band: 0.25,
           };
-          const legacy = segmentV2(cleaned, session.info.exercise || "", tightCfg);
+          const legacy = segmentV2(
+            cleaned,
+            session.info.exercise || "",
+            tightCfg,
+            orientation
+          );
           const upgraded = legacy.map((r) => normalizeRep(r, orientation, "auto"));
           replaceReps(upgraded);
           setLastSegToast(
