@@ -11,9 +11,8 @@
  *   • A trail of the marker's last ~30 frames (motion ribbon).
  *   • The current rep's phase label at top-left.
  *
- * Playback transport mirrors a video editor: play/pause, step ±1 frame
- * (left/right arrow), jump to next/prev rep (PageUp/PageDown), set
- * playback speed (0.25× / 1× / 4×).
+ * Playback transport mirrors a video editor: play/pause, step ±1 frame,
+ * step ±1 second, jump to next/prev rep, and set playback speed.
  */
 
 #include "annotation/SessionData.h"
@@ -42,6 +41,10 @@ private:
     void draw_marker_overlay_(const ImVec2& image_pos, const ImVec2& image_size);
     void draw_phase_badge_(const ImVec2& image_pos);
     int  current_rep_index_at_(double t_s) const;
+    double rep_start_(const RepAnnotation& rep) const;
+    double rep_end_(const RepAnnotation& rep) const;
+    void seek_relative_seconds_(double dt_s);
+    void seek_relative_frames_(int frame_delta);
 
     SessionData* session_ = nullptr;
     VideoCache*  cache_   = nullptr;

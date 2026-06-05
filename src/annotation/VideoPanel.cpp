@@ -21,52 +21,8 @@ double VideoPanel::render(double playhead_t_s, double t0_session) {
         return playhead_t_s_;
     }
 
-    // Transport bar.
-    if (ImGui::Button(playing_ ? "Pause (Space)" : "Play (Space)"))
+    if (ImGui::IsKeyPressed(ImGuiKey_Space, false) && !ImGui::GetIO().WantTextInput)
         playing_ = !playing_;
-    if (ImGui::IsKeyPressed(ImGuiKey_Space, false)) playing_ = !playing_;
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(120);
-    ImGui::SliderFloat("speed", &speed_, 0.1f, 8.0f, "%.2fx",
-                        ImGuiSliderFlags_Logarithmic);
-    ImGui::SameLine();
-    if (ImGui::Button("|<<")) {
-        // Jump to start of previous rep.
-        int idx = current_rep_index_at_(playhead_t_s_);
-        if (idx > 0)        playhead_t_s_ = session_->reps()[idx - 1].concentric.t_start_s;
-        else if (idx == 0)  playhead_t_s_ = session_->reps()[0].concentric.t_start_s;
-    }
-    ImGui::SameLine();
-    if (ImGui::Button(">>|")) {
-        int idx = current_rep_index_at_(playhead_t_s_);
-        int n   = (int)session_->reps().size();
-        if (idx >= 0 && idx + 1 < n)
-            playhead_t_s_ = session_->reps()[idx + 1].concentric.t_start_s;
-    }
-    ImGui::SameLine();
-    // Step ±1 frame.
-    if (ImGui::Button("<")) {
-        if (cache_ && cache_->is_open()) {
-            int cur = cache_->current_frame_index();
-            const auto& vi = session_->video_index();
-            if (cur > 0 && (size_t)(cur - 1) < vi.size())
-                playhead_t_s_ = vi.unified_t_s[cur - 1];
-        }
-    }
-    ImGui::SameLine();
-    if (ImGui::Button(">")) {
-        if (cache_ && cache_->is_open()) {
-            int cur = cache_->current_frame_index();
-            const auto& vi = session_->video_index();
-            if (cur >= 0 && (size_t)(cur + 1) < vi.size())
-                playhead_t_s_ = vi.unified_t_s[cur + 1];
-        }
-    }
-    ImGui::SameLine();
-    ImGui::TextDisabled("frame %d / %d   |   t = %.3f s",
-        cache_ ? cache_->current_frame_index() : -1,
-        cache_ ? cache_->frame_count() : 0,
-        playhead_t_s_ - t0_session);
 
     // Auto-advance.
     if (playing_) {
@@ -88,21 +44,73 @@ double VideoPanel::render(double playhead_t_s, double t0_session) {
         cache_->seek_to_time(playhead_t_s_);
         unsigned int tex = cache_->gl_texture();
         if (tex != 0 && cache_->current_frame_valid()) {
-            float avail_w = ImGui::GetContentRegionAvail().x;
-            float avail_h = std::max(120.0f, ImGui::GetContentRegionAvail().y - 40.0f);
+            float avail_w = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+            float avail_h = std::max(1.0f, ImGui::GetContentRegionAvail().y);
             float w = (float)cache_->width();
             float h = (float)cache_->height();
-            float aspect = w / h;
+            float aspect = h > 0.0f ? w / h : 16.0f / 9.0f;
             float disp_w = avail_w;
             float disp_h = avail_w / aspect;
             if (disp_h > avail_h) {
                 disp_h = avail_h;
                 disp_w = avail_h * aspect;
             }
+            ImVec2 cursor = ImGui::GetCursorPos();
+            if (disp_w < avail_w)
+                ImGui::SetCursorPosX(cursor.x + (avail_w - disp_w) * 0.5f);
+            if (disp_h < avail_h)
+                ImGui::SetCursorPosY(cursor.y + (avail_h - disp_h) * 0.5f);
             ImVec2 pos = ImGui::GetCursorScreenPos();
             ImGui::Image((void*)(intptr_t)tex, ImVec2(disp_w, disp_h));
+            const ImVec2 after_image_cursor = ImGui::GetCursorScreenPos();
             draw_marker_overlay_(pos, ImVec2(disp_w, disp_h));
             draw_phase_badge_(pos);
+
+            auto* draw = ImGui::GetWindowDrawList();
+            const ImVec2 controls_pos(pos.x + 8.0f, pos.y + 8.0f);
+            const float controls_w = std::min(std::max(1.0f, disp_w - 16.0f), 360.0f);
+            const float controls_h = ImGui::GetFrameHeight() + 8.0f;
+            draw->AddRectFilled(
+                ImVec2(controls_pos.x - 4.0f, controls_pos.y - 4.0f),
+                ImVec2(controls_pos.x + controls_w, controls_pos.y + controls_h),
+                IM_COL32(0, 0, 0, 135),
+                4.0f);
+            ImGui::SetCursorScreenPos(controls_pos);
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4.0f, 1.0f));
+            if (ImGui::SmallButton(playing_ ? "Pause##video_overlay" : "Play##video_overlay"))
+                playing_ = !playing_;
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(52.0f);
+            ImGui::SliderFloat("##video_speed", &speed_, 0.1f, 8.0f, "%.1fx",
+                                ImGuiSliderFlags_Logarithmic);
+            ImGui::SameLine();
+            if (ImGui::SmallButton("|<<##video_prev_rep")) {
+                int idx = current_rep_index_at_(playhead_t_s_);
+                if (idx > 0)        playhead_t_s_ = rep_start_(session_->reps()[idx - 1]);
+                else if (idx == 0)  playhead_t_s_ = rep_start_(session_->reps()[0]);
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton(">>|##video_next_rep")) {
+                int idx = current_rep_index_at_(playhead_t_s_);
+                int n   = (int)session_->reps().size();
+                if (idx >= 0 && idx + 1 < n)
+                    playhead_t_s_ = rep_start_(session_->reps()[idx + 1]);
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("-1s##video_back_s")) seek_relative_seconds_(-1.0);
+            ImGui::SameLine();
+            if (ImGui::SmallButton("<##video_back_f")) seek_relative_frames_(-1);
+            ImGui::SameLine();
+            if (ImGui::SmallButton(">##video_next_f")) seek_relative_frames_(1);
+            ImGui::SameLine();
+            if (ImGui::SmallButton("+1s##video_forward_s")) seek_relative_seconds_(1.0);
+            ImGui::SameLine();
+            ImGui::TextDisabled("f %d/%d %.2fs",
+                cache_ ? cache_->current_frame_index() : -1,
+                cache_ ? cache_->frame_count() : 0,
+                playhead_t_s_ - t0_session);
+            ImGui::PopStyleVar();
+            ImGui::SetCursorScreenPos(after_image_cursor);
         } else {
             ImGui::TextDisabled("Decoding frame…");
         }
@@ -116,10 +124,37 @@ int VideoPanel::current_rep_index_at_(double t_s) const {
     if (!session_) return -1;
     const auto& reps = session_->reps();
     for (int i = 0; i < (int)reps.size(); ++i) {
-        if (t_s >= reps[i].concentric.t_start_s
-            && t_s <= reps[i].rest.t_end_s) return i;
+        if (t_s >= rep_start_(reps[i]) && t_s <= rep_end_(reps[i])) return i;
     }
     return -1;
+}
+
+double VideoPanel::rep_start_(const RepAnnotation& rep) const {
+    if (rep.t_start_s > 0.0) return rep.t_start_s;
+    return std::min(rep.concentric.t_start_s, rep.eccentric.t_start_s);
+}
+
+double VideoPanel::rep_end_(const RepAnnotation& rep) const {
+    if (rep.t_end_s > 0.0) return rep.t_end_s;
+    return std::max({rep.concentric.t_end_s, rep.eccentric.t_end_s, rep.rest.t_end_s});
+}
+
+void VideoPanel::seek_relative_seconds_(double dt_s) {
+    if (!session_ || !session_->is_loaded()) return;
+    playhead_t_s_ = std::clamp(playhead_t_s_ + dt_s,
+                               session_->t0_unified_s(),
+                               session_->t_end_unified_s());
+}
+
+void VideoPanel::seek_relative_frames_(int frame_delta) {
+    if (!session_ || !session_->is_loaded() || !cache_ || !cache_->is_open()) return;
+    const auto& vi = session_->video_index();
+    if (vi.size() == 0) return;
+    int cur = cache_->current_frame_index();
+    if (cur < 0) cur = vi.nearest_to(playhead_t_s_);
+    if (cur < 0) return;
+    const int next = std::clamp(cur + frame_delta, 0, (int)vi.size() - 1);
+    playhead_t_s_ = vi.unified_t_s[next];
 }
 
 void VideoPanel::draw_marker_overlay_(const ImVec2& image_pos, const ImVec2& image_size) {
@@ -189,12 +224,31 @@ void VideoPanel::draw_phase_badge_(const ImVec2& image_pos) {
     int idx = current_rep_index_at_(playhead_t_s_);
     if (idx >= 0) {
         const auto& r = session_->reps()[idx];
-        if      (playhead_t_s_ <= r.concentric.t_end_s) {
-            phase = "CONCENTRIC"; col = IM_COL32(80, 140, 255, 220);
-        } else if (playhead_t_s_ <= r.eccentric.t_end_s) {
-            phase = "ECCENTRIC";  col = IM_COL32(255, 100, 80, 220);
+        if (r.phase_order == "eccentric_first") {
+            if (r.top_rest.t_end_s > r.top_rest.t_start_s + 1e-3
+                && playhead_t_s_ <= r.top_rest.t_end_s) {
+                phase = "TOP REST"; col = IM_COL32(150, 120, 255, 220);
+            } else if (playhead_t_s_ <= r.eccentric.t_end_s) {
+                phase = "ECCENTRIC"; col = IM_COL32(255, 100, 80, 220);
+            } else if (r.bottom_rest.t_end_s > r.bottom_rest.t_start_s + 1e-3
+                       && playhead_t_s_ <= r.bottom_rest.t_end_s) {
+                phase = "BOTTOM REST"; col = IM_COL32(80, 180, 210, 220);
+            } else if (playhead_t_s_ <= r.concentric.t_end_s) {
+                phase = "CONCENTRIC"; col = IM_COL32(80, 140, 255, 220);
+            } else {
+                phase = "REST"; col = IM_COL32(160, 160, 160, 220);
+            }
         } else {
-            phase = "REST";       col = IM_COL32(160, 160, 160, 220);
+            if (playhead_t_s_ <= r.concentric.t_end_s) {
+                phase = "CONCENTRIC"; col = IM_COL32(80, 140, 255, 220);
+            } else if (r.top_rest.t_end_s > r.top_rest.t_start_s + 1e-3
+                       && playhead_t_s_ <= r.top_rest.t_end_s) {
+                phase = "TOP REST"; col = IM_COL32(150, 120, 255, 220);
+            } else if (playhead_t_s_ <= r.eccentric.t_end_s) {
+                phase = "ECCENTRIC"; col = IM_COL32(255, 100, 80, 220);
+            } else {
+                phase = "REST"; col = IM_COL32(160, 160, 160, 220);
+            }
         }
     }
     char text[64];

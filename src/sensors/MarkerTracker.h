@@ -10,7 +10,7 @@
  */
 
 #include <opencv2/core.hpp>
-#include <librealsense2/rs.hpp>
+#include "sensors/RealsenseCompat.h"
 #include <vector>
 #include <deque>
 #include <mutex>

@@ -6,12 +6,11 @@
  *        annotation workspace.
  *
  * Replaces the legacy ReplayMode. Layout (default):
- *   ┌─ Sessions (left) ─┬─ Video (centre top) ─────────┬─ Metadata (right) ─┐
- *   │                   ├─ Timeline (centre middle) ──┤                    │
- *   │                   ├─ Rep Table (bottom-left) ────┴─ Marker quality ──┤
- *   └───────────────────┴──────────────────────────────────────────────────┘
+ *   ┌─ Sessions (left) ─┬─ Video (centre top) ─────────┬─ Rep cards (right) ─┐
+ *   │                   ├─ Timelines (reps/position/velocity) ──────────────│
+ *   └───────────────────┴───────────────────────────────────────────────────┘
  *
- * Owns the SessionData, VideoCache, all panels, and the shared playhead
+ * Owns the SessionData, VideoCache, annotation panels, and the shared playhead
  * time. Persistence is invoked from here so dirty/save lifecycle is in
  * one place.
  *
@@ -30,7 +29,6 @@
 #include "annotation/TimelinePanel.h"
 #include "annotation/VideoPanel.h"
 #include "annotation/RepTablePanel.h"
-#include "annotation/MetadataPanel.h"
 #include "annotation/MarkerQualityPanel.h"
 #include <memory>
 #include <string>
@@ -58,12 +56,15 @@ private:
     /// rep id + peak velocity + ROM and is clickable to seek/centre.
     void render_summary_cards_();
     void render_save_dialog_();
+    void render_use_proposal_dialog_();
     void render_unsaved_warning_();
 
     // ── Actions ────────────────────────────────────────────────────
     void load_session_(const std::filesystem::path& dir);
     void save_();
     void reload_();
+    void use_base_proposal_();
+    void use_post_session_proposal_();
     void seek_(double t_unified_s);
     void select_rep_(int rep_index);
 
@@ -79,7 +80,6 @@ private:
     TimelinePanel       timeline_;
     VideoPanel          video_panel_;
     RepTablePanel       rep_table_;
-    MetadataPanel       meta_panel_;
     MarkerQualityPanel  quality_panel_;
 
     /// Single source of truth for the playhead. Each render pass collects
@@ -88,14 +88,13 @@ private:
 
     SessionLoadDiag  last_diag_;
     bool             show_save_dialog_ = false;
+    bool             show_use_proposal_dialog_ = false;
     std::string      save_note_;
 
     // ── UX state ──────────────────────────────────────────────────
-    /// Show/hide the side panels. When both are off the timeline takes
-    /// the entire window width, which is what users want during heavy
-    /// annotation passes.
+    /// Show/hide the session browser. The right rail is reserved for rep
+    /// cards, so it stays visible during heavy annotation passes.
     bool show_library_  = true;
-    bool show_metadata_ = true;
     /// Focus mode: when ON the workspace centres on the selected rep —
     /// the video, the timeline view-range, and the rep editor all bind
     /// to that one rep so nothing else clutters the screen.

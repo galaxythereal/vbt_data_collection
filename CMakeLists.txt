@@ -9,6 +9,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # Options
 # ==============================================================================
 option(BUILD_TESTS "Build unit tests" ON)
+option(VBT_WITH_REALSENSE "Build with Intel RealSense (librealsense2) support" ON)
 
 # ==============================================================================
 # Build provenance — capture git SHA, dirty flag, branch, build timestamp
@@ -55,8 +56,10 @@ find_package(OpenGL REQUIRED)
 # GLFW (for ImGui backend)
 find_package(glfw3 3.3 REQUIRED)
 
-# RealSense2
-find_package(realsense2 REQUIRED)
+# RealSense2 (optional for offline annotation/analysis builds)
+if(VBT_WITH_REALSENSE)
+    find_package(realsense2 REQUIRED)
+endif()
 
 # OpenCV (for marker detection)
 find_package(OpenCV 4.0 REQUIRED COMPONENTS core imgproc highgui videoio)
@@ -142,6 +145,12 @@ target_link_libraries(implot_lib PUBLIC imgui_lib)
 # ==============================================================================
 # Main Application
 # ==============================================================================
+if(VBT_WITH_REALSENSE)
+    set(VBT_CAMERA_READER_SRC src/sensors/CameraReader.cpp)
+else()
+    set(VBT_CAMERA_READER_SRC src/sensors/CameraReaderStub.cpp)
+endif()
+
 set(APP_SOURCES
     src/main.cpp
     src/app/Application.cpp
@@ -152,7 +161,7 @@ set(APP_SOURCES
     src/core/CalibrationManager.cpp
     src/core/EventLog.cpp
     src/sensors/IMUReader.cpp
-    src/sensors/CameraReader.cpp
+    ${VBT_CAMERA_READER_SRC}
     src/sensors/MarkerTracker.cpp
     src/processing/RepSegmenter.cpp
     src/processing/OrientationFilter.cpp
@@ -192,16 +201,23 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_BINARY_DIR}/generated
 )
 
+target_compile_definitions(${PROJECT_NAME} PRIVATE
+    VBT_WITH_REALSENSE=$<BOOL:${VBT_WITH_REALSENSE}>
+)
+
 target_link_libraries(${PROJECT_NAME} PRIVATE
     imgui_lib
     implot_lib
     nlohmann_json::nlohmann_json
     spdlog::spdlog
-    realsense2::realsense2
     ${OpenCV_LIBS}
     Eigen3::Eigen
     Threads::Threads
 )
+
+if(VBT_WITH_REALSENSE)
+    target_link_libraries(${PROJECT_NAME} PRIVATE realsense2::realsense2)
+endif()
 
 # ==============================================================================
 # Tests

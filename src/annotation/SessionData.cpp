@@ -14,6 +14,7 @@
 #include <sstream>
 #include <algorithm>
 #include <cmath>
+#include <cctype>
 #include <numeric>
 
 namespace fs = std::filesystem;
@@ -80,6 +81,88 @@ int to_int(const std::string& s, int fallback = 0) {
     try { return std::stoi(s); } catch (...) { return fallback; }
 }
 
+bool is_token_boundary(char c) {
+    return !std::isalnum((unsigned char)c) && c != '_';
+}
+
+std::string replace_nonstandard_json_numbers(std::string text) {
+    std::string out;
+    out.reserve(text.size());
+    bool in_string = false;
+    bool escaped = false;
+    for (size_t i = 0; i < text.size();) {
+        char c = text[i];
+        if (in_string) {
+            out.push_back(c);
+            if (escaped) {
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else if (c == '"') {
+                in_string = false;
+            }
+            ++i;
+            continue;
+        }
+        if (c == '"') {
+            in_string = true;
+            out.push_back(c);
+            ++i;
+            continue;
+        }
+
+        const bool prev_ok = i == 0 || is_token_boundary(text[i - 1]);
+        auto next_ok = [&](size_t n) {
+            return i + n >= text.size() || is_token_boundary(text[i + n]);
+        };
+        if (prev_ok && text.compare(i, 3, "NaN") == 0 && next_ok(3)) {
+            out += "null";
+            i += 3;
+        } else if (prev_ok && text.compare(i, 8, "Infinity") == 0 && next_ok(8)) {
+            out += "null";
+            i += 8;
+        } else if (prev_ok && text.compare(i, 9, "-Infinity") == 0 && next_ok(9)) {
+            out += "null";
+            i += 9;
+        } else {
+            out.push_back(c);
+            ++i;
+        }
+    }
+    return out;
+}
+
+bool load_json_file_lenient(const fs::path& p, nlohmann::json& out,
+                            std::string& err, bool& repaired_nonstandard_numbers) {
+    std::ifstream f(p);
+    if (!f.is_open()) {
+        err = "cannot open file";
+        return false;
+    }
+    std::stringstream ss;
+    ss << f.rdbuf();
+    const std::string text = ss.str();
+    try {
+        out = nlohmann::json::parse(text);
+        repaired_nonstandard_numbers = false;
+        return true;
+    } catch (const std::exception& first) {
+        const std::string repaired = replace_nonstandard_json_numbers(text);
+        if (repaired == text) {
+            err = first.what();
+            return false;
+        }
+        try {
+            out = nlohmann::json::parse(repaired);
+            repaired_nonstandard_numbers = true;
+            return true;
+        } catch (const std::exception& second) {
+            err = second.what();
+            return false;
+        }
+    }
+}
+
 } // namespace
 
 int VideoIndex::nearest_to(double t_s) const {
@@ -99,6 +182,8 @@ void SessionData::clear() {
     marker_ = {};
     video_idx_ = {};
     reps_.clear();
+    candidate_reps_.clear();
+    post_session_reps_.clear();
     manifest_.clear();
     events_.clear();
     loaded_ = false;
@@ -120,6 +205,8 @@ bool SessionData::load(const fs::path& session_dir, SessionLoadDiag& diag) {
     load_marker_csv_(session_dir / "camera" / "marker_positions.csv", diag); // optional
     load_video_index_csv_(session_dir / "camera" / "video_frames.csv", diag);
     load_reps_json_(session_dir / "annotations" / "rep_segments.json", diag);
+    load_candidate_reps_json_(session_dir / "annotations" / "rep_segments.candidate.json", diag);
+    load_post_session_reps_json_(session_dir / "annotations" / "rep_segments.post_session.json", diag);
     load_manifest_(session_dir / "manifest.json", diag);
     load_events_(session_dir / "events.jsonl", diag);
 
@@ -130,10 +217,10 @@ bool SessionData::load(const fs::path& session_dir, SessionLoadDiag& diag) {
     loaded_ = any_ok && diag.ok();
     if (loaded_) {
         spdlog::info("AnnotationStudio: loaded session '{}': {} IMU rows, {} marker rows, "
-                     "{} video frames, {} reps, {} sets",
+                     "{} video frames, {} reps, {} base proposals, {} post-session proposals, {} sets",
                      session_dir.string(),
                      imu_.size(), marker_.size(), video_idx_.size(),
-                     reps_.size(), info_.sets.size());
+                     reps_.size(), candidate_reps_.size(), post_session_reps_.size(), info_.sets.size());
     }
     return loaded_;
 }
@@ -309,23 +396,100 @@ bool SessionData::load_video_index_csv_(const fs::path& p, SessionLoadDiag& diag
 }
 
 bool SessionData::load_reps_json_(const fs::path& p, SessionLoadDiag& diag) {
-    std::ifstream f(p);
-    if (!f.is_open()) {
+    if (!fs::exists(p)) {
         diag.warnings.push_back("No rep_segments.json — session has no rep annotations");
         return false;
     }
     nlohmann::json j;
-    try { f >> j; }
-    catch (const std::exception& e) {
-        diag.errors.push_back(std::string("rep_segments.json parse error: ") + e.what());
+    std::string err;
+    bool repaired = false;
+    if (!load_json_file_lenient(p, j, err, repaired)) {
+        diag.warnings.push_back(std::string("rep_segments.json parse warning: ") + err);
         return false;
     }
+    if (repaired)
+        diag.warnings.push_back("rep_segments.json contained NaN/Infinity; treated as blank values");
     reps_.clear();
     auto& arr = j.is_array() ? j : (j.contains("reps") ? j["reps"] : j);
-    if (!arr.is_array()) return false;
+    if (!arr.is_array()) {
+        diag.warnings.push_back("rep_segments.json has no reps array");
+        return false;
+    }
+    int skipped = 0;
     for (const auto& el : arr) {
         try { reps_.push_back(RepAnnotation::from_json(el)); }
-        catch (...) { /* skip malformed rep */ }
+        catch (...) { ++skipped; }
+    }
+    if (skipped > 0)
+        diag.warnings.push_back("Skipped " + std::to_string(skipped) +
+                                " malformed saved rep(s)");
+    return true;
+}
+
+bool SessionData::load_candidate_reps_json_(const fs::path& p, SessionLoadDiag& diag) {
+    if (!fs::exists(p)) {
+        return false;
+    }
+    nlohmann::json j;
+    std::string err;
+    bool repaired = false;
+    if (!load_json_file_lenient(p, j, err, repaired)) {
+        diag.warnings.push_back(std::string("rep_segments.candidate.json parse warning: ") + err);
+        return false;
+    }
+    if (repaired)
+        diag.warnings.push_back("rep_segments.candidate.json contained NaN/Infinity; treated as blank values");
+    candidate_reps_.clear();
+    auto& arr = j.is_array() ? j : (j.contains("reps") ? j["reps"] : j);
+    if (!arr.is_array()) {
+        diag.warnings.push_back("rep_segments.candidate.json has no reps array");
+        return false;
+    }
+    int skipped = 0;
+    for (const auto& el : arr) {
+        try { candidate_reps_.push_back(RepAnnotation::from_json(el)); }
+        catch (...) { ++skipped; }
+    }
+    if (skipped > 0)
+        diag.warnings.push_back("Skipped " + std::to_string(skipped) +
+                                " malformed proposed rep(s)");
+    if (!candidate_reps_.empty()) {
+        diag.warnings.push_back("Loaded " + std::to_string(candidate_reps_.size()) +
+                                " proposed reps from rep_segments.candidate.json");
+    }
+    return true;
+}
+
+bool SessionData::load_post_session_reps_json_(const fs::path& p, SessionLoadDiag& diag) {
+    if (!fs::exists(p)) {
+        return false;
+    }
+    nlohmann::json j;
+    std::string err;
+    bool repaired = false;
+    if (!load_json_file_lenient(p, j, err, repaired)) {
+        diag.warnings.push_back(std::string("rep_segments.post_session.json parse warning: ") + err);
+        return false;
+    }
+    if (repaired)
+        diag.warnings.push_back("rep_segments.post_session.json contained NaN/Infinity; treated as blank values");
+    post_session_reps_.clear();
+    auto& arr = j.is_array() ? j : (j.contains("reps") ? j["reps"] : j);
+    if (!arr.is_array()) {
+        diag.warnings.push_back("rep_segments.post_session.json has no reps array");
+        return false;
+    }
+    int skipped = 0;
+    for (const auto& el : arr) {
+        try { post_session_reps_.push_back(RepAnnotation::from_json(el)); }
+        catch (...) { ++skipped; }
+    }
+    if (skipped > 0)
+        diag.warnings.push_back("Skipped " + std::to_string(skipped) +
+                                " malformed post-session rep(s)");
+    if (!post_session_reps_.empty()) {
+        diag.warnings.push_back("Loaded " + std::to_string(post_session_reps_.size()) +
+                                " post-session reps from rep_segments.post_session.json");
     }
     return true;
 }

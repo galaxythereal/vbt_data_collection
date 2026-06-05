@@ -71,10 +71,19 @@ def annotation_issues(reps: list) -> list[str]:
     issues: list[str] = []
     if not isinstance(reps, list):
         return ["rep_segments.json is not a list"]
-    sorted_reps = sorted(reps, key=lambda r: safe_float(r.get("concentric", {}).get("t_start")))
+    sorted_reps = sorted(
+        reps,
+        key=lambda r: safe_float(
+            r.get("t_start", r.get("concentric", {}).get("t_start"))
+        ),
+    )
     for i, r in enumerate(sorted_reps):
         prefix = f"R{r.get('rep_id', i + 1)}"
-        for name in ("concentric", "top_rest", "eccentric", "rest"):
+        phase_order = str(r.get("phase_order") or "concentric_first")
+        required = ["concentric", "top_rest", "eccentric", "rest"]
+        if phase_order == "eccentric_first":
+            required.append("bottom_rest")
+        for name in required:
             seg = r.get(name)
             if not isinstance(seg, dict):
                 issues.append(f"{prefix} missing {name}")
@@ -88,26 +97,52 @@ def annotation_issues(reps: list) -> list[str]:
         c = r.get("concentric", {})
         tr = r.get("top_rest", {})
         e = r.get("eccentric", {})
+        br = r.get("bottom_rest", {})
         rest = r.get("rest", {})
-        chain = [
-            safe_float(c.get("t_start")),
-            safe_float(c.get("t_end")),
-            safe_float(tr.get("t_start")),
-            safe_float(tr.get("t_end")),
-            safe_float(e.get("t_start")),
-            safe_float(e.get("t_end")),
-            safe_float(rest.get("t_start")),
-            safe_float(rest.get("t_end")),
-        ]
-        if all(math.isfinite(x) for x in chain):
-            if abs(chain[1] - chain[2]) > 1e-6:
-                issues.append(f"{prefix} top_rest.t_start != concentric.t_end")
-            if abs(chain[3] - chain[4]) > 1e-6:
-                issues.append(f"{prefix} eccentric.t_start != top_rest.t_end")
-            if abs(chain[5] - chain[6]) > 1e-6:
-                issues.append(f"{prefix} rest.t_start != eccentric.t_end")
-            if any(chain[j + 1] < chain[j] for j in range(len(chain) - 1)):
-                issues.append(f"{prefix} phase boundaries out of order")
+        if phase_order == "eccentric_first":
+            chain = [
+                safe_float(tr.get("t_start")),
+                safe_float(tr.get("t_end")),
+                safe_float(e.get("t_start")),
+                safe_float(e.get("t_end")),
+                safe_float(br.get("t_start")),
+                safe_float(br.get("t_end")),
+                safe_float(c.get("t_start")),
+                safe_float(c.get("t_end")),
+                safe_float(rest.get("t_start")),
+                safe_float(rest.get("t_end")),
+            ]
+            if all(math.isfinite(x) for x in chain):
+                if abs(chain[1] - chain[2]) > 1e-6:
+                    issues.append(f"{prefix} eccentric.t_start != top_rest.t_end")
+                if abs(chain[3] - chain[4]) > 1e-6:
+                    issues.append(f"{prefix} bottom_rest.t_start != eccentric.t_end")
+                if abs(chain[5] - chain[6]) > 1e-6:
+                    issues.append(f"{prefix} concentric.t_start != bottom_rest.t_end")
+                if abs(chain[7] - chain[8]) > 1e-6:
+                    issues.append(f"{prefix} rest.t_start != concentric.t_end")
+                if any(chain[j + 1] < chain[j] for j in range(len(chain) - 1)):
+                    issues.append(f"{prefix} phase boundaries out of order")
+        else:
+            chain = [
+                safe_float(c.get("t_start")),
+                safe_float(c.get("t_end")),
+                safe_float(tr.get("t_start")),
+                safe_float(tr.get("t_end")),
+                safe_float(e.get("t_start")),
+                safe_float(e.get("t_end")),
+                safe_float(rest.get("t_start")),
+                safe_float(rest.get("t_end")),
+            ]
+            if all(math.isfinite(x) for x in chain):
+                if abs(chain[1] - chain[2]) > 1e-6:
+                    issues.append(f"{prefix} top_rest.t_start != concentric.t_end")
+                if abs(chain[3] - chain[4]) > 1e-6:
+                    issues.append(f"{prefix} eccentric.t_start != top_rest.t_end")
+                if abs(chain[5] - chain[6]) > 1e-6:
+                    issues.append(f"{prefix} rest.t_start != eccentric.t_end")
+                if any(chain[j + 1] < chain[j] for j in range(len(chain) - 1)):
+                    issues.append(f"{prefix} phase boundaries out of order")
         rom = safe_float(r.get("rom_m"))
         if math.isfinite(rom) and rom < 0.05:
             issues.append(f"{prefix} ROM below 50 mm")
@@ -115,7 +150,7 @@ def annotation_issues(reps: list) -> list[str]:
             issues.append(f"{prefix} ROM above 1.5 m")
         if i:
             prev_end = safe_float(sorted_reps[i - 1].get("rest", {}).get("t_end"))
-            cur_start = safe_float(c.get("t_start"))
+            cur_start = safe_float(r.get("t_start", c.get("t_start")))
             if math.isfinite(prev_end) and math.isfinite(cur_start) and cur_start < prev_end:
                 issues.append(f"{prefix} overlaps previous rep")
     return issues

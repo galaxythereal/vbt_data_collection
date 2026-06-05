@@ -58,16 +58,24 @@ void SessionLibrary::load_summary_(const fs::path& meta_path, SessionSummary& s)
     s.target_reps  = j.value("target_reps", 0);
     s.rpe          = j.value("rpe", 0);
 
-    // Cheap rep count: read rep_segments.json if present, count entries.
-    fs::path reps_path = meta_path.parent_path() / "annotations" / "rep_segments.json";
-    std::ifstream r(reps_path);
-    if (r.is_open()) {
+    auto count_reps = [](const fs::path& p) -> int {
+        std::ifstream r(p);
+        if (!r.is_open()) return 0;
         try {
             nlohmann::json rj; r >> rj;
             const auto& arr = rj.is_array() ? rj : rj.contains("reps") ? rj["reps"] : rj;
-            if (arr.is_array()) s.rep_count = (int)arr.size();
+            if (arr.is_array()) return (int)arr.size();
         } catch (...) {}
-    }
+        return 0;
+    };
+
+    // Final annotations and post-session proposals are separate. Show both
+    // counts in the browser so a session with only candidate annotations does
+    // not look like it has no detected reps.
+    fs::path ann_dir = meta_path.parent_path() / "annotations";
+    s.rep_count = count_reps(ann_dir / "rep_segments.json");
+    s.proposal_count = count_reps(ann_dir / "rep_segments.candidate.json");
+    s.post_session_count = count_reps(ann_dir / "rep_segments.post_session.json");
 }
 
 std::vector<int> SessionLibrary::filter(const std::string& query) const {

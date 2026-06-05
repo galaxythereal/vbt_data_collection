@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Evaluate rep-segmentation algorithms against annotated ground truth.
 
-Compares both the legacy v1 detector and the new v2 (orientation-aware,
-last-rep-aware) detector. Per-session output:
+Compares the legacy v1 detector and the current camera-GT proposal detector
+implemented behind ``rep_segmenter_v2`` for API compatibility. Per-session
+output:
 
-    session                   exercise   orient  truth  v1   v1 F1  v2   v2 F1
+    session                   exercise   orient  truth  v1   v1 F1  camGT  camGT F1
 
 Per-exercise rollup gives true-positive / false-positive / false-negative
 counts. Overall rollup prints F1 for both algorithms so improvements are
@@ -178,7 +179,7 @@ def main() -> None:
     cfg_v2 = SegConfig()
 
     print(f"{'session':<32} {'exercise':<12} {'orient':<7} {'truth':>5} "
-          f"{'v1':>4} {'v1F1':>6} {'v2':>4} {'v2F1':>6}")
+          f"{'v1':>4} {'v1F1':>6} {'cam':>4} {'camF1':>6}")
     print("-" * 88)
     totals_v1: dict[str, list[int]] = {}
     totals_v2: dict[str, list[int]] = {}
@@ -207,7 +208,7 @@ def main() -> None:
         pred1 = segment_v1(*sig1, DEFAULT)
         tp1, fp1, fn1, f1_v1 = score(pred1, truth)
 
-        # v2
+        # camera-GT detector (kept behind rep_segmenter_v2 API)
         sig2 = clean_marker_signal_v2(d / "camera" / "marker_positions.csv", exercise, cfg_v2)
         if sig2 is None:
             pred2: list[tuple[float, float]] = []
@@ -229,24 +230,23 @@ def main() -> None:
         overall_v1[0] += tp1; overall_v1[1] += fp1; overall_v1[2] += fn1
         overall_v2[0] += tp2; overall_v2[1] += fp2; overall_v2[2] += fn2
 
-    print("\nBy exercise (v1 → v2)")
+    print("\nBy exercise (v1 -> camera-GT)")
     for ex in sorted(set(totals_v1) | set(totals_v2)):
         t1 = totals_v1.get(ex, [0, 0, 0])
         t2 = totals_v2.get(ex, [0, 0, 0])
         f1a = 2 * t1[0] / (2 * t1[0] + t1[1] + t1[2]) if (2 * t1[0] + t1[1] + t1[2]) else 0
         f1b = 2 * t2[0] / (2 * t2[0] + t2[1] + t2[2]) if (2 * t2[0] + t2[1] + t2[2]) else 0
         delta = f1b - f1a
-        sign = "+" if delta >= 0 else ""
         print(
             f"  {ex:<12} v1 tp={t1[0]:3d} fp={t1[1]:3d} fn={t1[2]:3d} f1={f1a:.3f}"
-            f"   v2 tp={t2[0]:3d} fp={t2[1]:3d} fn={t2[2]:3d} f1={f1b:.3f}  Δ={sign}{delta:+.3f}"
+            f"   cam tp={t2[0]:3d} fp={t2[1]:3d} fn={t2[2]:3d} f1={f1b:.3f}  delta={delta:+.3f}"
         )
     f1_total_v1 = 2 * overall_v1[0] / (2 * overall_v1[0] + overall_v1[1] + overall_v1[2]) if (2 * overall_v1[0] + overall_v1[1] + overall_v1[2]) else 0
     f1_total_v2 = 2 * overall_v2[0] / (2 * overall_v2[0] + overall_v2[1] + overall_v2[2]) if (2 * overall_v2[0] + overall_v2[1] + overall_v2[2]) else 0
     print(
         f"\nOverall  v1 tp={overall_v1[0]} fp={overall_v1[1]} fn={overall_v1[2]} f1={f1_total_v1:.3f}"
-        f"  →  v2 tp={overall_v2[0]} fp={overall_v2[1]} fn={overall_v2[2]} f1={f1_total_v2:.3f}"
-        f"  Δ={f1_total_v2 - f1_total_v1:+.3f}"
+        f"  ->  camera-GT tp={overall_v2[0]} fp={overall_v2[1]} fn={overall_v2[2]} f1={f1_total_v2:.3f}"
+        f"  delta={f1_total_v2 - f1_total_v1:+.3f}"
     )
 
 

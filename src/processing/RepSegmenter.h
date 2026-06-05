@@ -50,6 +50,14 @@ struct RepAnnotation {
     /// Which set within the session this rep belongs to (1-indexed).
     /// 0 = legacy / unset → studio treats as belonging to the only set.
     int set_id = 1;
+    /// Camera-GT proposals can be concentric-first (row/deadlift/curl) or
+    /// eccentric-first (bench/squat). Legacy annotations default to the old
+    /// concentric-first order.
+    std::string phase_order = "concentric_first";
+    /// Whole-rep envelope used by exercise-specific proposals. For legacy
+    /// files these are backfilled from concentric.t_start / rest.t_end.
+    double t_start_s = 0.0;
+    double t_end_s   = 0.0;
     /// Rep phases in chronological order:
     ///   concentric → top_rest → eccentric → rest (bottom / inter-rep)
     /// The two rest phases formalize the brief pauses lifters take at the
@@ -60,6 +68,7 @@ struct RepAnnotation {
     /// loaded with a zero-width segment at concentric.t_end.
     PhaseSegment concentric;
     PhaseSegment top_rest;
+    PhaseSegment bottom_rest;
     PhaseSegment eccentric;
     PhaseSegment rest;
     float mean_concentric_velocity = 0.0f;

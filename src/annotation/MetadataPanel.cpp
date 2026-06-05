@@ -10,21 +10,33 @@
 
 namespace vbt {
 
-void MetadataPanel::render() {
-    if (!session_ || !session_->is_loaded()) {
-        ImGui::TextDisabled("Load a session to edit its metadata.");
-        return;
-    }
-
+void MetadataPanel::render(bool* visible) {
     // Header strip — title, dirty indicator, expand-all toggle.
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.30f, 0.78f, 1.0f, 1.0f));
     ImGui::TextUnformatted("METADATA");
     ImGui::PopStyleColor();
     ImGui::SameLine();
+    if (visible && ImGui::SmallButton("Hide##metadata_panel")) {
+        *visible = false;
+    }
+    if (visible && ImGui::IsItemHovered()) {
+        ImGui::BeginTooltip();
+        ImGui::TextUnformatted("Hide the metadata editor and give the workspace more room.");
+        ImGui::EndTooltip();
+    }
+
+    if (!session_ || !session_->is_loaded()) {
+        ImGui::Separator();
+        ImGui::TextDisabled("Load a session to edit its metadata.");
+        return;
+    }
+
     if (session_->meta_dirty()) {
+        ImGui::SameLine();
         ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.30f, 1.0f),
                             "  ●  unsaved (Ctrl+S)");
     } else {
+        ImGui::SameLine();
         ImGui::TextDisabled("  (clean)");
     }
     ImGui::Checkbox("Expand all sections", &expand_all_);

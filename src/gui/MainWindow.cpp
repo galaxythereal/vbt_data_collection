@@ -181,12 +181,15 @@ void MainWindow::render() {
         return;
     }
 
-    render_menu_bar();
+    const bool annotation_studio_open = studio_ && studio_->is_open();
+    if (!annotation_studio_open) {
+        render_menu_bar();
+    }
 
     ImGuiIO& io = ImGui::GetIO();
     float W = io.DisplaySize.x;
     float H = io.DisplaySize.y;
-    float menu_h    = ImGui::GetFrameHeight();
+    float menu_h    = annotation_studio_open ? 0.0f : ImGui::GetFrameHeight();
     float header_h  = 70.0f;   // compact header band
     float status_h  = ImGui::GetFrameHeightWithSpacing();
 

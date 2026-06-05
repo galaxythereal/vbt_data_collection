@@ -4,9 +4,10 @@
  * @file TimelinePanel.h
  * @brief Interactive position + velocity timeline with rep bands.
  *
- * The signature view of the annotation studio. Two stacked ImPlot axes
+ * The signature view of the annotation studio. Three stacked ImPlot axes
  * sharing the same x-range:
- *   • Top:    position (camera, m)
+ *   • Top:    proposal / rep phase bands
+ *   • Middle: position (camera, m)
  *   • Bottom: velocity (camera derivative, m/s) + IMU |a|−1 (g) overlay
  *
  * Rep boundaries render as colored bands (concentric blue, eccentric red,
@@ -112,6 +113,7 @@ private:
     // View bookkeeping — ImPlot axis range. We override on session change
     // and on center_on_rep; otherwise ImPlot manages it.
     bool   force_view_   = false;
+    bool   keep_force_view_next_frame_ = false;
     double view_t_min_   = 0.0;
     double view_t_max_   = 0.0;
 
@@ -138,10 +140,14 @@ private:
     bool made_edit_ = false;
 
     // ─── Helpers ────────────────────────────────────────────────────
+    void render_rep_trace_plot_(double t0, double t1, float height);
     void render_position_plot_(double t0, double t1, float height);
     void render_velocity_plot_(double t0, double t1, float height);
     void render_rep_bands_();
-    void render_playhead_(double t0, double t1);
+    void render_playhead_();
+    /// ImPlot owns the live axis range after user zoom/pan. Mirror it back
+    /// into view_t_min_/view_t_max_ so all three panels stay synchronized.
+    void sync_view_from_current_plot_(double t0_session);
     /// Draw visible draggable handles (filled circles + chevrons) at
     /// every editable rep boundary, in pixel coordinates so the hit zone
     /// is constant regardless of the X-axis zoom level.
@@ -168,6 +174,9 @@ private:
     /// Snap a candidate time to the nearest cleaned-vz zero crossing
     /// within ±max_dt_s if snap_to_zerocross_ is enabled.
     double maybe_snap_(double t) const;
+    /// ImPlot drag lines can take hover away from the plot itself. When the
+    /// wheel lands on a boundary line, mirror the normal x-zoom manually.
+    bool apply_boundary_wheel_zoom_(double t0_session, double focus_x_plot);
 };
 
 } // namespace vbt

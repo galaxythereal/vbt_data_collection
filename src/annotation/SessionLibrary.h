@@ -29,6 +29,8 @@ struct SessionSummary {
     std::string variant;
     std::string date;                      // ISO-8601, or "" if not parseable
     int   rep_count   = 0;
+    int   proposal_count = 0;
+    int   post_session_count = 0;
     float total_weight_kg = 0;
     int   set_number  = 0;
     int   target_reps = 0;

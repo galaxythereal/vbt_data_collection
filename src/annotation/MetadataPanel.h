@@ -19,7 +19,7 @@ class MetadataPanel {
 public:
     MetadataPanel() = default;
     void set_session(SessionData* s) { session_ = s; }
-    void render();
+    void render(bool* visible = nullptr);
 
 private:
     bool         expand_all_ = false;

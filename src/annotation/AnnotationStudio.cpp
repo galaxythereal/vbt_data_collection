@@ -7,6 +7,8 @@
 #include "utils/Notifications.h"
 #include <imgui.h>
 #include <spdlog/spdlog.h>
+#include <algorithm>
+#include <cmath>
 
 namespace vbt {
 
@@ -27,49 +29,26 @@ void AnnotationStudio::open() {
 
 void AnnotationStudio::render() {
     if (!is_open_) return;
-    ImGui::SetNextWindowSize(ImVec2(1500, 920), ImGuiCond_FirstUseEver);
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const ImVec2 work_pos = viewport ? viewport->WorkPos : ImVec2(0, 0);
+    const ImVec2 work_size = viewport ? viewport->WorkSize : ImGui::GetIO().DisplaySize;
+    const float screen_margin = 4.0f;
+    const ImVec2 max_window_size(
+        std::max(1.0f, work_size.x - screen_margin * 2.0f),
+        std::max(1.0f, work_size.y - screen_margin * 2.0f));
+
+    ImGui::SetNextWindowPos(
+        ImVec2(work_pos.x + screen_margin, work_pos.y + screen_margin),
+        ImGuiCond_Always);
+    ImGui::SetNextWindowSize(max_window_size, ImGuiCond_Always);
     if (!ImGui::Begin("Annotation Studio", &is_open_,
-                      ImGuiWindowFlags_MenuBar)) {
+                      ImGuiWindowFlags_NoSavedSettings |
+                      ImGuiWindowFlags_NoTitleBar |
+                      ImGuiWindowFlags_NoMove |
+                      ImGuiWindowFlags_NoResize |
+                      ImGuiWindowFlags_HorizontalScrollbar)) {
         ImGui::End();
         return;
-    }
-    if (ImGui::BeginMenuBar()) {
-        if (ImGui::BeginMenu("File")) {
-            if (ImGui::MenuItem("Refresh library")) library_.refresh();
-            if (ImGui::MenuItem("Save", "Ctrl+S",
-                                false, session_.dirty()))
-                show_save_dialog_ = true;
-            if (ImGui::MenuItem("Reload from disk", "Ctrl+R",
-                                false, session_.is_loaded()))
-                reload_();
-            ImGui::Separator();
-            if (ImGui::MenuItem("Close studio")) is_open_ = false;
-            ImGui::EndMenu();
-        }
-        if (ImGui::BeginMenu("Navigate")) {
-            if (ImGui::MenuItem("Previous rep", "Z",
-                                false, !session_.reps().empty())) {
-                int s = rep_table_.selected_index();
-                select_rep_(std::max(0, s - 1));
-            }
-            if (ImGui::MenuItem("Next rep", "X",
-                                false, !session_.reps().empty())) {
-                int s = rep_table_.selected_index();
-                select_rep_(std::min((int)session_.reps().size() - 1, s + 1));
-            }
-            ImGui::EndMenu();
-        }
-        // Status indicator.
-        if (session_.is_loaded()) {
-            ImGui::SameLine(ImGui::GetWindowWidth() - 380);
-            ImGui::TextDisabled("%s", session_.path().filename().string().c_str());
-            if (session_.dirty()) {
-                ImGui::SameLine();
-                ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.30f, 1.0f),
-                                   "● unsaved");
-            }
-        }
-        ImGui::EndMenuBar();
     }
 
     // Hotkeys (skip when typing in a text field).
@@ -92,6 +71,8 @@ void AnnotationStudio::render() {
         }
         if (ImGui::IsKeyPressed(ImGuiKey_F, false) && io.KeyCtrl)
             focus_mode_ = !focus_mode_;
+        if (ImGui::IsKeyPressed(ImGuiKey_L, false) && io.KeyCtrl)
+            show_library_ = !show_library_;
         if (ImGui::IsKeyPressed(ImGuiKey_Insert, false))
             insert_rep_at_(playhead_t_s_);
         if (ImGui::IsKeyPressed(ImGuiKey_Delete, false)
@@ -105,41 +86,97 @@ void AnnotationStudio::render() {
 
     render_top_toolbar_();
 
-    // 3-pane layout via stacked child windows (Columns API leaks into
-    // siblings whenever a child Selectable + SameLine combo overflows
-    // horizontally, which is why the previous attempt left the right
-    // column empty). Computing widths from the available content region
-    // keeps every pane self-contained and lets each scroll independently.
-    const float total_w = ImGui::GetContentRegionAvail().x;
-    const float total_h = ImGui::GetContentRegionAvail().y;
-    const float left_w  = show_library_  ? std::min(320.0f, total_w * 0.22f) : 0.0f;
-    const float right_w = show_metadata_ ? std::min(420.0f, total_w * 0.28f) : 0.0f;
-    const float gap = (left_w > 0 ? 8.0f : 0.0f) + (right_w > 0 ? 8.0f : 0.0f);
-    const float center_w = std::max(400.0f, total_w - left_w - right_w - gap);
+    // 3-pane layout via child windows. The studio window itself is clamped
+    // to the viewport; this body child owns overflow, so narrow displays get
+    // scrollbars instead of a giant off-screen tool surface.
+    ImGui::BeginChild("##studio_body", ImVec2(0, 0), false,
+                      ImGuiWindowFlags_HorizontalScrollbar);
+    const float total_w = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+    const float total_h = std::max(1.0f, ImGui::GetContentRegionAvail().y);
+    const float spacing_x = ImGui::GetStyle().ItemSpacing.x;
+    const bool show_library_restore = !show_library_;
+    const int visible_panes = 1 + (show_library_ ? 1 : 0)
+                                + (show_library_restore ? 1 : 0)
+                                + 1;
+    const float gaps = spacing_x * std::max(0, visible_panes - 1);
+    float left_w  = show_library_  ? std::clamp(total_w * 0.22f, 180.0f, 320.0f) : 0.0f;
+    float cards_w = std::clamp(total_w * 0.16f, 132.0f, 220.0f);
+    const float library_restore_w = show_library_restore
+                                  ? std::clamp(total_w * 0.06f, 68.0f, 92.0f)
+                                  : 0.0f;
+    const float min_center_w = std::min(360.0f, total_w);
+    const float side_budget = std::max(0.0f,
+        total_w - min_center_w - gaps - library_restore_w);
+    const float side_sum = left_w + cards_w;
+    if (side_sum > side_budget && side_sum > 0.0f) {
+        const float scale = side_budget / side_sum;
+        left_w *= scale;
+        cards_w *= scale;
+    }
+    const bool draw_library = show_library_ && left_w >= 1.0f;
+    const bool draw_library_restore = show_library_restore && library_restore_w >= 1.0f;
+    const bool draw_cards = cards_w >= 1.0f;
+    const float center_w = std::max(min_center_w,
+        total_w - (draw_library ? left_w : 0.0f)
+                - (draw_library_restore ? library_restore_w : 0.0f)
+                - (draw_cards ? cards_w : 0.0f)
+                - gaps);
 
-    if (show_library_) {
-        ImGui::BeginChild("##studio_left", ImVec2(left_w, total_h), true);
+    if (draw_library) {
+        ImGui::BeginChild("##studio_left", ImVec2(left_w, total_h), true,
+                          ImGuiWindowFlags_HorizontalScrollbar);
         render_session_browser_();
         ImGui::EndChild();
         ImGui::SameLine();
     }
-    ImGui::BeginChild("##studio_center", ImVec2(center_w, total_h), false);
+    if (draw_library_restore) {
+        ImGui::BeginChild("##studio_library_restore", ImVec2(library_restore_w, total_h), true,
+                          ImGuiWindowFlags_NoScrollbar |
+                          ImGuiWindowFlags_NoScrollWithMouse);
+        ImGui::TextDisabled("Sessions");
+        const float button_w = ImGui::GetContentRegionAvail().x;
+        if (ImGui::Button("Show##library_restore", ImVec2(button_w, 0.0f))) {
+            show_library_ = true;
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::BeginTooltip();
+            ImGui::TextUnformatted("Show session browser (Ctrl+L)");
+            ImGui::EndTooltip();
+        }
+        ImGui::EndChild();
+        ImGui::SameLine();
+    }
+    ImGui::BeginChild("##studio_center", ImVec2(center_w, total_h), false,
+                      ImGuiWindowFlags_NoScrollbar |
+                      ImGuiWindowFlags_NoScrollWithMouse);
     render_workspace_();
     ImGui::EndChild();
 
-    if (show_metadata_) {
+    if (draw_cards) {
         ImGui::SameLine();
-        ImGui::BeginChild("##studio_right", ImVec2(right_w, total_h), true);
-        meta_panel_.render();
+        ImGui::BeginChild("##studio_rep_cards", ImVec2(cards_w, total_h), true,
+                          ImGuiWindowFlags_HorizontalScrollbar);
+        render_summary_cards_();
         ImGui::EndChild();
     }
+    ImGui::EndChild();
 
     render_save_dialog_();
+    render_use_proposal_dialog_();
     ImGui::End();
 }
 
 void AnnotationStudio::render_session_browser_() {
     ImGui::TextColored(ImVec4(0.55f, 0.78f, 1, 1), "Sessions");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Hide##library_panel")) {
+        show_library_ = false;
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::BeginTooltip();
+        ImGui::TextUnformatted("Hide the session browser and give the workspace more room.");
+        ImGui::EndTooltip();
+    }
     ImGui::Separator();
     char qbuf[256];
     std::snprintf(qbuf, sizeof(qbuf), "%s", filter_query_.c_str());
@@ -157,17 +194,30 @@ void AnnotationStudio::render_session_browser_() {
         const auto& s = library_.sessions()[j];
         bool sel = (j == selected_session_idx_);
         ImGui::PushID(j);
-        // Two-line entry: bolder title row, dim metadata row underneath,
+        // Two-line entry: bolder title row, dim session details underneath,
         // both inside a single Selectable that spans the full width so the
         // browser column can't be horizontally pushed by long labels.
         char title[160];
         std::snprintf(title, sizeof(title), "%s%s",
                        s.label.c_str(), s.partial ? "  [PARTIAL]" : "");
         char sub[160];
-        std::snprintf(sub, sizeof(sub),
-                       "  %s · %.0f kg · %d reps · RPE %d",
-                       s.exercise.empty() ? "—" : s.exercise.c_str(),
-                       s.total_weight_kg, s.rep_count, s.rpe);
+        if (s.rep_count > 0) {
+            std::snprintf(sub, sizeof(sub),
+                           "  %s · %.0f kg · %d saved reps · RPE %d",
+                           s.exercise.empty() ? "—" : s.exercise.c_str(),
+                           s.total_weight_kg, s.rep_count, s.rpe);
+        } else if (s.proposal_count > 0) {
+            std::snprintf(sub, sizeof(sub),
+                           "  %s · %.0f kg · %d default / %d post · RPE %d",
+                           s.exercise.empty() ? "—" : s.exercise.c_str(),
+                           s.total_weight_kg, s.proposal_count,
+                           s.post_session_count, s.rpe);
+        } else {
+            std::snprintf(sub, sizeof(sub),
+                           "  %s · %.0f kg · no reps · RPE %d",
+                           s.exercise.empty() ? "—" : s.exercise.c_str(),
+                           s.total_weight_kg, s.rpe);
+        }
         const float row_h = ImGui::GetTextLineHeight() * 2.4f;
         if (ImGui::Selectable(("##sel" + std::to_string(j)).c_str(),
                               sel, 0, ImVec2(0, row_h))) {
@@ -202,32 +252,46 @@ void AnnotationStudio::render_workspace_() {
         return;
     }
 
-    // Workspace is three stacked rows:
-    //   row 1 (top):  video left, summary cards right (uses the gap that
-    //                 was empty when the video aspect-fit didn't fill the
-    //                 column)
-    //   row 2 (mid):  full-width timeline (the editing surface)
-    //   row 3 (bot):  tabs (rep table, marker quality, events) free-scroll
-    const float h = ImGui::GetContentRegionAvail().y;
-    const float h_top      = std::max(260.0f, h * 0.34f);
-    const float h_timeline = std::max(280.0f, h * 0.38f);
-    const float h_bottom   = std::max(220.0f, h - h_top - h_timeline - 12.0f);
+    // Workspace is two stacked work surfaces:
+    //   row 1: large aspect-fit video
+    //   row 2: the three timelines (rep phases, position, velocity)
+    const float h = std::max(1.0f, ImGui::GetContentRegionAvail().y);
+    const float spacing_y = ImGui::GetStyle().ItemSpacing.y;
+    constexpr float kComfortVideoH = 360.0f;
+    constexpr float kComfortTimelineH = 360.0f;
+    const float row_gap_h = spacing_y;
+    const float rows_h = std::max(0.0f, h - row_gap_h);
+    float h_top = rows_h * 0.50f;
+    float h_timeline = rows_h - h_top;
+    if (rows_h >= kComfortVideoH + kComfortTimelineH) {
+        h_top = std::max(kComfortVideoH, rows_h * 0.50f);
+        h_timeline = rows_h - h_top;
+        if (h_timeline < kComfortTimelineH) {
+            const float deficit = kComfortTimelineH - h_timeline;
+            const float shrink_top = std::min(deficit, h_top - kComfortVideoH);
+            h_top -= shrink_top;
+            h_timeline = rows_h - h_top;
+        }
+    } else if (rows_h > 1.0f) {
+        h_top = std::max(180.0f, rows_h * 0.46f);
+        h_timeline = std::max(180.0f, rows_h - h_top);
+        const float used_h = h_top + h_timeline;
+        if (used_h > rows_h) {
+            const float scale = rows_h / used_h;
+            h_top *= scale;
+            h_timeline *= scale;
+        }
+    }
 
-    // ── Row 1: video + summary cards ──────────────────────────────
-    ImGui::BeginChild("##toprow", ImVec2(0, h_top), false);
+    // ── Row 1: video ──────────────────────────────────────────────
+    ImGui::BeginChild("##toprow", ImVec2(0, h_top), false,
+                      ImGuiWindowFlags_NoScrollbar |
+                      ImGuiWindowFlags_NoScrollWithMouse);
     {
-        const float w = ImGui::GetContentRegionAvail().x;
-        // Video gets enough width to comfortably hit its 1.77:1 aspect at
-        // the row height; summary cards get the leftover space (which the
-        // user noticed was previously empty).
-        const float video_w = std::min(w * 0.62f, h_top * 1.85f);
-        const float side_w  = std::max(180.0f, w - video_w - 8.0f);
-        ImGui::BeginChild("##videopane", ImVec2(video_w, 0), true);
+        ImGui::BeginChild("##videopane", ImVec2(0, 0), true,
+                          ImGuiWindowFlags_NoScrollbar |
+                          ImGuiWindowFlags_NoScrollWithMouse);
         playhead_t_s_ = video_panel_.render(playhead_t_s_, session_.t0_unified_s());
-        ImGui::EndChild();
-        ImGui::SameLine();
-        ImGui::BeginChild("##summarypane", ImVec2(side_w, 0), true);
-        render_summary_cards_();
         ImGui::EndChild();
     }
     ImGui::EndChild();
@@ -242,70 +306,36 @@ void AnnotationStudio::render_workspace_() {
         const auto& reps = session_.reps();
         if (s >= 0 && s < (int)reps.size()) {
             const auto& r = reps[s];
+            double rs = r.t_start_s > 0.0 ? r.t_start_s
+                                          : std::min(r.concentric.t_start_s, r.eccentric.t_start_s);
+            double re = r.t_end_s > 0.0 ? r.t_end_s : r.rest.t_end_s;
             double pad = std::max(0.3,
-                0.20 * (r.rest.t_end_s - r.concentric.t_start_s));
-            timeline_.set_forced_view(r.concentric.t_start_s - pad,
-                                       r.rest.t_end_s + pad);
+                0.20 * (re - rs));
+            timeline_.set_forced_view(rs - pad, re + pad);
         }
     }
-    ImGui::BeginChild("##timelinepane", ImVec2(0, h_timeline), true);
+    ImGui::BeginChild("##timelinepane", ImVec2(0, h_timeline), true,
+                      ImGuiWindowFlags_NoScrollbar |
+                      ImGuiWindowFlags_NoScrollWithMouse);
     playhead_t_s_ = timeline_.render(playhead_t_s_);
     if (timeline_.consume_dirty_flag()) {
         // any timeline edit already marked the SessionData dirty.
     }
     ImGui::EndChild();
-
-    // ── Row 3: tab strip with free-scrolling content ─────────────
-    rep_table_.set_playhead(playhead_t_s_);
-    ImGui::BeginChild("##bottompane", ImVec2(0, h_bottom), true);
-    if (ImGui::BeginTabBar("##bottomtabs")) {
-        if (ImGui::BeginTabItem("Reps")) {
-            rep_table_.render();
-            ImGui::EndTabItem();
-        }
-        if (ImGui::BeginTabItem("Validate")) {
-            render_validation_tab_();
-            ImGui::EndTabItem();
-        }
-        if (ImGui::BeginTabItem("Marker quality")) {
-            quality_panel_.render();
-            ImGui::EndTabItem();
-        }
-        if (ImGui::BeginTabItem("Events")) {
-            if (session_.events().empty())
-                ImGui::TextDisabled("No events.");
-            else {
-                ImGui::BeginChild("##evt", ImVec2(0, 0), false);
-                for (auto& ev : session_.events()) {
-                    std::string lvl = ev.value("level", "info");
-                    ImVec4 col = ImVec4(0.85f, 0.85f, 0.85f, 1);
-                    if (lvl == "warning") col = ImVec4(1, 0.78f, 0.25f, 1);
-                    else if (lvl == "error") col = ImVec4(1, 0.30f, 0.25f, 1);
-                    ImGui::PushStyleColor(ImGuiCol_Text, col);
-                    ImGui::TextWrapped("[%s] [%s/%s] %s",
-                        ev.value("wallclock", "?").c_str(),
-                        ev.value("source", "?").c_str(),
-                        ev.value("code", "?").c_str(),
-                        ev.value("msg", "").c_str());
-                    ImGui::PopStyleColor();
-                }
-                ImGui::EndChild();
-            }
-            ImGui::EndTabItem();
-        }
-        ImGui::EndTabBar();
-    }
-    ImGui::EndChild();
 }
 
 void AnnotationStudio::render_top_toolbar_() {
+    const float toolbar_h = ImGui::GetFrameHeightWithSpacing() * 1.35f;
+    ImGui::BeginChild("##studio_toolbar", ImVec2(0, toolbar_h), false,
+                      ImGuiWindowFlags_HorizontalScrollbar);
+
     // Compact action row above the columns. Every button is one click —
     // power users press a hotkey, beginners click here. Tooltips spell
     // out the shortcut on hover so people learn them.
     auto tbtn = [](const char* lbl, const char* tip, bool active = false) {
         if (active) ImGui::PushStyleColor(ImGuiCol_Button,
                                             ImVec4(0.20f, 0.45f, 0.80f, 1.0f));
-        bool clicked = ImGui::Button(lbl);
+        bool clicked = ImGui::SmallButton(lbl);
         if (active) ImGui::PopStyleColor();
         if (ImGui::IsItemHovered()) {
             ImGui::BeginTooltip();
@@ -315,26 +345,26 @@ void AnnotationStudio::render_top_toolbar_() {
         ImGui::SameLine();
         return clicked;
     };
-    if (tbtn(show_library_ ? "<< Library" : ">> Library",
-             "Show / hide the session list (full-width plot when hidden)",
-             show_library_)) show_library_ = !show_library_;
-    if (tbtn(show_metadata_ ? "Metadata >>" : "<< Metadata",
-             "Show / hide the metadata editor (full-width plot when hidden)",
-             show_metadata_)) show_metadata_ = !show_metadata_;
+    ImGui::TextColored(ImVec4(0.55f, 0.85f, 1.0f, 1.0f), "Annotation Studio");
+    ImGui::SameLine();
     ImGui::TextDisabled("|"); ImGui::SameLine();
-    if (tbtn(focus_mode_ ? "Focus: ON" : "Focus: OFF",
+    if (tbtn(show_library_ ? "Sessions" : "Sessions",
+             "Ctrl+L — show / hide the session browser",
+             show_library_)) show_library_ = !show_library_;
+    ImGui::TextDisabled("|"); ImGui::SameLine();
+    if (tbtn("Focus",
              "Ctrl+F — collapse to the selected rep only (video + plot zoom)",
              focus_mode_)) focus_mode_ = !focus_mode_;
     ImGui::TextDisabled("|"); ImGui::SameLine();
     if (tbtn("Undo",  "Ctrl+Z — revert the last rep edit"))    undo_();
     if (tbtn("Redo",  "Ctrl+Y — redo the last undone edit"))   redo_();
     ImGui::TextDisabled("|"); ImGui::SameLine();
-    if (tbtn("+ Insert rep here",
+    if (tbtn("+ Rep",
              "Insert (key) — add a new rep centred on the playhead"))
         insert_rep_at_(playhead_t_s_);
     bool can_delete = rep_table_.selected_index() >= 0;
     if (!can_delete) ImGui::BeginDisabled();
-    if (tbtn("− Delete selected",
+    if (tbtn("- Rep",
              "Delete (key) — remove the currently selected rep")
         && can_delete) {
         push_undo_();
@@ -344,15 +374,40 @@ void AnnotationStudio::render_top_toolbar_() {
     }
     if (!can_delete) ImGui::EndDisabled();
     ImGui::TextDisabled("|"); ImGui::SameLine();
-    if (tbtn("Validate now", "Re-run the rep-segmentation sanity checks"))
+    if (session_.is_loaded()) {
+        ImGui::TextDisabled("visible %d | default %d | post %d",
+                            (int)session_.reps().size(),
+                            (int)session_.candidate_reps().size(),
+                            (int)session_.post_session_reps().size());
+        ImGui::SameLine();
+        ImGui::TextDisabled("|");
+        ImGui::SameLine();
+    }
+    bool has_base = session_.is_loaded() && !session_.candidate_reps().empty();
+    if (!has_base) ImGui::BeginDisabled();
+    if (tbtn("Base",
+             "Replace visible reps with the default/base annotations for review")
+        && has_base) {
+        use_base_proposal_();
+    }
+    if (!has_base) ImGui::EndDisabled();
+    bool has_proposal = session_.is_loaded() && !session_.post_session_reps().empty();
+    if (!has_proposal) ImGui::BeginDisabled();
+    if (tbtn("Post",
+             "Replace visible reps with the post-session annotations for review")
+        && has_proposal) {
+        show_use_proposal_dialog_ = true;
+    }
+    if (!has_proposal) ImGui::EndDisabled();
+    ImGui::TextDisabled("|"); ImGui::SameLine();
+    if (tbtn("Check", "Re-run the rep-segmentation sanity checks"))
         run_validation_();
     if (tbtn("Save", "Ctrl+S — commit edits to disk + update manifest",
              session_.dirty()) && session_.dirty())
         show_save_dialog_ = true;
-    if (tbtn("Reset (reload)", "Ctrl+R — discard unsaved edits & reload"))
+    if (tbtn("Reload", "Ctrl+R — discard unsaved edits & reload"))
         reload_();
-    ImGui::NewLine();   // close the SameLine chain
-    ImGui::Separator();
+    ImGui::EndChild();
 }
 
 void AnnotationStudio::push_undo_() {
@@ -429,17 +484,30 @@ void AnnotationStudio::run_validation_() {
             add("error", "eccentric.zero_duration",
                 "eccentric phase has zero or negative duration",
                 r.eccentric.t_start_s);
-        if (r.top_rest.t_end_s + 1e-3 < r.eccentric.t_start_s
-            || r.top_rest.t_start_s != r.concentric.t_end_s)
-            add("warning", "phase.gap.top",
-                "top-rest boundaries don't align with concentric/eccentric",
-                r.top_rest.t_start_s);
-        if (r.eccentric.t_end_s != r.rest.t_start_s)
-            add("warning", "phase.gap.bot",
-                "bottom-rest boundaries don't align with eccentric end",
-                r.eccentric.t_end_s);
+        if (r.phase_order == "eccentric_first") {
+            if (std::abs(r.top_rest.t_end_s - r.eccentric.t_start_s) > 1e-6
+                || std::abs(r.eccentric.t_end_s - r.bottom_rest.t_start_s) > 1e-6
+                || std::abs(r.bottom_rest.t_end_s - r.concentric.t_start_s) > 1e-6
+                || std::abs(r.concentric.t_end_s - r.rest.t_start_s) > 1e-6) {
+                add("warning", "phase.gap.ecc_first",
+                    "eccentric-first phase boundaries don't align",
+                    r.t_start_s > 0.0 ? r.t_start_s : r.eccentric.t_start_s);
+            }
+        } else {
+            if (r.top_rest.t_end_s + 1e-3 < r.eccentric.t_start_s
+                || r.top_rest.t_start_s != r.concentric.t_end_s)
+                add("warning", "phase.gap.top",
+                    "top-rest boundaries don't align with concentric/eccentric",
+                    r.top_rest.t_start_s);
+            if (r.eccentric.t_end_s != r.rest.t_start_s)
+                add("warning", "phase.gap.bot",
+                    "bottom-rest boundaries don't align with eccentric end",
+                    r.eccentric.t_end_s);
+        }
         if (i + 1 < (int)reps.size()
-            && r.rest.t_end_s > reps[i + 1].concentric.t_start_s + 1e-3)
+            && r.rest.t_end_s > (reps[i + 1].t_start_s > 0.0
+                                 ? reps[i + 1].t_start_s
+                                 : reps[i + 1].concentric.t_start_s) + 1e-3)
             add("error", "reps.overlap",
                 "rest end overlaps next rep's concentric start",
                 r.rest.t_end_s);
@@ -466,7 +534,13 @@ void AnnotationStudio::run_validation_() {
 
 void AnnotationStudio::render_validation_tab_() {
     if (validation_issues_.empty() && session_.reps().empty()) {
-        ImGui::TextDisabled("No reps to validate.");
+        if (!session_.candidate_reps().empty() || !session_.post_session_reps().empty()) {
+            ImGui::TextDisabled("%d default reps and %d post-session reps are available.",
+                                (int)session_.candidate_reps().size(),
+                                (int)session_.post_session_reps().size());
+        } else {
+            ImGui::TextDisabled("No reps to validate.");
+        }
         return;
     }
     if (validation_issues_.empty()) {
@@ -541,13 +615,15 @@ void AnnotationStudio::render_summary_cards_() {
     double vloss = 100.0 * (reps.front().peak_concentric_velocity
                              - reps.back().peak_concentric_velocity)
                           / std::max(0.05f, reps.front().peak_concentric_velocity);
-    ImGui::Text("avg pv  : %.3f m/s", mean_pv);
-    ImGui::Text("max pv  : %.3f m/s", max_pv);
-    ImGui::Text("avg ROM : %.0f mm",  mean_rom * 1000);
-    ImGui::Text("v-loss  : %+.1f %%", vloss);
+    ImGui::Text("avg %.2f", mean_pv);
+    ImGui::SameLine();
+    ImGui::TextDisabled("max %.2f", max_pv);
+    ImGui::Text("ROM %.0f mm", mean_rom * 1000);
+    ImGui::SameLine();
+    ImGui::TextDisabled("loss %+.1f%%", vloss);
     ImGui::Separator();
-    // Tile grid.
-    const float card_w = 96.0f, card_h = 60.0f, gap = 6.0f;
+    // Compact rep-jump buttons.
+    const float card_w = 48.0f, card_h = 30.0f, gap = 4.0f;
     float avail_w = ImGui::GetContentRegionAvail().x;
     int per_row = std::max(1, (int)((avail_w + gap) / (card_w + gap)));
     ImGui::BeginChild("##cards", ImVec2(0, 0), false);
@@ -566,14 +642,20 @@ void AnnotationStudio::render_summary_cards_() {
         ImU32 border = sel ? IM_COL32(120, 200, 255, 255)
                            : IM_COL32(80, 100, 130, 200);
         auto* dl = ImGui::GetWindowDrawList();
-        dl->AddRectFilled(p, ImVec2(p.x + card_w, p.y + card_h), bg, 6.0f);
-        dl->AddRect      (p, ImVec2(p.x + card_w, p.y + card_h), border, 6.0f, 0, 1.5f);
+        dl->AddRectFilled(p, ImVec2(p.x + card_w, p.y + card_h), bg, 4.0f);
+        dl->AddRect      (p, ImVec2(p.x + card_w, p.y + card_h), border, 4.0f, 0, 1.5f);
         char id[8]; std::snprintf(id, sizeof(id), "R%d", r.rep_id);
-        char pv[24]; std::snprintf(pv, sizeof(pv), "pv %.2f", r.peak_concentric_velocity);
-        char rom[24]; std::snprintf(rom, sizeof(rom), "ROM %.0f", r.rom_m * 1000);
-        dl->AddText(ImVec2(p.x + 8, p.y + 4),  IM_COL32(255,255,255,240), id);
-        dl->AddText(ImVec2(p.x + 8, p.y + 22), IM_COL32(220,255,220,230), pv);
-        dl->AddText(ImVec2(p.x + 8, p.y + 40), IM_COL32(220,220,255,220), rom);
+        const ImVec2 text_sz = ImGui::CalcTextSize(id);
+        dl->AddText(ImVec2(p.x + (card_w - text_sz.x) * 0.5f,
+                           p.y + (card_h - text_sz.y) * 0.5f),
+                    IM_COL32(255,255,255,240), id);
+        if (hover) {
+            ImGui::BeginTooltip();
+            ImGui::Text("Rep %d", r.rep_id);
+            ImGui::Text("Peak velocity: %.3f m/s", r.peak_concentric_velocity);
+            ImGui::Text("ROM: %.0f mm", r.rom_m * 1000);
+            ImGui::EndTooltip();
+        }
         ImGui::PopID();
     }
     ImGui::EndChild();
@@ -586,7 +668,6 @@ void AnnotationStudio::render_save_dialog_() {
                                 ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::Text("Session: %s", session_.path().filename().string().c_str());
         ImGui::Text("Reps dirty:     %s", session_.reps_dirty() ? "yes" : "no");
-        ImGui::Text("Metadata dirty: %s", session_.meta_dirty() ? "yes" : "no");
         ImGui::Separator();
         ImGui::Text("Audit note (appended to events.jsonl):");
         char buf[512];
@@ -602,6 +683,31 @@ void AnnotationStudio::render_save_dialog_() {
     }
 }
 
+void AnnotationStudio::render_use_proposal_dialog_() {
+    if (!show_use_proposal_dialog_) return;
+    ImGui::OpenPopup("Use post-session annotations?");
+    if (ImGui::BeginPopupModal("Use post-session annotations?", &show_use_proposal_dialog_,
+        ImGuiWindowFlags_AlwaysAutoResize)) {
+        const int current_n = (int)session_.reps().size();
+        const int base_n = (int)session_.candidate_reps().size();
+        const int proposal_n = (int)session_.post_session_reps().size();
+        ImGui::Text("Session: %s", session_.path().filename().string().c_str());
+        ImGui::Text("Current visible reps: %d", current_n);
+        ImGui::Text("Default/base reps: %d", base_n);
+        ImGui::Text("Post-session annotation reps: %d", proposal_n);
+        ImGui::Separator();
+        ImGui::TextWrapped("This replaces the visible reps in memory only. "
+                           "Review and save when the boundaries look correct.");
+        if (ImGui::Button("Use post-session annotations")) {
+            use_post_session_proposal_();
+            show_use_proposal_dialog_ = false;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) show_use_proposal_dialog_ = false;
+        ImGui::EndPopup();
+    }
+}
+
 void AnnotationStudio::load_session_(const std::filesystem::path& dir) {
     if (session_.dirty()) {
         Notifications::get().warn("Discarding unsaved annotation changes — "
@@ -612,6 +718,9 @@ void AnnotationStudio::load_session_(const std::filesystem::path& dir) {
         Notifications::get().error("Failed to load session: " + dir.string());
         return;
     }
+    undo_stack_.clear();
+    redo_stack_.clear();
+    validation_issues_.clear();
     // Apply default cleaning so the timeline has something to plot.
     auto cfg = session_.clean_config();
     if (cfg.v_max_mps == 0) cfg.v_max_mps = 4.0f;  // safety default; per-exercise tightening optional
@@ -622,9 +731,17 @@ void AnnotationStudio::load_session_(const std::filesystem::path& dir) {
     timeline_.set_session(&session_);
     video_panel_.set_session(&session_, &video_);
     rep_table_.set_session(&session_);
-    meta_panel_.set_session(&session_);
     quality_panel_.set_session(&session_);
     playhead_t_s_ = session_.t0_unified_s();
+
+    if (session_.reps().empty() && !session_.candidate_reps().empty()) {
+        use_base_proposal_();
+        Notifications::get().info(
+            std::to_string(session_.candidate_reps().size()) +
+            " default reps loaded. "
+            + std::to_string(session_.post_session_reps().size()) +
+            " post-session reps are available for comparison.");
+    }
 }
 
 void AnnotationStudio::save_() {
@@ -647,6 +764,52 @@ void AnnotationStudio::reload_() {
     Notifications::get().info("Reloaded from disk.");
 }
 
+void AnnotationStudio::use_base_proposal_() {
+    if (!session_.is_loaded() || session_.candidate_reps().empty()) return;
+    push_undo_();
+
+    auto proposal = session_.candidate_reps();
+    const int default_set_id = session_.info().sets.empty()
+        ? 1
+        : std::max(1, session_.info().sets.front().set_id);
+    int next_id = 1;
+    for (auto& r : proposal) {
+        r.rep_id = next_id++;
+        if (r.set_id <= 0) r.set_id = default_set_id;
+        if (r.concentric.source.empty()) r.concentric.source = "camera_gt_v1_base";
+        if (r.eccentric.source.empty()) r.eccentric.source = "camera_gt_v1_base";
+    }
+
+    session_.mutable_reps() = std::move(proposal);
+    session_.mark_reps_dirty();
+    run_validation_();
+    if (!session_.reps().empty()) select_rep_(0);
+    Notifications::get().info("Loaded default/base annotation proposal for review.");
+}
+
+void AnnotationStudio::use_post_session_proposal_() {
+    if (!session_.is_loaded() || session_.post_session_reps().empty()) return;
+    push_undo_();
+
+    auto proposal = session_.post_session_reps();
+    const int default_set_id = session_.info().sets.empty()
+        ? 1
+        : std::max(1, session_.info().sets.front().set_id);
+    int next_id = 1;
+    for (auto& r : proposal) {
+        r.rep_id = next_id++;
+        if (r.set_id <= 0) r.set_id = default_set_id;
+        if (r.concentric.source.empty()) r.concentric.source = "post_session_camera_gt";
+        if (r.eccentric.source.empty()) r.eccentric.source = "post_session_camera_gt";
+    }
+
+    session_.mutable_reps() = std::move(proposal);
+    session_.mark_reps_dirty();
+    run_validation_();
+    if (!session_.reps().empty()) select_rep_(0);
+    Notifications::get().info("Loaded post-session annotation proposal for review.");
+}
+
 void AnnotationStudio::seek_(double t_unified_s) {
     playhead_t_s_ = t_unified_s;
     timeline_.set_playhead(t_unified_s);
@@ -656,7 +819,9 @@ void AnnotationStudio::select_rep_(int rep_index) {
     if (rep_index < 0 || rep_index >= (int)session_.reps().size()) return;
     timeline_.set_selected_rep(rep_index);
     timeline_.center_on_rep(rep_index);
-    seek_(session_.reps()[rep_index].concentric.t_start_s);
+    const auto& r = session_.reps()[rep_index];
+    seek_(r.t_start_s > 0.0 ? r.t_start_s
+                            : std::min(r.concentric.t_start_s, r.eccentric.t_start_s));
 }
 
 } // namespace vbt

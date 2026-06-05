@@ -10,6 +10,8 @@
  *   • Video frame index CSV (for seeking ir_video.mp4 by time)
  *   • Rep segments (annotations/rep_segments.json — same struct the C++
  *     RepSegmenter writes; survives the round-trip byte-for-byte).
+ *   • Assisted proposals (annotations/rep_segments.candidate.json) kept
+ *     separate until the reviewer explicitly chooses to use them.
  *   • Metadata, manifest, events log.
  *
  * Time base: every column with the suffix `_unified_time_s` (or `t` in
@@ -131,6 +133,8 @@ public:
     const VideoIndex&            video_index() const { return video_idx_; }
     const std::vector<RepAnnotation>& reps() const { return reps_; }
     std::vector<RepAnnotation>&  mutable_reps() { return reps_; }
+    const std::vector<RepAnnotation>& candidate_reps() const { return candidate_reps_; }
+    const std::vector<RepAnnotation>& post_session_reps() const { return post_session_reps_; }
     const nlohmann::json&        manifest() const { return manifest_; }
     const std::vector<nlohmann::json>& events() const { return events_; }
 
@@ -168,6 +172,8 @@ private:
     bool load_marker_csv_(const std::filesystem::path& p, SessionLoadDiag& diag);
     bool load_video_index_csv_(const std::filesystem::path& p, SessionLoadDiag& diag);
     bool load_reps_json_(const std::filesystem::path& p, SessionLoadDiag& diag);
+    bool load_candidate_reps_json_(const std::filesystem::path& p, SessionLoadDiag& diag);
+    bool load_post_session_reps_json_(const std::filesystem::path& p, SessionLoadDiag& diag);
     bool load_meta_json_(const std::filesystem::path& p, SessionLoadDiag& diag);
     bool load_manifest_(const std::filesystem::path& p, SessionLoadDiag& diag);
     bool load_events_(const std::filesystem::path& p, SessionLoadDiag& diag);
@@ -187,6 +193,8 @@ private:
     MarkerStream                 marker_;
     VideoIndex                   video_idx_;
     std::vector<RepAnnotation>   reps_;
+    std::vector<RepAnnotation>   candidate_reps_;
+    std::vector<RepAnnotation>   post_session_reps_;
     nlohmann::json               manifest_;
     std::vector<nlohmann::json>  events_;
     MarkerCleanConfig            clean_cfg_;
