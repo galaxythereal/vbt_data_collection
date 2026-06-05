@@ -266,8 +266,6 @@ struct SetInfo {
     float        total_weight_kg     = 20.0f;
     float        percent_1rm         = 0.0f;
     int          target_reps         = 5;
-    int          completed_reps      = 0;       // auto: filled post-recording from rep_segments
-    int          actual_reps         = 0;       // operator ground-truth count
     int          rpe                 = 0;
     int          actual_rir          = 0;
     bool         to_failure          = false;
@@ -280,7 +278,7 @@ struct SetInfo {
     NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(SetInfo,
         set_id, t_start_unified_s, t_end_unified_s,
         barbell_weight_kg, added_weight_kg, total_weight_kg, percent_1rm,
-        target_reps, completed_reps, actual_reps, rpe, actual_rir,
+        target_reps, rpe, actual_rir,
         to_failure, drop_set, cluster_set, pause_set, tempo_set, notes)
 };
 

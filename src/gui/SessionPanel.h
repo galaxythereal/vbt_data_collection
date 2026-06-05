@@ -279,10 +279,6 @@ private:
 
     bool render_operator_metadata_form_() {
         bool ed = false;
-        if (!info_.sets.empty()) {
-            auto& st = info_.sets.front();
-            if (st.actual_reps > 0) actual_reps_ = st.actual_reps;
-        }
 
         if (!app_.config().exercise_profiles.empty()) {
             ImGui::PushItemWidth(-1);
@@ -336,7 +332,6 @@ private:
         ImGui::Text("Total load: %.1f kg", info_.total_weight_kg);
 
         ed |= ImGui::DragInt("Target reps", &info_.target_reps, 1, 1, 100);
-        ed |= ImGui::DragInt("Actual reps", &actual_reps_, 1, 0, 100);
         ed |= ImGui::SliderInt("RPE", &info_.rpe, 0, 10);
         ImGui::PopItemWidth();
 
@@ -355,7 +350,6 @@ private:
         st.total_weight_kg = info_.total_weight_kg;
         st.percent_1rm = info_.percent_1rm;
         st.target_reps = info_.target_reps;
-        st.actual_reps = actual_reps_;
         st.rpe = info_.rpe;
     }
 
@@ -431,7 +425,6 @@ private:
             info_.camera_snapshot = keep_camera;
             info_.time_sync_check = keep_sync;
             info_.preflight_overrides = keep_overrides;
-            actual_reps_ = 0;
             if (!info_.sets.empty()) {
                 const auto first = info_.sets.front();
                 info_.barbell_weight_kg = first.barbell_weight_kg;
@@ -439,7 +432,6 @@ private:
                 info_.total_weight_kg = first.total_weight_kg;
                 info_.target_reps = first.target_reps;
                 info_.rpe = first.rpe;
-                actual_reps_ = first.actual_reps;
             }
             info_.sets.clear();
             sync_single_set_from_fields_();
@@ -597,7 +589,6 @@ private:
     bool         request_preflight_ = false;
     std::vector<SubjectRecord> subject_records_;
     int          selected_subject_ = -1;
-    int          actual_reps_ = 0;
 
     // Pre-/post-recording stillness gate. The Session keeps its own gate
     // for the live recording stream; this one runs against polled latest

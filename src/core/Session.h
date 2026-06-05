@@ -60,7 +60,7 @@ public:
     void discard();    // delete current .partial directory
 
     /// Multi-set support during continuous recording. Closes the
-    /// currently-active SetInfo (stamps t_end_unified_s + completed_reps),
+    /// currently-active SetInfo (stamps t_end_unified_s),
     /// appends a new SetInfo to info_.sets, and tells the rep segmenter
     /// to tag every subsequent rep with the new set_id. The new set
     /// inherits weight/RPE/target_reps from `next` (caller-supplied).

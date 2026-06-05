@@ -179,14 +179,6 @@ bool render_sets_block(SessionInfo& info, double t0_unified_s) {
             ImGui::Text("Total: %.1f kg", st.total_weight_kg);
             ed |= ImGui::DragFloat("%% 1RM", &st.percent_1rm, 0.5f, 0, 110);
             ed |= ImGui::DragInt("Target reps",    &st.target_reps, 1, 1, 30);
-            ed |= ImGui::DragInt("Completed reps (auto)", &st.completed_reps, 1, 0, 30);
-            ed |= ImGui::DragInt("Actual reps (operator)", &st.actual_reps, 1, 0, 30);
-            if (st.actual_reps != 0 && st.completed_reps != 0
-                && st.actual_reps != st.completed_reps) {
-                ImGui::TextColored(ImVec4(1, 0.85f, 0.30f, 1),
-                    "  ⚠ segmenter saw %d, operator says %d — segmenter miscount",
-                    st.completed_reps, st.actual_reps);
-            }
             ed |= ImGui::SliderInt("RPE",          &st.rpe, 0, 10);
             ed |= ImGui::DragInt("Actual RIR",     &st.actual_rir, 1, 0, 15);
             ed |= ImGui::Checkbox("To failure",  &st.to_failure);

@@ -340,10 +340,6 @@ int Session::advance_set(const SetInfo& next_template) {
     if (!info_.sets.empty()) {
         auto& cur = info_.sets.back();
         cur.t_end_unified_s = now_wall;
-        int reps_in_set = 0;
-        for (const auto& r : rep_segmenter_->get_reps())
-            if (r.set_id == cur.set_id) ++reps_in_set;
-        cur.completed_reps = reps_in_set;
         closing_set_id = cur.set_id;
     }
 
@@ -360,7 +356,6 @@ int Session::advance_set(const SetInfo& next_template) {
     s.set_id          = info_.sets.empty() ? 1 : info_.sets.back().set_id + 1;
     s.t_start_unified_s = now_wall;
     s.t_end_unified_s   = 0.0;
-    s.completed_reps    = 0;
     info_.sets.push_back(s);
 
     rep_segmenter_->set_current_set_id(s.set_id);
@@ -389,16 +384,11 @@ void Session::stop_recording() {
     }
     data_logger_->close();
 
-    // Close out the active set so the on-disk SetInfo carries its end
-    // time + final completed-rep count.
+    // Close out the active set so the on-disk SetInfo carries its end time.
     if (!info_.sets.empty()) {
         auto& cur = info_.sets.back();
         cur.t_end_unified_s = std::chrono::duration<double>(
             std::chrono::system_clock::now().time_since_epoch()).count();
-        int reps_in_set = 0;
-        for (const auto& r : rep_segmenter_->get_reps())
-            if (r.set_id == cur.set_id) ++reps_in_set;
-        cur.completed_reps = reps_in_set;
     }
 
     state_ = SessionState::STOPPED;

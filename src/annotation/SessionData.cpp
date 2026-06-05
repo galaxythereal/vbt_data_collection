@@ -253,7 +253,6 @@ void SessionData::fixup_legacy_sets_() {
         s.notes             = info_.notes;
         s.t_start_unified_s = imu_.size() ? imu_.unified_t_s.front() : 0.0;
         s.t_end_unified_s   = imu_.size() ? imu_.unified_t_s.back()  : 0.0;
-        s.completed_reps    = (int)reps_.size();
         info_.sets.push_back(s);
         meta_dirty_ = true;
     }
