@@ -163,10 +163,7 @@ set(APP_SOURCES
     src/sensors/IMUReader.cpp
     ${VBT_CAMERA_READER_SRC}
     src/sensors/MarkerTracker.cpp
-    src/processing/RepSegmenter.cpp
-    src/processing/OrientationFilter.cpp
-    src/processing/Validator.cpp
-    src/processing/Autoregulation.cpp
+    src/processing/RepAnnotation.cpp
     src/processing/StillnessGate.cpp
     src/gui/MainWindow.cpp
     src/gui/SensorPanel.cpp
@@ -174,8 +171,6 @@ set(APP_SOURCES
     src/gui/SessionInfoForm.cpp
     src/gui/PlotPanel.cpp
     src/gui/CalibrationPanel.cpp
-    src/gui/AnnotationPanel.cpp
-    src/gui/ValidationPanel.cpp
     src/annotation/AnnotationStudio.cpp
     src/annotation/SessionData.cpp
     src/annotation/SessionLibrary.cpp

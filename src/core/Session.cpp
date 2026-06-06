@@ -24,8 +24,6 @@ Session::Session()
     , marker_tracker_(std::make_unique<MarkerTracker>())
     , sync_engine_(std::make_unique<SyncEngine>())
     , data_logger_(std::make_unique<DataLogger>())
-    , rep_segmenter_(std::make_unique<RepSegmenter>())
-    , validator_(std::make_unique<Validator>())
 {}
 
 Session::~Session() { stop_recording(); }
@@ -220,7 +218,6 @@ bool Session::start_recording() {
         imu_last_esp_ts_us_ = s2.esp_timestamp_us;
         data_logger_->log_imu(s2);
         sync_engine_->feed_imu_sample(s2);
-        rep_segmenter_->feed_accel_sample(s2.unified_time_s, s2.accel_x_g, s2.accel_y_g, s2.accel_z_g);
         sync_engine_->update_drift(s2.esp_timestamp_us, s2.host_timestamp_s);
 
         // Stream-quality monitoring (poll-loop gap + per-sample saturation).
@@ -284,8 +281,6 @@ bool Session::start_recording() {
                               s2.gyro_x_dps, s2.gyro_y_dps, s2.gyro_z_dps);
     });
 
-    last_cam_position_ = 0.0f;
-    last_cam_time_ = 0.0;
     cam_clock_registered_ = false;
     camera_queue_drops_ = 0;
     {
@@ -320,13 +315,11 @@ bool Session::start_recording() {
             std::chrono::duration<double>(
                 std::chrono::system_clock::now().time_since_epoch()).count();
     }
-    rep_segmenter_->set_current_set_id(
-        info_.sets.empty() ? 1 : info_.sets.back().set_id);
-
     state_ = SessionState::RECORDING;
     write_metadata();
     event_log_.info("session", "recording_start", "Recording started");
-    spdlog::info("Recording started (set {})", rep_segmenter_->get_current_set_id());
+    spdlog::info("Recording started (set {})",
+                 info_.sets.empty() ? 1 : info_.sets.back().set_id);
     return true;
 }
 
@@ -358,7 +351,6 @@ int Session::advance_set(const SetInfo& next_template) {
     s.t_end_unified_s   = 0.0;
     info_.sets.push_back(s);
 
-    rep_segmenter_->set_current_set_id(s.set_id);
     write_metadata();
     event_log_.info("session", "set_advanced",
                      "Advanced to set " + std::to_string(s.set_id));
@@ -458,23 +450,6 @@ void Session::process_camera_frame(const CameraFrame& f) {
     data_logger_->log_marker(ts, det);
     if (det.detected) {
         data_logger_->log_depth_at_marker(ts, det.z_m, det.pixel_u, det.pixel_v);
-        float pos = -det.y_m;
-        float vel = 0.0f;
-        if (last_cam_time_ > 0) {
-            double dt = ts - last_cam_time_;
-            if (dt > 0.001 && dt < 0.1) {
-                vel = (pos - last_cam_position_) / (float)dt;
-            }
-        }
-        last_cam_position_ = pos;
-        last_cam_time_ = ts;
-
-        VelocitySample vs;
-        vs.time_s = ts;
-        vs.position_m = pos;
-        vs.velocity_mps = vel;
-        vs.source = VelocitySample::Source::CAMERA;
-        rep_segmenter_->feed_sample(vs);
     }
     sync_engine_->feed_camera_detection(ts, det);
 }
@@ -486,11 +461,6 @@ void Session::save() {
         spdlog::warn("Save blocked: missing passed post-session calibration interval");
         return;
     }
-    rep_segmenter_->save(session_dir_ + "/annotations/rep_segments.json");
-    validator_->save_report(session_dir_ + "/validation/validation_report.json");
-    validator_->save_comparison_csv(session_dir_ + "/validation/position_comparison.csv",
-                                    session_dir_ + "/validation/velocity_comparison.csv");
-
     // Capture-time sync-quality validation. The hw vs host offset has been
     // streaming row-by-row into video_frames.csv; we now compute the median /
     // std / extrema across the whole session so a future analyst can flag any
@@ -894,7 +864,6 @@ Session::RecordingStats Session::get_recording_stats() const {
     rs.imu_samples    = imu_reader_->get_stats().valid_packets;
     rs.camera_frames  = camera_reader_->get_stats().total_frames;
     rs.tracking_rate = marker_tracker_->get_stats().detection_rate;
-    rs.rep_count = rep_segmenter_->get_rep_count();
     return rs;
 }
 

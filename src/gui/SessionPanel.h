@@ -200,10 +200,8 @@ private:
                     app_.config().rep_seg.prominence_fraction = prof->prominence_fraction;
                     app_.config().rep_seg.min_concentric_peak_mps = prof->min_concentric_peak_mps;
                     app_.config().rep_seg.setup_ignore_s = prof->setup_ignore_s;
-                    session.autoreg().set_threshold(prof->velocity_loss_threshold_pct);
                 }
                 sync_single_set_from_fields_();
-                session.autoreg().set_load_kg(info_.total_weight_kg);
                 session.create(app_.config().dataset_root, info_, app_.config().bids_layout);
             }
         }
@@ -233,29 +231,18 @@ private:
 
             auto stats = session.get_recording_stats();
             int cur_set = session.current_set_id();
-            int reps_in_cur_set = 0;
-            for (const auto& r : session.segmenter().get_reps())
-                if (r.set_id == cur_set) ++reps_in_cur_set;
 
             ImGui::Spacing();
             ImGui::TextColored(ImVec4(0.55f, 0.78f, 1, 1),
-                                "Recording set %d  ·  %d reps so far",
-                                cur_set, reps_in_cur_set);
+                                "Recording set %d", cur_set);
             ImGui::Text("Duration: %.1f s", stats.duration_s);
             ImGui::Text("IMU: %lu samples", stats.imu_samples);
             ImGui::Text("Camera: %lu frames", stats.camera_frames);
-            ImGui::Text("Reps total: %d", stats.rep_count);
 
-            // Per-set progress bar
+            // Prescribed target only — rep counting is offline (Annotation Studio).
             int target = info_.target_reps;
             if (!info_.sets.empty()) target = info_.sets.back().target_reps;
-            if (target > 0) {
-                float prog = (float)reps_in_cur_set / (float)target;
-                char overlay[48];
-                std::snprintf(overlay, sizeof(overlay),
-                               "set %d: %d / %d reps", cur_set, reps_in_cur_set, target);
-                ImGui::ProgressBar(prog, ImVec2(-1, 0), overlay);
-            }
+            if (target > 0) ImGui::Text("Target: %d reps", target);
         }
 
         if (state == SessionState::STOPPED) {

@@ -27,9 +27,6 @@
 #include "core/SyncEngine.h"
 #include "core/DataLogger.h"
 #include "core/EventLog.h"
-#include "processing/RepSegmenter.h"
-#include "processing/Validator.h"
-#include "processing/Autoregulation.h"
 #include "processing/StillnessGate.h"
 
 namespace vbt {
@@ -60,9 +57,8 @@ public:
     void discard();    // delete current .partial directory
 
     /// Multi-set support during continuous recording. Closes the
-    /// currently-active SetInfo (stamps t_end_unified_s),
-    /// appends a new SetInfo to info_.sets, and tells the rep segmenter
-    /// to tag every subsequent rep with the new set_id. The new set
+    /// currently-active SetInfo (stamps t_end_unified_s) and appends a
+    /// new SetInfo to info_.sets carrying the new set_id. The new set
     /// inherits weight/RPE/target_reps from `next` (caller-supplied).
     /// Returns the new set_id, or -1 if not recording.
     int  advance_set(const SetInfo& next);
@@ -120,7 +116,6 @@ public:
         uint64_t camera_frames   = 0;
         uint64_t marker_detections = 0;
         float tracking_rate      = 0.0f;
-        int   rep_count          = 0;
     };
     RecordingStats get_recording_stats() const;
 
@@ -131,9 +126,6 @@ public:
     CameraReader&    camera()     { return *camera_reader_; }
     MarkerTracker&   tracker()    { return *marker_tracker_; }
     SyncEngine&      sync()       { return *sync_engine_; }
-    RepSegmenter&    segmenter()  { return *rep_segmenter_; }
-    Validator&       validator()  { return *validator_; }
-    Autoregulation&  autoreg()    { return autoreg_; }
     EventLog&        events()     { return event_log_; }
 
 private:
@@ -172,10 +164,7 @@ private:
     std::unique_ptr<MarkerTracker>  marker_tracker_;
     std::unique_ptr<SyncEngine>     sync_engine_;
     std::unique_ptr<DataLogger>     data_logger_;
-    std::unique_ptr<RepSegmenter>   rep_segmenter_;
-    std::unique_ptr<Validator>      validator_;
     EventLog                        event_log_;
-    Autoregulation                  autoreg_;
     StillnessGate                   stillness_gate_;
 
     // IMU stream-quality bookkeeping. Drives event-log emission for
@@ -205,9 +194,6 @@ private:
     // Recording time
     std::chrono::steady_clock::time_point recording_start_;
 
-    // Velocity computation from camera position
-    float  last_cam_position_ = 0.0f;
-    double last_cam_time_ = 0.0;
     bool   cam_clock_registered_ = false;
     bool   imu_clock_registered_ = false;
 

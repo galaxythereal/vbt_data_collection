@@ -16,7 +16,7 @@
  */
 
 #include "app/Application.h"
-#include "processing/RepSegmenter.h"
+#include "processing/RepAnnotation.h"
 #include "utils/Notifications.h"
 #include <imgui.h>
 #include <string>

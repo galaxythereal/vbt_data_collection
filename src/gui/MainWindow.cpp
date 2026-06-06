@@ -8,12 +8,8 @@
 #include "gui/SessionPanel.h"
 #include "gui/PlotPanel.h"
 #include "gui/CalibrationPanel.h"
-#include "gui/AnnotationPanel.h"
-#include "gui/ValidationPanel.h"
 #include "gui/CameraPanel.h"
 #include "gui/PreflightPanel.h"
-#include "gui/OperatorView.h"
-#include "gui/RepTimelinePanel.h"
 #include "gui/CalibrationWizard.h"
 #include "gui/ReplayMode.h"
 #include "annotation/AnnotationStudio.h"
@@ -66,12 +62,8 @@ MainWindow::MainWindow(Application& app) : app_(app) {
     session_panel_    = std::make_unique<SessionPanel>(app);
     plot_panel_       = std::make_unique<PlotPanel>(app);
     calib_panel_      = std::make_unique<CalibrationPanel>(app);
-    annotation_panel_ = std::make_unique<AnnotationPanel>(app);
-    validation_panel_ = std::make_unique<ValidationPanel>(app);
     camera_panel_     = std::make_unique<CameraPanel>(app);
     preflight_        = std::make_unique<PreflightPanel>(app);
-    operator_view_    = std::make_unique<OperatorView>(app);
-    rep_timeline_     = std::make_unique<RepTimelinePanel>(app);
     calib_wizard_     = std::make_unique<CalibrationWizard>(app, shared_calib_mgr());
     replay_           = std::make_unique<ReplayMode>(app);
     studio_           = std::make_unique<AnnotationStudio>(app);
@@ -86,10 +78,6 @@ void MainWindow::process_hotkeys() {
 
     auto& sess = app_.session();
 
-    // F12 — toggle operator view
-    if (ImGui::IsKeyPressed(ImGuiKey_F12, false)) {
-        show_operator_view_ = !show_operator_view_;
-    }
     // F1 — toggle calibration wizard
     if (ImGui::IsKeyPressed(ImGuiKey_F1, false)) {
         if (calib_wizard_->is_open()) { /* no-op, user can close via X */ }
@@ -124,21 +112,6 @@ void MainWindow::process_hotkeys() {
             AudioCue::play(Cue::StopRecord);
         }
     }
-    // M / U — manual rep marker / undo last rep (only while recording)
-    if (sess.get_state() == SessionState::RECORDING && !io.KeyCtrl) {
-        if (ImGui::IsKeyPressed(ImGuiKey_M, false)) {
-            double now_s = std::chrono::duration<double>(
-                std::chrono::steady_clock::now().time_since_epoch()).count();
-            sess.segmenter().mark_rep_boundary_now(now_s);
-            AudioCue::play(Cue::LiftOff);
-            Notifications::get().info("Manual rep boundary inserted");
-        }
-        if (ImGui::IsKeyPressed(ImGuiKey_U, false)) {
-            sess.segmenter().delete_last_rep();
-            Notifications::get().warn("Last rep deleted");
-        }
-    }
-
     // Ctrl+S — save session if stopped
     if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false)) {
         if (sess.get_state() == SessionState::STOPPED) {
@@ -173,13 +146,6 @@ void MainWindow::render() {
 
     process_hotkeys();
     check_orphaned_partials_once();
-
-    // Operator view replaces normal UI when active
-    if (show_operator_view_) {
-        operator_view_->render();
-        Notifications::get().render();
-        return;
-    }
 
     const bool annotation_studio_open = studio_ && studio_->is_open();
     if (!annotation_studio_open) {
@@ -322,12 +288,11 @@ void MainWindow::render() {
     ImGui::Begin("Rep Stats", nullptr,
                  ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
                  ImGuiWindowFlags_NoCollapse);
-    ImGui::Checkbox("Timeline view", &use_rep_timeline_);
-    ImGui::SameLine();
-    ImGui::TextDisabled("(F1 calib · F2 replay · F12 operator)");
+    ImGui::TextDisabled("(F1 calib · F2 replay · F3 studio)");
     ImGui::Separator();
-    if (use_rep_timeline_) rep_timeline_->render_content();
-    else                   annotation_panel_->render_content();
+    ImGui::TextWrapped(
+        "Live rep segmentation was removed with the old realtime algorithm. "
+        "Label reps offline in the Annotation Studio (F3).");
     ImGui::End();
 
     // RIGHT — Set + Metrics tabs (Camera moved to center-bottom)
@@ -340,10 +305,6 @@ void MainWindow::render() {
         if (ImGui::BeginTabItem("Set")) {
             session_panel_->render_content();
             if (session_panel_->consume_preflight_request()) show_preflight_ = true;
-            ImGui::EndTabItem();
-        }
-        if (ImGui::BeginTabItem("Metrics")) {
-            validation_panel_->render_content();
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Camera Settings")) {
@@ -374,15 +335,6 @@ void MainWindow::render() {
     render_preflight_modal();
 
     if (show_demo_window_) ImGui::ShowDemoWindow(&show_demo_window_);
-
-    // Audio cue: rep counter incremented?
-    int rep_now = (int)app_.session().segmenter().get_reps().size();
-    if (rep_now > prev_rep_count_) {
-        AudioCue::play(Cue::LiftOff);
-        prev_rep_count_ = rep_now;
-    } else if (rep_now < prev_rep_count_) {
-        prev_rep_count_ = rep_now;  // a rep was deleted manually
-    }
 
     // Sync auto-rearm warning
     if (app_.session().sync().rearm_required()) {
@@ -465,14 +417,6 @@ void MainWindow::render_menu_bar() {
             ImGui::MenuItem("ImGui Demo", nullptr, &show_demo_window_);
             ImGui::EndMenu();
         }
-        if (ImGui::BeginMenu("View")) {
-            if (ImGui::MenuItem("Operator View (big numbers)", "F12",
-                                show_operator_view_)) {
-                show_operator_view_ = !show_operator_view_;
-            }
-            ImGui::MenuItem("Rep Timeline (vs. table)", nullptr, &use_rep_timeline_);
-            ImGui::EndMenu();
-        }
         if (ImGui::BeginMenu("Settings")) {
             bool audio = AudioCue::enabled();
             if (ImGui::MenuItem("Enable audio cues", nullptr, &audio)) {
@@ -507,9 +451,9 @@ void MainWindow::render_menu_bar() {
 
             auto stats = session.get_recording_stats();
             ImGui::SameLine();
-            ImGui::Text("| %.1fs | IMU:%llu | Cam:%llu | Reps:%d",
+            ImGui::Text("| %.1fs | IMU:%llu | Cam:%llu",
                         stats.duration_s, (unsigned long long)stats.imu_samples,
-                        (unsigned long long)stats.camera_frames, stats.rep_count);
+                        (unsigned long long)stats.camera_frames);
         } else {
             ImGui::TextDisabled("○ %s", session.get_state_string().c_str());
         }
@@ -540,12 +484,11 @@ void MainWindow::render_top_toolbar() {
     // Set context line (subject / exercise / rep)
     ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 4);
     const auto& sinfo = session.get_info();
-    auto reps = session.segmenter().get_reps();
     char ctx[160];
     std::string subj = sinfo.subject_id.empty() ? "(no subject)" : sinfo.subject_id;
     std::string ex   = sinfo.exercise.empty()   ? "(no exercise)"  : sinfo.exercise;
-    snprintf(ctx, sizeof(ctx), "subject %s   ·   %s   ·   reps %d",
-             subj.c_str(), ex.c_str(), (int)reps.size());
+    snprintf(ctx, sizeof(ctx), "subject %s   ·   %s",
+             subj.c_str(), ex.c_str());
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.70f, 0.72f, 0.78f, 1.0f));
     ImGui::TextUnformatted(ctx);
     ImGui::PopStyleColor();
@@ -651,29 +594,6 @@ void MainWindow::render_top_toolbar() {
             Notifications::get().info("Tap test running — tap the bar sharply");
         }
         ImGui::PopStyleColor(3);
-        ImGui::SameLine();
-    }
-
-    // ── Manual annotation buttons (only useful when recording) ──
-    // Auto-segmenter handles most reps but quasi-static or unusual reps may
-    // need a manual boundary. M = mark, U = undo last rep.
-    if (st == SessionState::RECORDING) {
-        ImGui::PushStyleColor(ImGuiCol_Button, kPillBlue);
-        if (ImGui::Button("Mark Rep [M]", ImVec2(110, 28))) {
-            double now_s = std::chrono::duration<double>(
-                std::chrono::steady_clock::now().time_since_epoch()).count();
-            session.segmenter().mark_rep_boundary_now(now_s);
-            AudioCue::play(Cue::LiftOff);
-            Notifications::get().info("Manual rep boundary inserted");
-        }
-        ImGui::PopStyleColor();
-        ImGui::SameLine();
-        ImGui::PushStyleColor(ImGuiCol_Button, kPillAmber);
-        if (ImGui::Button("Undo Rep [U]", ImVec2(110, 28))) {
-            session.segmenter().delete_last_rep();
-            Notifications::get().warn("Last rep deleted");
-        }
-        ImGui::PopStyleColor();
         ImGui::SameLine();
     }
 
@@ -891,8 +811,6 @@ void MainWindow::render_status_bar() {
         ImGui::Text("Camera: %llu", (unsigned long long)stats.camera_frames);
         ImGui::SameLine(610);
         ImGui::Text("Track: %.0f%%", stats.tracking_rate * 100.0f);
-        ImGui::SameLine(710);
-        ImGui::Text("Reps: %d", stats.rep_count);
         ImGui::SameLine(io.DisplaySize.x - 130);
         ImGui::Text("%.0f FPS", io.Framerate);
     }

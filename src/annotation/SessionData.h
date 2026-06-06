@@ -24,7 +24,7 @@
  * recomputes manifest checksums.
  */
 
-#include "processing/RepSegmenter.h"
+#include "processing/RepAnnotation.h"
 #include "app/Config.h"
 #include <nlohmann/json.hpp>
 #include <string>

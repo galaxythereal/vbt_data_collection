@@ -16,12 +16,8 @@ class SensorPanel;
 class SessionPanel;
 class PlotPanel;
 class CalibrationPanel;
-class AnnotationPanel;
-class ValidationPanel;
 class CameraPanel;
 class PreflightPanel;
-class OperatorView;
-class RepTimelinePanel;
 class CalibrationWizard;
 class ReplayMode;
 class AnnotationStudio;
@@ -53,12 +49,8 @@ private:
     std::unique_ptr<SessionPanel>     session_panel_;
     std::unique_ptr<PlotPanel>        plot_panel_;
     std::unique_ptr<CalibrationPanel> calib_panel_;
-    std::unique_ptr<AnnotationPanel>  annotation_panel_;
-    std::unique_ptr<ValidationPanel>  validation_panel_;
     std::unique_ptr<CameraPanel>      camera_panel_;
     std::unique_ptr<PreflightPanel>   preflight_;
-    std::unique_ptr<OperatorView>     operator_view_;
-    std::unique_ptr<RepTimelinePanel> rep_timeline_;
     std::unique_ptr<CalibrationWizard> calib_wizard_;
     std::unique_ptr<ReplayMode>       replay_;
     std::unique_ptr<AnnotationStudio> studio_;
@@ -66,10 +58,7 @@ private:
     bool show_demo_window_   = false;
     bool show_calib_window_  = false;
     bool show_preflight_     = false;
-    bool show_operator_view_ = false;
-    bool use_rep_timeline_   = false;    // hot-toggle: false = autoscroll table (default)
     bool checked_partials_   = false;
-    int  prev_rep_count_     = 0;        // for lift-off audio cue
 };
 
 } // namespace vbt
