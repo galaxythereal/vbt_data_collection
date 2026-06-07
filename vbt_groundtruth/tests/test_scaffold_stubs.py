@@ -39,18 +39,16 @@ def test_run_session_stub_raises():
 
 
 def test_unimplemented_stage_stubs_raise():
-    """M1+ stages remain stubs after M0 (M0 implements io/synth/canonical/adapter,
-    pipeline/s0_sets, metrics/eval — those are covered by their own tests)."""
+    """M2+ stages remain stubs after M1 (M0 implemented io/*, s0_sets, metrics;
+    M1 implemented s1_condition + s2_kinematics — covered by their own tests)."""
     from vbt_gt.io.writers import write_tables
-    from vbt_gt.pipeline.s1_condition import s1_condition
-    from vbt_gt.pipeline.s2_kinematics import s2_kinematics
     from vbt_gt.pipeline.s3_zupt import s3_zupt
+    from vbt_gt.pipeline.s4_traverse import s4_traverse
     from vbt_gt.pipeline.s6_hsmm import s6_hsmm
 
     for call in (
-        lambda: s1_condition(_raw(), Params()),
-        lambda: s2_kinematics(None, Params()),
         lambda: s3_zupt(None, None, None, Params()),
+        lambda: s4_traverse(None, None, None, [], Params()),
         lambda: s6_hsmm(None, None, None, [], [], Params()),
         lambda: write_tables(None, None, None, [], [], Params()),
     ):

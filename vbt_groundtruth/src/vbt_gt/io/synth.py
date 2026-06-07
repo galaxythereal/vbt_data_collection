@@ -255,6 +255,8 @@ def make_synthetic_session_with_truth(
     xyz += rng.normal(0.0, max(params.meas_noise_m, 0.002), size=xyz.shape)
 
     # ── post-mapping camera phenomena (affect xyz/confidence, not the truth `s`) ──
+    occ_spans: list[tuple[int, int]] = []
+    frz_spans: list[tuple[int, int]] = []
     if (inj["occlusion"] or inj["freeze"]) and set_spans:
         a0, b0 = set_spans[0]
         if inj["occlusion"]:
@@ -262,12 +264,14 @@ def make_synthetic_session_with_truth(
             ob = min(b0, oa + int(round(rng.uniform(0.05, 0.40) * fs)))
             xyz[oa:ob, :] = np.nan
             conf[oa:ob] = 0.30
+            occ_spans.append((oa, ob))
         if inj["freeze"]:
             fa = a0 + int(0.60 * (b0 - a0))
             fb = min(b0, fa + int(round(rng.uniform(0.5, 1.5) * fs)))
             if fb > fa:
                 xyz[fa:fb, :] = xyz[fa, :]
                 conf[fa:fb] = np.linspace(0.6, 0.35, fb - fa)
+                frz_spans.append((fa, fb))
 
     raw = RawSession(
         session_id=f"synth_{exercise.value}_{seed}",
@@ -284,6 +288,8 @@ def make_synthetic_session_with_truth(
         "t": t,
         "fs": float(fs),
         "set_spans": set_spans,
+        "occlusion_spans": occ_spans,   # injected NaN windows (for M1 gap-recall tests)
+        "freeze_spans": frz_spans,      # injected stuck-tracker windows (M1 freeze tests)
         "exercise": exercise,
         "rotation": rot,
         "offset": _CAM_OFFSET.copy(),
