@@ -8,18 +8,13 @@ import numpy as np
 import pytest
 
 from vbt_gt.config import Params
-from vbt_gt.io.synth import ALL_EXERCISES, make_synthetic_session_with_truth
+from vbt_gt.io.synth import (
+    ALL_EXERCISES,
+    make_synthetic_corpus_with_truth,
+    make_synthetic_session_with_truth,
+)
 from vbt_gt.pipeline.s0_sets import s0_segment_sets
 from vbt_gt.types import Conditioned, Exercise, Kinematics
-
-# Exclude `transport` (movement before set 1 would shift the true onset) and the
-# camera-only phenomena (occlusion/freeze affect xyz, not the truth s).
-S0_INJECT = {
-    "cluster": True, "fatigue_drift": True, "countermovement": True,
-    "mid_stall": True, "pause_variant": True, "partial_failed": True,
-    "dropped_eccentric": True,
-}
-
 
 def _manual_cond_kin(raw, truth):
     s = truth["s"]
@@ -43,16 +38,19 @@ def _manual_cond_kin(raw, truth):
     return cond, kin
 
 
-@pytest.mark.parametrize("ex", ALL_EXERCISES)
-def test_set_count_and_boundaries(ex):
-    raw, _, truth = make_synthetic_session_with_truth(
-        ex, n_sets=2, seed=10, inject=S0_INJECT)
+@pytest.mark.parametrize("idx", range(len(ALL_EXERCISES)))
+def test_set_count_and_boundaries_default_mix(idx):
+    # DEFAULT injection mix — incl. transport, cluster, fatigue, partials, and the
+    # camera-only occlusion/freeze (which perturb xyz but not the truth `s` used to
+    # build the manual-S1 Conditioned here). truth['set_spans'] includes transport
+    # as part of set 1, so S0's recovered movement span is expected to match.
+    raw, _, truth = make_synthetic_corpus_with_truth(seed=10)[idx]
     cond, kin = _manual_cond_kin(raw, truth)
     spans = s0_segment_sets(cond, kin, Params())
-    assert len(spans) == len(truth["set_spans"]) == 2, ex.value
+    assert len(spans) == len(truth["set_spans"]) == 2, raw.exercise.value
     for sp, (ts, te) in zip(spans, truth["set_spans"]):
-        assert abs(sp.start - ts) <= 15, (ex.value, "start", sp.start, ts)
-        assert abs(sp.end - te) <= 15, (ex.value, "end", sp.end, te)
+        assert abs(sp.start - ts) <= 15, (raw.exercise.value, "start", sp.start, ts)
+        assert abs(sp.end - te) <= 15, (raw.exercise.value, "end", sp.end, te)
         assert sp.start < sp.end
 
 

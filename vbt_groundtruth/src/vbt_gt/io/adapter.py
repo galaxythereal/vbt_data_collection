@@ -21,12 +21,10 @@ from vbt_gt.types import Exercise, RawSession
 
 FS = 90.0  # frames per second — drives t = frame_idx / FS (REPO_MAP §1.11)
 
-# Outcome fields that must NEVER reach the answer path (defense-in-depth; the
-# dataset is already clean and the C++ writers can no longer emit these).
-_BANNED_META = {
-    "completed_reps", "actual_reps", "completed_reps_operator",
-    "intent_failed_rep_idx", "last_rep_grinder",
-}
+# RawSession.meta is restricted to these prescription keys (FOUNDATION §0.5 /
+# REPO_MAP §1.6). Rep-count outcomes are excluded by construction (not on the list),
+# and arbitrary caller-supplied keys are never passed through.
+_ALLOWED_META = {"target_reps", "intended_reps"}
 
 
 def _resolve_session_dir(raw_path) -> Path:
@@ -67,16 +65,24 @@ def to_raw_session(raw_path, exercise: Exercise | None = None,
     detected = need("detected").astype(np.int64)
     xyz[detected == 0, :] = np.nan
 
-    # Time base: frame_idx / 90 from video_frames.csv (contiguous, gap-free).
+    # Time base: t = frame_idx / 90 from camera/video_frames.csv (REPO_MAP §1.11).
+    # The frame timeline is REQUIRED and validated — no silent arange fallback.
     vf = session_dir / "camera" / "video_frames.csv"
-    frame_idx = None
-    if vf.exists():
-        vfd = pd.read_csv(vf)
-        vcols = {c.lower().strip(): c for c in vfd.columns}
-        if "frame_idx" in vcols and len(vfd) == n:
-            frame_idx = vfd[vcols["frame_idx"]].to_numpy(dtype=np.float64)
-    if frame_idx is None:
-        frame_idx = np.arange(n, dtype=np.float64)   # contiguous fallback
+    if not vf.exists():
+        raise ValueError(f"adapter: required frame timeline {vf} is missing")
+    vfd = pd.read_csv(vf)
+    vcols = {c.lower().strip(): c for c in vfd.columns}
+    if "frame_idx" not in vcols:
+        raise ValueError(f"adapter: {vf} missing required 'frame_idx' column")
+    frame_idx = vfd[vcols["frame_idx"]].to_numpy(dtype=np.float64)
+    if frame_idx.shape[0] != n:
+        raise ValueError(
+            f"adapter: video_frames rows ({frame_idx.shape[0]}) != "
+            f"marker_positions rows ({n}) in {session_dir}")
+    if not np.array_equal(frame_idx, np.arange(n, dtype=np.float64)):
+        raise ValueError(
+            f"adapter: frame_idx in {vf} is not contiguous 0..N-1 — "
+            "t = frame_idx/90 requires the gap-free frame timeline")
     t = frame_idx / FS
 
     confidence = (df[cols["confidence"]].to_numpy(dtype=np.float64)
@@ -99,19 +105,19 @@ def to_raw_session(raw_path, exercise: Exercise | None = None,
     elif not isinstance(exercise, Exercise):
         exercise = Exercise(exercise)
 
+    # RawSession.meta carries ONLY prescription keys (target_reps / intended_reps).
+    # Arbitrary caller-supplied keys are dropped; rep-count outcomes can never appear
+    # because they are not in _ALLOWED_META.
     out_meta: dict = {}
-    if isinstance(meta, dict):
-        out_meta.update(meta)
-    # Prescription only — at most target_reps / intended_reps.
     if "target_reps" in md:
-        out_meta.setdefault("target_reps", md["target_reps"])
+        out_meta["target_reps"] = md["target_reps"]
     sets = md.get("sets") or []
     if sets and isinstance(sets[0], dict) and "intended_reps" in sets[0]:
-        out_meta.setdefault("intended_reps", sets[0]["intended_reps"])
-    # Strip any banned outcome key, whatever the source.
-    for k in list(out_meta):
-        if k in _BANNED_META:
-            del out_meta[k]
+        out_meta["intended_reps"] = sets[0]["intended_reps"]
+    if isinstance(meta, dict):                 # caller may override allowed keys only
+        for k in _ALLOWED_META:
+            if k in meta:
+                out_meta[k] = meta[k]
 
     session_id = str(md.get("session_id") or session_dir.name)
     return RawSession(

@@ -104,8 +104,11 @@ def make_synthetic_session_with_truth(
     for set_idx in range(n_sets):
         n_reps = int(rng.integers(reps_per_set[0], reps_per_set[1] + 1))
 
-        # transport into position before the first set (deadlift bar starts on the
-        # floor legitimately → not transport).
+        # Movement onset for this set. It INCLUDES the one-time transport into
+        # position before set 1 (deadlift bar starts on the floor legitimately →
+        # not transport), so the true set span covers transport and the S0
+        # acceptance test can run on the DEFAULT injection mix.
+        set_start = cur()
         if inj["transport"] and set_idx == 0 and exercise != Exercise.DEADLIFT:
             off = -0.20 if family == "up_first" else 0.20
             add_ramp(base + off, base, 0.6)
@@ -122,7 +125,6 @@ def make_synthetic_session_with_truth(
         if inj["eccentric_only"] and family == "down_first" and n_reps >= 5:
             variant[2] = "ecc_only"
 
-        set_start = cur()
         for r in range(n_reps):
             kind = variant.get(r, "normal")
             cm = inj["countermovement"] and r == 0 and kind == "normal"
