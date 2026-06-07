@@ -39,17 +39,19 @@ def test_run_session_stub_raises():
 
 
 def test_unimplemented_stage_stubs_raise():
-    """M2+ stages remain stubs after M1 (M0 implemented io/*, s0_sets, metrics;
-    M1 implemented s1_condition + s2_kinematics — covered by their own tests)."""
+    """M3+ stages remain stubs after M2 (M0: io/*, s0_sets, metrics; M1: s1/s2;
+    M2: s3_zupt + s4_traverse — all covered by their own tests)."""
     from vbt_gt.io.writers import write_tables
-    from vbt_gt.pipeline.s3_zupt import s3_zupt
-    from vbt_gt.pipeline.s4_traverse import s4_traverse
+    from vbt_gt.pipeline.s5_matrixprofile import s5_matrix_profile
     from vbt_gt.pipeline.s6_hsmm import s6_hsmm
+    from vbt_gt.pipeline.s7_ensemble import s7_ensemble
+    from vbt_gt.pipeline.s8_kinematics_vbt import s8_vbt
 
     for call in (
-        lambda: s3_zupt(None, None, None, Params()),
-        lambda: s4_traverse(None, None, None, [], Params()),
+        lambda: s5_matrix_profile(None, None, None, [], Params()),
         lambda: s6_hsmm(None, None, None, [], [], Params()),
+        lambda: s7_ensemble(None, None, None, [], [], {}, None, Params()),
+        lambda: s8_vbt(None, None, None, [], Params()),
         lambda: write_tables(None, None, None, [], [], Params()),
     ):
         with pytest.raises(NotImplementedError):

@@ -41,14 +41,20 @@ def _Q(dt: float, q: float) -> np.ndarray:
 
 
 def _kalman_rts(z: np.ndarray, quality: np.ndarray, dt: float,
-                q: float, r: float) -> tuple[np.ndarray, np.ndarray]:
+                q: float, r: float,
+                zero_v_mask: np.ndarray | None = None, r_v: float = 1e-4
+                ) -> tuple[np.ndarray, np.ndarray]:
     """Forward constant-jerk Kalman + RTS backward pass on a 1-D measurement `z`.
+
+    If `zero_v_mask` is given, frames where it is True get an extra velocity
+    pseudo-measurement (v = 0, noise r_v) — used by S3 ZUPT velocity de-biasing.
 
     Returns (xs, Ps): smoothed state (M,4) and covariance (M,4,4).
     """
     m = z.shape[0]
     F, Q = _F(dt), _Q(dt, q)
     H = _H
+    Hv = np.array([0.0, 1.0, 0.0, 0.0])
     I4 = np.eye(4)
     eps = 1e-3
 
@@ -74,6 +80,11 @@ def _kalman_rts(z: np.ndarray, quality: np.ndarray, dt: float,
         k = (Pp @ H) / s_innov                        # (4,)
         xf = xp + k * (float(z[t]) - float(H @ xp))
         Pf = (I4 - np.outer(k, H)) @ Pp
+        if zero_v_mask is not None and zero_v_mask[t]:    # ZUPT velocity pseudo-measurement
+            s_v = float(Hv @ Pf @ Hv) + r_v
+            k_v = (Pf @ Hv) / s_v
+            xf = xf + k_v * (0.0 - float(Hv @ xf))
+            Pf = (I4 - np.outer(k_v, Hv)) @ Pf
         x_filt[t], P_filt[t] = xf, Pf
 
     # ── RTS backward pass ──

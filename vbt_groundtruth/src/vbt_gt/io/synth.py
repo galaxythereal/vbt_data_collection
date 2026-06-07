@@ -132,9 +132,11 @@ def make_synthetic_session_with_truth(
             pause = (inj["pause_variant"] and n_reps >= 3
                      and r == n_reps - 2 and (n_reps - 2) not in variant)
 
-            rom = rom0 * (1.0 + rng.uniform(-0.15, 0.15))
+            rom = rom0 * (1.0 + rng.uniform(-0.08, 0.08))   # realistic within-set ROM spread
             if inj["fatigue_drift"]:
-                rom *= (1.0 - 0.06 * r)            # progressive ROM loss
+                # mild progressive ROM loss, floored — reduced-ROM reps stay clearly
+                # ABOVE failed partials (separable by amplitude, as the spec implies).
+                rom *= max(0.80, 1.0 - 0.035 * r)
             t_conc = dur0 * 0.5 * (1.0 + rng.uniform(-0.25, 0.25))
             t_ecc = dur0 * 0.5 * (1.0 + rng.uniform(-0.25, 0.25))
 
@@ -147,7 +149,7 @@ def make_synthetic_session_with_truth(
                     add_ramp(0.0, -0.03 * rom, 0.12)
                     add_ramp(-0.03 * rom, 0.0, 0.10)
                 if kind == "partial":
-                    peak = rng.uniform(0.5, 0.8) * rom
+                    peak = rng.uniform(0.45, 0.65) * rom    # clearly fails to reach the top
                     cs = cur(); add_ramp(0.0, peak, t_conc * 0.7); ce = cur()
                     add_ramp(peak, 0.0, t_conc * 0.7)
                     status = IntervalOutcome.PARTIAL_FAILED
