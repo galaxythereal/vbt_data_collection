@@ -80,6 +80,11 @@ def make_synthetic_session_with_truth(
     conf_vals: list[float] = []
     gt: list[dict] = []
     set_spans: list[tuple[int, int]] = []
+    # continuous phase-truth spans (M3 phase-IoU fixture; additive — no effect on the
+    # generated signal or gt, so M0–M2 tests are unchanged). Frame ranges are [start,end).
+    transport_spans: list[tuple[int, int]] = []
+    stall_spans: list[tuple[int, int]] = []
+    partial_spans: list[tuple[int, int]] = []
 
     base = 0.0 if family == "up_first" else rom0   # rest position
 
@@ -111,8 +116,10 @@ def make_synthetic_session_with_truth(
         set_start = cur()
         if inj["transport"] and set_idx == 0 and exercise != Exercise.DEADLIFT:
             off = -0.20 if family == "up_first" else 0.20
+            t_tr = cur()
             add_ramp(base + off, base, 0.6)
             add_const(base, 0.4)
+            transport_spans.append((t_tr, cur()))
 
         # variant schedule (one whole-rep variant per chosen rep; up_first only for
         # partial/dropped so rest-position continuity holds).
@@ -152,13 +159,14 @@ def make_synthetic_session_with_truth(
                     peak = rng.uniform(0.45, 0.65) * rom    # clearly fails to reach the top
                     cs = cur(); add_ramp(0.0, peak, t_conc * 0.7); ce = cur()
                     add_ramp(peak, 0.0, t_conc * 0.7)
+                    partial_spans.append((cs, cur()))
                     status = IntervalOutcome.PARTIAL_FAILED
                     achieved = peak
                 else:
                     cs = cur()
                     if stall:
                         add_ramp(0.0, 0.5 * rom, t_conc * 0.5)
-                        add_const(0.5 * rom, 0.4, 0.68)
+                        _ss = cur(); add_const(0.5 * rom, 0.4, 0.68); stall_spans.append((_ss, cur()))
                         add_ramp(0.5 * rom, rom, t_conc * 0.5)
                     else:
                         add_ramp(0.0, rom, t_conc)
@@ -189,7 +197,7 @@ def make_synthetic_session_with_truth(
                     cs = cur()
                     if stall:
                         add_ramp(0.0, 0.5 * rom, t_conc * 0.5)
-                        add_const(0.5 * rom, 0.4, 0.68)
+                        _ss = cur(); add_const(0.5 * rom, 0.4, 0.68); stall_spans.append((_ss, cur()))
                         add_ramp(0.5 * rom, rom, t_conc * 0.5)
                     else:
                         add_ramp(0.0, rom, t_conc)
@@ -292,6 +300,9 @@ def make_synthetic_session_with_truth(
         "set_spans": set_spans,
         "occlusion_spans": occ_spans,   # injected NaN windows (for M1 gap-recall tests)
         "freeze_spans": frz_spans,      # injected stuck-tracker windows (M1 freeze tests)
+        "transport_spans": transport_spans,  # leading into-position move (M3 phase-IoU)
+        "stall_spans": stall_spans,          # mid-phase const dwell (M3 mid_phase_stall)
+        "partial_spans": partial_spans,      # full failed-attempt span (M3 partial_failed)
         "exercise": exercise,
         "rotation": rot,
         "offset": _CAM_OFFSET.copy(),

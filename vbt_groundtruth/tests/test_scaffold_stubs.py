@@ -39,17 +39,14 @@ def test_run_session_stub_raises():
 
 
 def test_unimplemented_stage_stubs_raise():
-    """M3+ stages remain stubs after M2 (M0: io/*, s0_sets, metrics; M1: s1/s2;
-    M2: s3_zupt + s4_traverse — all covered by their own tests)."""
+    """M4+ stages remain stubs after M3 (M0: io/*, s0_sets, metrics; M1: s1/s2;
+    M2: s3_zupt + s4_traverse; M3: s5_matrixprofile + s6_hsmm — all covered by their
+    own tests). S7 ensemble, S8 VBT, and the parquet writers are still unimplemented."""
     from vbt_gt.io.writers import write_tables
-    from vbt_gt.pipeline.s5_matrixprofile import s5_matrix_profile
-    from vbt_gt.pipeline.s6_hsmm import s6_hsmm
     from vbt_gt.pipeline.s7_ensemble import s7_ensemble
     from vbt_gt.pipeline.s8_kinematics_vbt import s8_vbt
 
     for call in (
-        lambda: s5_matrix_profile(None, None, None, [], Params()),
-        lambda: s6_hsmm(None, None, None, [], [], Params()),
         lambda: s7_ensemble(None, None, None, [], [], {}, None, Params()),
         lambda: s8_vbt(None, None, None, [], Params()),
         lambda: write_tables(None, None, None, [], [], Params()),
