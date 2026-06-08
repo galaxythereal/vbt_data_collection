@@ -96,6 +96,57 @@ void RepTablePanel::render_selected_rep_editor_() {
             ed = true;
         }
     }
+
+    // ── Ground-truth attributes (Step 7): IntervalOutcome + pause + ROM ──
+    ImGui::Separator();
+    session_->ensure_gt_attrs_aligned();
+    if (selected_ < (int)session_->mutable_gt_attrs().size()) {
+        GtAttr& a = session_->mutable_gt_attrs()[selected_];
+        const auto& ov = outcome_values();
+        int cur = (int)a.status;
+        ImGui::PushItemWidth(240);
+        if (ImGui::BeginCombo("outcome (status)", ov[cur])) {
+            for (int i = 0; i < (int)ov.size(); ++i) {
+                bool sel = (i == cur);
+                if (ImGui::Selectable(ov[i], sel)) { a.status = (IntervalOutcome)i; ed = true; }
+                if (sel) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::PopItemWidth();
+        if (outcome_counts(a.status)) ImGui::TextDisabled("  ↳ counts toward rep count");
+        else                          ImGui::TextDisabled("  ↳ does NOT count");
+
+        if (ImGui::Checkbox("has pause / hold", &a.has_pause)) ed = true;
+        if (a.has_pause) {
+            static const char* KINDS[] = {"", "top_hold", "chest_pause",
+                                          "bottom_hold", "floor_reset"};
+            int ki = 0;
+            for (int i = 0; i < 5; ++i) if (a.pause_kind == KINDS[i]) ki = i;
+            ImGui::SameLine();
+            ImGui::PushItemWidth(150);
+            if (ImGui::BeginCombo("pause kind", KINDS[ki])) {
+                for (int i = 0; i < 5; ++i) {
+                    bool sel = (i == ki);
+                    if (ImGui::Selectable(KINDS[i][0] ? KINDS[i] : "(none)", sel)) {
+                        a.pause_kind = KINDS[i]; ed = true;
+                    }
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::PopItemWidth();
+        }
+        ImGui::PushItemWidth(120);
+        if (ImGui::DragFloat("rom completeness", &a.rom_completeness, 0.01f, 0.0f, 1.0f, "%.2f"))
+            ed = true;
+        ImGui::PopItemWidth();
+
+        // exported integer frame_idx (camera-only base via video_frames.csv)
+        int cs = session_->frame_for_time(r.concentric.t_start_s);
+        int ce = session_->frame_for_time(r.concentric.t_end_s);
+        ImGui::TextDisabled("export frames — set %d · concentric [%d, %d]", r.set_id, cs, ce);
+    }
+
     if (ed) {
         session_->recompute_rep_metrics(selected_);
         session_->mark_reps_dirty();
@@ -127,6 +178,9 @@ void RepTablePanel::render_toolbar_() {
         r.rest.t_end_s         = t + 1.5;
         r.concentric.source = r.eccentric.source = r.rest.source = "manual";
         session_->mutable_reps().push_back(r);
+        // keep GT attributes index-aligned (append a default for the new rep)
+        session_->mutable_gt_attrs().push_back(GtAttr{});
+        session_->ensure_gt_attrs_aligned();
         session_->recompute_rep_metrics((int)session_->reps().size() - 1);
         session_->mark_reps_dirty();
     }
@@ -135,6 +189,11 @@ void RepTablePanel::render_toolbar_() {
         && selected_ < (int)session_->reps().size()) {
         session_->mutable_reps().erase(
             session_->mutable_reps().begin() + selected_);
+        // erase the matching GT attribute at the same index
+        if (selected_ < (int)session_->gt_attrs().size())
+            session_->mutable_gt_attrs().erase(
+                session_->mutable_gt_attrs().begin() + selected_);
+        session_->ensure_gt_attrs_aligned();
         session_->mark_reps_dirty();
         selected_ = -1;
     }

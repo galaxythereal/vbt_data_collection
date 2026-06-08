@@ -212,8 +212,7 @@ void TimelinePanel::render_toolbar_() {
     ImGui::SameLine();
     ImGui::Checkbox("peaks", &show_peaks_);
     ImGui::SameLine();
-    ImGui::Checkbox("fsync", &show_fsync_);
-    ImGui::SameLine();
+    // No fsync/IMU control — the Step-7 labeling UI is camera-only.
     ImGui::Checkbox("snap", &snap_to_zerocross_);
 }
 
@@ -313,11 +312,13 @@ void TimelinePanel::render_rep_trace_plot_(double t0_session, double t1_session,
 
 void TimelinePanel::render_position_plot_(double t0_session, double t1_session,
                                           float height) {
-    if (!ImPlot::BeginPlot("Position (camera, world up)",
+    const bool have_trace = session_ && session_->has_trace();
+    if (!ImPlot::BeginPlot(have_trace ? "Position (pipeline s — labeling reference)"
+                                      : "Position (camera, world up)",
                             ImVec2(-1, height),
                             ImPlotFlags_NoLegend)) return;
     ImPlot::SetupAxes("time (s, since session start)",
-                      "position up (m)",
+                      have_trace ? "s — segmentation coord (m)" : "position up (m)",
                       ImPlotAxisFlags_None,
                       ImPlotAxisFlags_AutoFit);
     ImPlot::SetupAxisLimits(ImAxis_X1, view_t_min_ - t0_session,
@@ -327,18 +328,32 @@ void TimelinePanel::render_position_plot_(double t0_session, double t1_session,
     ImPlot::SetupAxisFormat(ImAxis_Y1, "%.2f m");
 
     const auto& m = session_->marker();
-    if (m.size() > 0 && m.pos_up_clean_m.size() == m.size()) {
+    if (have_trace) {
+        // D2: the pipeline gravity-aligned `s` (trace.csv) is the labeling
+        // reference — the signal the exported frame labels describe.
+        const auto& tr = session_->trace();
+        static std::vector<float> xs, ys;
+        xs.resize(tr.size()); ys.resize(tr.size());
+        for (size_t i = 0; i < tr.size(); ++i) {
+            xs[i] = (float)(session_->time_for_frame(tr[i].frame_idx) - t0_session);
+            ys[i] = (float)tr[i].s;
+        }
+        ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(0.30f, 0.85f, 1.00f, 1));
+        ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 2.6f);
+        ImPlot::PlotLine("s (pipeline)", xs.data(), ys.data(), (int)xs.size());
+        ImPlot::PopStyleVar();
+        ImPlot::PopStyleColor();
+    } else if (m.size() > 0 && m.pos_up_clean_m.size() == m.size()) {
+        // fallback (from-scratch, no prefill): studio's own cleaned signal.
         static std::vector<float> xs, ys;
         xs.resize(m.size()); ys.resize(m.size());
         for (size_t i = 0; i < m.size(); ++i) {
             xs[i] = (float)(m.unified_t_s[i] - t0_session);
             ys[i] = m.pos_up_clean_m[i];
         }
-        // Bright cyan with bold weight; clear against the dark plot bg.
         ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(0.30f, 0.85f, 1.00f, 1));
         ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 2.6f);
-        ImPlot::PlotLine("position",
-                         xs.data(), ys.data(), (int)xs.size());
+        ImPlot::PlotLine("position", xs.data(), ys.data(), (int)xs.size());
         ImPlot::PopStyleVar();
         ImPlot::PopStyleColor();
     }
@@ -380,6 +395,9 @@ void TimelinePanel::render_position_plot_(double t0_session, double t1_session,
                 r.rest.t_end_s         = b;
                 r.concentric.source = r.eccentric.source = r.rest.source = "manual";
                 session_->mutable_reps().push_back(r);
+                // keep GT attributes aligned (append a default for the new rep)
+                session_->mutable_gt_attrs().push_back(GtAttr{});
+                session_->ensure_gt_attrs_aligned();
                 session_->recompute_rep_metrics((int)session_->reps().size() - 1);
                 session_->mark_reps_dirty();
                 made_edit_ = true;
@@ -394,9 +412,12 @@ void TimelinePanel::render_position_plot_(double t0_session, double t1_session,
 
 void TimelinePanel::render_velocity_plot_(double t0_session, double t1_session,
                                           float height) {
-    if (!ImPlot::BeginPlot("Velocity (camera derivative + IMU |a|−1 overlay)",
+    // Camera-only labeling UI: NO IMU |a|−1 / fsync overlay (Step-7 correction).
+    const bool have_trace = session_ && session_->has_trace();
+    if (!ImPlot::BeginPlot(have_trace ? "Velocity (pipeline v — labeling reference)"
+                                      : "Velocity (camera derivative)",
                             ImVec2(-1, height),
-                            ImPlotFlags_None)) return;
+                            ImPlotFlags_NoLegend)) return;
     ImPlot::SetupAxes("time (s)", "velocity (m/s)",
                        ImPlotAxisFlags_None,
                        ImPlotAxisFlags_AutoFit);
@@ -405,61 +426,35 @@ void TimelinePanel::render_velocity_plot_(double t0_session, double t1_session,
                                        force_view_ ? ImGuiCond_Always : ImGuiCond_Once);
     ImPlot::SetupAxisFormat(ImAxis_X1, "%.1f s");
     ImPlot::SetupAxisFormat(ImAxis_Y1, "%.2f m/s");
-    // Second Y axis for the IMU |a|-1 trace so it doesn't get squashed by
-    // the velocity range (and vice-versa). Hidden axis label keeps the
-    // visual focus on velocity.
-    ImPlot::SetupAxis(ImAxis_Y2, "|a|−1 (g)",
-                       ImPlotAxisFlags_AuxDefault | ImPlotAxisFlags_Opposite);
-    ImPlot::SetupAxisFormat(ImAxis_Y2, "%.2f g");
-    ImPlot::SetupLegend(ImPlotLocation_NorthEast,
-                        ImPlotLegendFlags_Outside);
 
     const auto& m = session_->marker();
-    if (m.size() > 0 && m.vz_clean_mps.size() == m.size()) {
-        static std::vector<float> xs, ys;
+    const float* vx = nullptr; const float* vy = nullptr; int vn = 0;
+    static std::vector<float> xs, ys;
+    if (have_trace) {
+        const auto& tr = session_->trace();
+        xs.resize(tr.size()); ys.resize(tr.size());
+        for (size_t i = 0; i < tr.size(); ++i) {
+            xs[i] = (float)(session_->time_for_frame(tr[i].frame_idx) - t0_session);
+            ys[i] = (float)tr[i].v;
+        }
+        vx = xs.data(); vy = ys.data(); vn = (int)xs.size();
+    } else if (m.size() > 0 && m.vz_clean_mps.size() == m.size()) {
         xs.resize(m.size()); ys.resize(m.size());
         for (size_t i = 0; i < m.size(); ++i) {
             xs[i] = (float)(m.unified_t_s[i] - t0_session);
             ys[i] = m.vz_clean_mps[i];
         }
-        // Bright lime; thicker; shaded fill to zero so direction reads at
-        // a glance.
-        ImPlot::PushStyleColor(ImPlotCol_Line,
-                                ImVec4(0.40f, 0.95f, 0.40f, 1));
-        ImPlot::PushStyleColor(ImPlotCol_Fill,
-                                ImVec4(0.40f, 0.95f, 0.40f, 0.18f));
+        vx = xs.data(); vy = ys.data(); vn = (int)xs.size();
+    }
+    if (vn > 0) {
+        ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(0.40f, 0.95f, 0.40f, 1));
+        ImPlot::PushStyleColor(ImPlotCol_Fill, ImVec4(0.40f, 0.95f, 0.40f, 0.18f));
         ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 2.6f);
-        ImPlot::PlotShaded("velocity",
-                            xs.data(), ys.data(), (int)xs.size(), 0.0);
-        ImPlot::PlotLine("velocity",
-                         xs.data(), ys.data(), (int)xs.size());
+        ImPlot::PlotShaded("velocity", vx, vy, vn, 0.0);
+        ImPlot::PlotLine("velocity", vx, vy, vn);
         ImPlot::PopStyleVar();
         ImPlot::PopStyleColor(2);
     }
-    const auto& imu = session_->imu();
-    if (imu.size() > 0) {
-        static std::vector<float> xs, ys;
-        const size_t step = std::max((size_t)1, imu.size() / 5000);
-        xs.clear(); ys.clear();
-        xs.reserve(imu.size() / step + 1);
-        ys.reserve(imu.size() / step + 1);
-        for (size_t i = 0; i < imu.size(); i += step) {
-            float a = std::sqrt(imu.ax_g[i]*imu.ax_g[i]
-                              + imu.ay_g[i]*imu.ay_g[i]
-                              + imu.az_g[i]*imu.az_g[i]) - 1.0f;
-            xs.push_back((float)(imu.unified_t_s[i] - t0_session));
-            ys.push_back(a);
-        }
-        ImPlot::SetAxis(ImAxis_Y2);
-        ImPlot::PushStyleColor(ImPlotCol_Line,
-                                ImVec4(1.00f, 0.65f, 0.25f, 0.85f));
-        ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 1.4f);
-        ImPlot::PlotLine("|a|−1 (g, IMU)",
-                         xs.data(), ys.data(), (int)xs.size());
-        ImPlot::PopStyleVar();
-        ImPlot::PopStyleColor();
-    }
-    ImPlot::SetAxis(ImAxis_Y1);
     render_detection_overlay_(t0_session, /*is_velocity_axis=*/true);
     render_playhead_();
 
@@ -857,24 +852,8 @@ void TimelinePanel::render_detection_overlay_(double t0_session, bool is_velocit
                 ImVec2(px.x,     px.y + 6), IM_COL32(60, 20, 20, 240), 1.0f);
         }
     }
-    if (show_fsync_) {
-        // FSYNC ticks along the bottom edge of the chart.
-        const auto& imu = session_->imu();
-        auto pl_min = ImPlot::GetPlotPos();
-        auto pl_size = ImPlot::GetPlotSize();
-        float y_lo = pl_min.y + pl_size.y - 14;
-        float y_hi = pl_min.y + pl_size.y - 4;
-        ImU32 col = IM_COL32(180, 220, 255, 200);
-        // Subsample for speed: there are typically 2-5k FSYNC events
-        // per session.
-        for (size_t i = 0; i < imu.size(); ++i) {
-            if (!imu.fsync_flag[i]) continue;
-            float x = (float)(imu.unified_t_s[i] - t0_session);
-            ImVec2 px = ImPlot::PlotToPixels(ImPlotPoint(x, 0));
-            if (px.x < pl_min.x || px.x > pl_min.x + pl_size.x) continue;
-            dl->AddLine(ImVec2(px.x, y_lo), ImVec2(px.x, y_hi), col, 1.0f);
-        }
-    }
+    // FSYNC/IMU overlay removed — the Step-7 ground-truth labeling UI is
+    // camera-only and never reads session_->imu().
 }
 
 void TimelinePanel::render_hover_tooltip_(double t0_session) {
@@ -944,6 +923,11 @@ void TimelinePanel::handle_rep_context_menu_(int rep_index) {
     if (ImGui::BeginPopupContextItem(("##rep_ctx" + std::to_string(rep_index)).c_str())) {
         if (ImGui::MenuItem("Delete rep")) {
             session_->mutable_reps().erase(session_->mutable_reps().begin() + rep_index);
+            // erase the matching GT attribute at the same index
+            if (rep_index < (int)session_->gt_attrs().size())
+                session_->mutable_gt_attrs().erase(
+                    session_->mutable_gt_attrs().begin() + rep_index);
+            session_->ensure_gt_attrs_aligned();
             session_->mark_reps_dirty();
             made_edit_ = true;
         }

@@ -3,14 +3,18 @@
  */
 #include "annotation/AnnotationStudio.h"
 #include "annotation/Persistence.h"
+#include "annotation/GroundTruthIO.h"
 #include "app/Application.h"
 #include "utils/Notifications.h"
 #include <imgui.h>
 #include <spdlog/spdlog.h>
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 
 namespace vbt {
+
+namespace { namespace fs = std::filesystem; }
 
 AnnotationStudio::AnnotationStudio(Application& app)
     : app_(app)
@@ -29,6 +33,9 @@ void AnnotationStudio::open() {
 
 void AnnotationStudio::render() {
     if (!is_open_) return;
+    // Keep the GT attribute store sized to the rep list (cheap; guards every
+    // panel that indexes gt_attrs() by rep after an insert/delete/undo).
+    if (session_.is_loaded()) session_.ensure_gt_attrs_aligned();
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     const ImVec2 work_pos = viewport ? viewport->WorkPos : ImVec2(0, 0);
     const ImVec2 work_size = viewport ? viewport->WorkSize : ImGui::GetIO().DisplaySize;
@@ -80,6 +87,9 @@ void AnnotationStudio::render() {
             push_undo_();
             int s = rep_table_.selected_index();
             session_.mutable_reps().erase(session_.mutable_reps().begin() + s);
+            if (s < (int)session_.gt_attrs().size())
+                session_.mutable_gt_attrs().erase(session_.mutable_gt_attrs().begin() + s);
+            session_.ensure_gt_attrs_aligned();
             session_.mark_reps_dirty();
         }
     }
@@ -370,6 +380,9 @@ void AnnotationStudio::render_top_toolbar_() {
         push_undo_();
         int s = rep_table_.selected_index();
         session_.mutable_reps().erase(session_.mutable_reps().begin() + s);
+        if (s < (int)session_.gt_attrs().size())
+            session_.mutable_gt_attrs().erase(session_.mutable_gt_attrs().begin() + s);
+        session_.ensure_gt_attrs_aligned();
         session_.mark_reps_dirty();
     }
     if (!can_delete) ImGui::EndDisabled();
@@ -412,22 +425,27 @@ void AnnotationStudio::render_top_toolbar_() {
 
 void AnnotationStudio::push_undo_() {
     if (!session_.is_loaded()) return;
-    undo_stack_.push_back(session_.reps());
+    session_.ensure_gt_attrs_aligned();
+    undo_stack_.push_back({session_.reps(), session_.gt_attrs()});
     if (undo_stack_.size() > 50) undo_stack_.erase(undo_stack_.begin());
     redo_stack_.clear();
 }
 void AnnotationStudio::undo_() {
     if (undo_stack_.empty() || !session_.is_loaded()) return;
-    redo_stack_.push_back(session_.reps());
-    session_.mutable_reps() = std::move(undo_stack_.back());
+    redo_stack_.push_back({session_.reps(), session_.gt_attrs()});
+    session_.mutable_reps()     = std::move(undo_stack_.back().reps);
+    session_.mutable_gt_attrs() = std::move(undo_stack_.back().attrs);
     undo_stack_.pop_back();
+    session_.ensure_gt_attrs_aligned();
     session_.mark_reps_dirty();
 }
 void AnnotationStudio::redo_() {
     if (redo_stack_.empty() || !session_.is_loaded()) return;
-    undo_stack_.push_back(session_.reps());
-    session_.mutable_reps() = std::move(redo_stack_.back());
+    undo_stack_.push_back({session_.reps(), session_.gt_attrs()});
+    session_.mutable_reps()     = std::move(redo_stack_.back().reps);
+    session_.mutable_gt_attrs() = std::move(redo_stack_.back().attrs);
     redo_stack_.pop_back();
+    session_.ensure_gt_attrs_aligned();
     session_.mark_reps_dirty();
 }
 
@@ -459,6 +477,12 @@ void AnnotationStudio::insert_rep_at_(double seed_t) {
         [&](const RepAnnotation& x){ return x.concentric.t_start_s > a; });
     int new_idx = (int)(it - reps.begin());
     reps.insert(it, r);
+    // Keep GT attributes index-aligned: insert a default at the SAME position
+    // (attrs was aligned to the pre-insert reps, so it is one shorter now).
+    auto& attrs = session_.mutable_gt_attrs();
+    if (new_idx <= (int)attrs.size())
+        attrs.insert(attrs.begin() + new_idx, GtAttr{});
+    session_.ensure_gt_attrs_aligned();   // safety: reconcile any size drift
     int next = 1;
     for (auto& q : reps) q.rep_id = next++;
     session_.recompute_rep_metrics(new_idx);
@@ -734,26 +758,57 @@ void AnnotationStudio::load_session_(const std::filesystem::path& dir) {
     quality_panel_.set_session(&session_);
     playhead_t_s_ = session_.t0_unified_s();
 
-    if (session_.reps().empty() && !session_.candidate_reps().empty()) {
-        use_base_proposal_();
-        Notifications::get().info(
-            std::to_string(session_.candidate_reps().size()) +
-            " default reps loaded. "
-            + std::to_string(session_.post_session_reps().size()) +
-            " post-session reps are available for comparison.");
+    // ── Step 7: camera-only ground-truth working set ───────────────────
+    // Prefer a previously-saved ground_truth.json (resume), else the pipeline
+    // prefill candidate, else an empty list (label from scratch). The pipeline
+    // reference trace (s/v) is loaded for plotting. Nothing is read from / written
+    // to the dataset dir — labels live under the labels root.
+    namespace gio = ground_truth_io;
+    const std::string sid = dir.filename().string();
+    const AppConfig& cfg2 = app_.config();
+    session_.load_trace(fs::path(cfg2.gt_prefill_root) / sid / "trace.csv");
+
+    auto f2t = [this](int f){ return session_.time_for_frame(f); };
+    std::vector<GroundTruthLabel> labels;
+    std::string err;
+    const fs::path gt_file   = fs::path(cfg2.gt_labels_root)  / sid / "ground_truth.json";
+    const fs::path cand_file = fs::path(cfg2.gt_prefill_root) / sid / "ground_truth.candidate.json";
+    if (gio::load(gt_file, labels, err)) {
+        gio::labels_to_reps(labels, f2t, session_.mutable_reps(), session_.mutable_gt_attrs());
+        Notifications::get().info(std::to_string(labels.size()) +
+                                  " saved ground-truth labels loaded for review.");
+    } else if (gio::load(cand_file, labels, err)) {
+        gio::labels_to_reps(labels, f2t, session_.mutable_reps(), session_.mutable_gt_attrs());
+        Notifications::get().info(std::to_string(labels.size()) +
+                                  " pipeline prefill labels loaded — review and save.");
+    } else {
+        session_.mutable_reps().clear();
+        session_.mutable_gt_attrs().clear();
+        Notifications::get().info("No prefill found for this session — label from scratch.");
     }
+    session_.ensure_gt_attrs_aligned();
+    session_.clear_dirty();
+    run_validation_();
+    if (!session_.reps().empty()) select_rep_(0);
 }
 
 void AnnotationStudio::save_() {
-    SaveOptions opt;
-    opt.note = save_note_;
-    opt.recompute_metrics = true;
-    opt.append_audit = true;
-    if (Persistence::save_all(session_, opt)) {
-        Notifications::get().success("Annotations saved.");
+    if (!session_.is_loaded()) return;
+    // Step 7: write frame-indexed ground_truth.json to the labels root (NEVER
+    // into the read-only dataset; legacy Persistence/rep_segments.json is not used).
+    namespace gio = ground_truth_io;
+    session_.ensure_gt_attrs_aligned();
+    auto t2f = [this](double t){ return session_.frame_for_time(t); };
+    auto labels = gio::reps_to_labels(session_.reps(), session_.gt_attrs(), t2f);
+    const std::string sid = session_.path().filename().string();
+    std::string err;
+    if (gio::save(app_.config().gt_labels_root, sid, labels, err)) {
+        session_.clear_dirty();
         save_note_.clear();
+        Notifications::get().success("Ground truth saved (" +
+                                     std::to_string(labels.size()) + " labels).");
     } else {
-        Notifications::get().error("Save failed: " + Persistence::last_error());
+        Notifications::get().error("Ground-truth save failed: " + err);
     }
 }
 
@@ -781,6 +836,7 @@ void AnnotationStudio::use_base_proposal_() {
     }
 
     session_.mutable_reps() = std::move(proposal);
+    session_.mutable_gt_attrs().assign(session_.reps().size(), GtAttr{});  // fresh GT attrs
     session_.mark_reps_dirty();
     run_validation_();
     if (!session_.reps().empty()) select_rep_(0);
@@ -804,6 +860,7 @@ void AnnotationStudio::use_post_session_proposal_() {
     }
 
     session_.mutable_reps() = std::move(proposal);
+    session_.mutable_gt_attrs().assign(session_.reps().size(), GtAttr{});  // fresh GT attrs
     session_.mark_reps_dirty();
     run_validation_();
     if (!session_.reps().empty()) select_rep_(0);

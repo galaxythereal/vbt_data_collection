@@ -669,6 +669,12 @@ struct SessionInfo {
 struct AppConfig {
     int           schema_version = 2;
     std::string   dataset_root = "./datasets";
+    /// Step-7 ground-truth labeling tool roots (kept OUT of the read-only
+    /// dataset). Labels the studio writes go to gt_labels_root/<session_id>/
+    /// ground_truth.json; pipeline prefill + reference trace are read from
+    /// gt_prefill_root/<session_id>/ (written by export_prefill_for_studio.py).
+    std::string   gt_labels_root  = "./vbt_groundtruth/labels";
+    std::string   gt_prefill_root = "./vbt_groundtruth/out/prefill";
     bool          bids_layout  = false;        // sub-XXX/ses-YYYY-MM-DD/ folder naming
     bool          enable_audio_cues = true;
     bool          enable_notifications = true;
@@ -680,6 +686,7 @@ struct AppConfig {
     std::vector<ExerciseProfile> exercise_profiles;
 
     NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(AppConfig, schema_version, dataset_root,
+                                   gt_labels_root, gt_prefill_root,
                                    bids_layout, enable_audio_cues, enable_notifications,
                                    imu, camera, sync, rep_seg, plausibility,
                                    exercise_profiles)

@@ -174,6 +174,7 @@ set(APP_SOURCES
     src/annotation/AnnotationStudio.cpp
     src/annotation/SessionData.cpp
     src/annotation/SessionLibrary.cpp
+    src/annotation/GroundTruthIO.cpp
     src/annotation/VideoCache.cpp
     src/annotation/Persistence.cpp
     src/annotation/TimelinePanel.cpp

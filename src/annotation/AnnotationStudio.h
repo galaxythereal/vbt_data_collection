@@ -101,11 +101,16 @@ private:
     bool focus_mode_    = false;
 
     // ── Undo / redo ───────────────────────────────────────────────
-    /// Snapshot of the rep-list pre-edit. We push one before any
-    /// mutation operation (drag commit, button press, table edit) and
-    /// pop on Ctrl+Z. Capped at 50 entries.
-    std::vector<std::vector<RepAnnotation>> undo_stack_;
-    std::vector<std::vector<RepAnnotation>> redo_stack_;
+    /// Combined snapshot of the rep-list AND the aligned GT attributes,
+    /// pushed before any mutation (drag commit, button, table edit) and
+    /// restored together on Ctrl+Z/Y so boundaries and outcomes stay aligned.
+    /// Capped at 50 entries.
+    struct EditSnapshot {
+        std::vector<RepAnnotation> reps;
+        std::vector<GtAttr>        attrs;
+    };
+    std::vector<EditSnapshot> undo_stack_;
+    std::vector<EditSnapshot> redo_stack_;
     void push_undo_();
     void undo_();
     void redo_();

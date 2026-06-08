@@ -25,6 +25,8 @@
  */
 
 #include "processing/RepAnnotation.h"
+#include "annotation/GroundTruthLabel.h"
+#include "annotation/GroundTruthIO.h"
 #include "app/Config.h"
 #include <nlohmann/json.hpp>
 #include <string>
@@ -114,12 +116,16 @@ public:
     SessionData() = default;
 
     // ─── Lifecycle ──────────────────────────────────────────────────
-    /// Load all CSV/JSON resources from `session_dir`. Idempotent — a
-    /// second call discards prior state. Heavy: blocks for tens of MB
-    /// of CSV read on a fresh load. Caller should run on a worker
-    /// thread for very large sessions, but our datasets are <200 MB so
-    /// a synchronous load is fine for now.
-    bool load(const std::filesystem::path& session_dir, SessionLoadDiag& diag);
+    /// Load CSV/JSON resources from `session_dir`. Idempotent — a second call
+    /// discards prior state.
+    ///
+    /// `camera_only` (default true, the Step-7 ground-truth path) NEVER reads
+    /// imu/raw_imu.csv: the time axis and frame mapping come from
+    /// camera/video_frames.csv only. The legacy time-based rep_segments.json is
+    /// still loaded into reps() for read-only reference, but the ground-truth
+    /// working set is driven by GroundTruthIO (labels root), not from here.
+    bool load(const std::filesystem::path& session_dir, SessionLoadDiag& diag,
+              bool camera_only = true);
     bool is_loaded() const { return loaded_; }
     void clear();
 
@@ -138,10 +144,38 @@ public:
     const nlohmann::json&        manifest() const { return manifest_; }
     const std::vector<nlohmann::json>& events() const { return events_; }
 
-    /// Wall-clock time of the very first IMU sample — used as t0 for
-    /// time-axis labels in plots so users see "0 s" at session start.
-    double t0_unified_s() const { return imu_.size() > 0 ? imu_.unified_t_s.front() : 0.0; }
-    double t_end_unified_s() const { return imu_.size() > 0 ? imu_.unified_t_s.back() : 0.0; }
+    // ─── Ground-truth working set (Step 7) ──────────────────────────
+    /// Per-rep GT attributes (IntervalOutcome / pause / rom_completeness),
+    /// aligned to reps(). Boundaries live in reps() (legacy drag UX); these
+    /// are the non-boundary GT fields combined into GroundTruthLabel on save.
+    const std::vector<GtAttr>& gt_attrs() const { return gt_attrs_; }
+    std::vector<GtAttr>&       mutable_gt_attrs() { return gt_attrs_; }
+    /// Resize gt_attrs() to match reps() after any insert/delete/undo, keeping
+    /// existing entries and default-filling new ones.
+    void ensure_gt_attrs_aligned() { gt_attrs_.resize(reps_.size()); }
+    /// Pipeline reference trace (frame_idx,t_s,s,v) for plotting; empty if none.
+    const std::vector<ground_truth_io::TracePoint>& trace() const { return trace_; }
+    bool has_trace() const { return !trace_.empty(); }
+    bool load_trace(const std::filesystem::path& csv);
+
+    // ─── Camera-only frame ↔ edit-axis mapping (video_frames.csv) ────
+    /// Edit-axis time (unified seconds) → pipeline frame_idx, EXACT via the
+    /// per-frame timestamps (true ~89.7 fps), camera-derived. -1 if no index.
+    int    frame_for_time(double t_s) const;
+    /// Pipeline frame_idx → edit-axis time. frame_idx is contiguous 0..N-1.
+    double time_for_frame(int frame_idx) const;
+    int    n_frames() const { return static_cast<int>(video_idx_.size()); }
+
+    /// Wall-clock time of the first/last CAMERA frame (video_frames.csv) —
+    /// the camera-only time axis. Falls back to IMU only if no video index.
+    double t0_unified_s() const {
+        if (!video_idx_.unified_t_s.empty()) return video_idx_.unified_t_s.front();
+        return imu_.size() > 0 ? imu_.unified_t_s.front() : 0.0;
+    }
+    double t_end_unified_s() const {
+        if (!video_idx_.unified_t_s.empty()) return video_idx_.unified_t_s.back();
+        return imu_.size() > 0 ? imu_.unified_t_s.back() : 0.0;
+    }
 
     /// Apply cleaning pipeline to MarkerStream using `cfg`. Sets
     /// pos_up_clean_m / vz_clean_mps and clears clean_dirty.
@@ -193,6 +227,8 @@ private:
     MarkerStream                 marker_;
     VideoIndex                   video_idx_;
     std::vector<RepAnnotation>   reps_;
+    std::vector<GtAttr>          gt_attrs_;        // aligned to reps_ (Step 7)
+    std::vector<ground_truth_io::TracePoint> trace_;
     std::vector<RepAnnotation>   candidate_reps_;
     std::vector<RepAnnotation>   post_session_reps_;
     nlohmann::json               manifest_;

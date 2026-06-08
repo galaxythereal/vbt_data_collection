@@ -182,6 +182,8 @@ void SessionData::clear() {
     marker_ = {};
     video_idx_ = {};
     reps_.clear();
+    gt_attrs_.clear();
+    trace_.clear();
     candidate_reps_.clear();
     post_session_reps_.clear();
     manifest_.clear();
@@ -191,7 +193,32 @@ void SessionData::clear() {
     meta_dirty_ = false;
 }
 
-bool SessionData::load(const fs::path& session_dir, SessionLoadDiag& diag) {
+int SessionData::frame_for_time(double t_s) const {
+    int p = video_idx_.nearest_to(t_s);
+    if (p < 0) return -1;
+    if (p < static_cast<int>(video_idx_.frame_idx.size())) return video_idx_.frame_idx[p];
+    return p;
+}
+
+double SessionData::time_for_frame(int frame_idx) const {
+    // frame_idx is contiguous 0..N-1, so the array row equals the frame index.
+    if (frame_idx >= 0 && frame_idx < static_cast<int>(video_idx_.unified_t_s.size()))
+        return video_idx_.unified_t_s[frame_idx];
+    return 0.0;
+}
+
+bool SessionData::load_trace(const fs::path& csv) {
+    std::string err;
+    if (!ground_truth_io::load_trace(csv, trace_, err)) {
+        spdlog::warn("SessionData: no reference trace ({}): {}", csv.string(), err);
+        return false;
+    }
+    spdlog::info("SessionData: loaded {} trace points from {}", trace_.size(), csv.string());
+    return true;
+}
+
+bool SessionData::load(const fs::path& session_dir, SessionLoadDiag& diag,
+                       bool camera_only) {
     clear();
     session_dir_ = session_dir;
     if (!fs::exists(session_dir)) {
@@ -201,7 +228,10 @@ bool SessionData::load(const fs::path& session_dir, SessionLoadDiag& diag) {
 
     bool any_ok = true;
     any_ok &= load_meta_json_(session_dir / "metadata.json", diag);
-    any_ok &= load_imu_csv_(session_dir / "imu" / "raw_imu.csv", diag);
+    // Camera-only ground-truth path (Step 7): never read the IMU. Time axis +
+    // frame mapping come from camera/video_frames.csv only.
+    if (!camera_only)
+        any_ok &= load_imu_csv_(session_dir / "imu" / "raw_imu.csv", diag);
     load_marker_csv_(session_dir / "camera" / "marker_positions.csv", diag); // optional
     load_video_index_csv_(session_dir / "camera" / "video_frames.csv", diag);
     load_reps_json_(session_dir / "annotations" / "rep_segments.json", diag);
@@ -210,9 +240,10 @@ bool SessionData::load(const fs::path& session_dir, SessionLoadDiag& diag) {
     load_manifest_(session_dir / "manifest.json", diag);
     load_events_(session_dir / "events.jsonl", diag);
 
-    fixup_legacy_imu_unified_time_();
+    if (!camera_only) fixup_legacy_imu_unified_time_();
     fixup_subject_uuid_();
     fixup_legacy_sets_();
+    gt_attrs_.assign(reps_.size(), GtAttr{});   // align GT attrs to any loaded reps
 
     loaded_ = any_ok && diag.ok();
     if (loaded_) {
@@ -251,8 +282,8 @@ void SessionData::fixup_legacy_sets_() {
         s.target_reps       = info_.target_reps;
         s.rpe               = info_.rpe;
         s.notes             = info_.notes;
-        s.t_start_unified_s = imu_.size() ? imu_.unified_t_s.front() : 0.0;
-        s.t_end_unified_s   = imu_.size() ? imu_.unified_t_s.back()  : 0.0;
+        s.t_start_unified_s = t0_unified_s();   // camera-derived (video_frames.csv)
+        s.t_end_unified_s   = t_end_unified_s();
         info_.sets.push_back(s);
         meta_dirty_ = true;
     }

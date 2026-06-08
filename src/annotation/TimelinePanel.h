@@ -7,8 +7,8 @@
  * The signature view of the annotation studio. Three stacked ImPlot axes
  * sharing the same x-range:
  *   • Top:    proposal / rep phase bands
- *   • Middle: position (camera, m)
- *   • Bottom: velocity (camera derivative, m/s) + IMU |a|−1 (g) overlay
+ *   • Middle: position (the pipeline gravity-aligned `s`, m; camera-only)
+ *   • Bottom: velocity (the pipeline `v`, m/s; camera-only — no IMU overlay)
  *
  * Rep boundaries render as colored bands (concentric blue, eccentric red,
  * rest grey). The bands are click-and-drag editable: grab an edge with the
@@ -129,7 +129,6 @@ private:
     /// triangles). Bound to a checkbox in the timeline toolbar.
     bool      show_zerocross_ = true;
     bool      show_peaks_     = true;
-    bool      show_fsync_     = false;
     /// Snap a dragged boundary to the nearest velocity zero-crossing
     /// when the Alt key is held.
     bool      snap_to_zerocross_ = true;
