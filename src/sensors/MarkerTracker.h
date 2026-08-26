@@ -99,7 +99,10 @@ private:
     float robust_depth_median(const cv::Mat& depth_mm, int cx, int cy, int win = 5);
 
     // Prediction (for when marker is briefly lost — uses last 1 valid detection)
+    /// Search hint for blob association only -- never reported, never logged.
     MarkerDetection predict_from_history();
+    /// What a frame with no marker looks like: NaN for every measurement field.
+    static MarkerDetection lost_detection();
 
     CameraConfig config_;
     TrackingStats stats_;

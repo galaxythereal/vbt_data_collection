@@ -55,17 +55,32 @@ def load_signal(d: Path):
             conf.append(float(r["confidence"]))
     h = np.asarray(y, float)
     det = np.asarray(det, bool)
-    # light, zero-phase smoothing FOR DISPLAY ONLY (the annotator ran on the raw stream)
+    # A FRAME WITH NO MARKER HAS NO POSITION, so it is NaN here and matplotlib leaves a
+    # visible break instead of drawing a line. This is not cosmetic: on lost frames the
+    # older sessions' marker_positions.csv holds a linear extrapolation, and plotting it
+    # drew session_20260520_130331 diving 0.70 m BELOW the floor with a rep-bottom glyph
+    # sitting on the invented curve. Reviewing that is reviewing fiction.
+    h[~det] = np.nan
+    # light, zero-phase smoothing FOR DISPLAY ONLY (the annotator ran on the raw stream).
+    # NaN-aware, so a sample next to a gap is smoothed from measured neighbours only and
+    # never borrows the fabricated values.
     k = 7
-    hs = np.convolve(h, np.ones(k) / k, mode="same")
+    ones = np.ones(k)
+    finite = np.isfinite(h)
+    filled = np.where(finite, h, 0.0)
+    ssum = np.convolve(filled, ones, mode="same")
+    scnt = np.convolve(finite.astype(float), ones, mode="same")
+    with np.errstate(invalid="ignore", divide="ignore"):
+        hs = np.where(scnt > 0, ssum / np.maximum(scnt, 1e-9), np.nan)
+    hs[~det] = np.nan                      # the gap stays a gap after smoothing
     v = np.gradient(hs) * FPS
     # np.gradient at the array ends (and across a dropout step) produces spikes that are
     # artefacts of differentiation, not motion. Blank the margins so the velocity axis
     # reflects the actual lifting range instead of being dominated by them.
     m = min(k, len(v) // 2)
     if m:
-        v[:m] = v[m]
-        v[-m:] = v[-m - 1]
+        v[:m] = np.nan
+        v[-m:] = np.nan
     return h, hs, v, det, np.asarray(conf, float)
 
 
@@ -121,9 +136,13 @@ def make_overview(sid, exercise, h, hs, v, det, reps, dest):
         cs, ce = r["concentric_start_frame"], r["concentric_end_frame"]
         if not (0 <= cs < n and 0 <= ce < n):
             continue
-        ax[0].plot(t[cs], hs[cs], "v", ms=5, color="#222", zorder=4)   # concentric start
-        ax[0].plot(t[ce], hs[ce], "^", ms=6,
-                   color=C_CON if r["confirmed"] else C_UNC, zorder=4)  # lockout
+        # only ever on a measured frame: hs is NaN where the marker was lost, so a glyph
+        # here would be silently dropped rather than drawn on an invented position.
+        if np.isfinite(hs[cs]):
+            ax[0].plot(t[cs], hs[cs], "v", ms=5, color="#222", zorder=4)   # concentric start
+        if np.isfinite(hs[ce]):
+            ax[0].plot(t[ce], hs[ce], "^", ms=6,
+                       color=C_CON if r["confirmed"] else C_UNC, zorder=4)  # lockout
         dy = 7 if (r["rep_id"] % 2) else 17          # stagger: dense sets stay legible
         ax[0].annotate(str(r["rep_id"]), (t[ce], hs[ce]), textcoords="offset points",
                        xytext=(0, dy), ha="center", fontsize=7,
@@ -144,7 +163,8 @@ def make_overview(sid, exercise, h, hs, v, det, reps, dest):
     ax[1].axhline(0, color="#555", lw=0.8)
     ax[1].plot(t, v, lw=0.9, color="#1f77b4")
     ax[1].set_ylabel("velocity (m/s)")
-    lim = float(np.percentile(np.abs(v), 99.5)) * 1.35 if len(v) else 1.0
+    fv = v[np.isfinite(v)]
+    lim = float(np.percentile(np.abs(fv), 99.5)) * 1.35 if len(fv) else 1.0
     if lim > 0:
         ax[1].set_ylim(-lim, lim)
     ax[1].grid(alpha=0.25)
@@ -243,6 +263,10 @@ def process(d: Path):
         "with_rest": with_rest,
         "dropped_eccentric": sum(1 for r in reps if r["dropped_eccentric"]),
         "tracking_gap_reps": sum(1 for r in reps if r["tracking_gap"]),
+        # how much of the session the marker was not seen on, and the worst single rep
+        "lost_frames": int((~det).sum()),
+        "lost_pct": float(100.0 * (~det).mean()),
+        "worst_rep_gap_frames": max((int(r.get("gap_frames", 0)) for r in reps), default=0),
         "rom_median_m": float(np.median(roms)) if roms else 0.0,
         "rom_cv_pct": float(100 * np.std(roms) / np.mean(roms)) if roms else 0.0,
     }
@@ -292,7 +316,10 @@ def main():
         lines += [f"- **{s['session_id']}** [{s['exercise']}] — "
                   f"{s['confirmed_reps']} reps, {s['unconfirmed']} unconfirmed, "
                   f"ROM {s['rom_median_m']:.2f} m (CV {s['rom_cv_pct']:.0f}%), "
-                  f"rest {s['with_rest']}, gaps {s['tracking_gap_reps']}",
+                  f"rest {s['with_rest']}, "
+                  f"lost {s['lost_frames']}f ({s['lost_pct']:.2f}%), "
+                  f"reps w/ gap {s['tracking_gap_reps']} "
+                  f"(worst {s['worst_rep_gap_frames']}f)",
                   f"  - `{OUT}/{s['session_id']}/session_annotation.png`",
                   f"  - `{OUT}/{s['session_id']}/rep_grid.png`"]
     (OUT / "RT_AUDIT_INDEX.md").write_text("\n".join(lines) + "\n")

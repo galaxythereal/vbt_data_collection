@@ -8,6 +8,7 @@
 #include <spdlog/spdlog.h>
 #include <cmath>
 #include <algorithm>
+#include <limits>
 
 namespace vbt {
 
@@ -201,8 +202,12 @@ void MarkerTracker::stereo_triangulate(MarkerDetection& det,
 }
 
 MarkerDetection MarkerTracker::predict_from_history() {
+    // INTERNAL USE ONLY: this is a search hint for blob association (which candidate is
+    // the marker), never a reported position. It is not logged and never leaves the
+    // tracker -- see process(), where a lost frame emits `lost_detection()` instead.
+    // history_ holds MEASUREMENTS ONLY, so this always extrapolates from real
+    // detections and can never compound off an earlier extrapolation.
     if (history_.size() < 2) return {};
-    // Simple linear prediction from last two detections
     const auto& h1 = history_[history_.size() - 2];
     const auto& h2 = history_[history_.size() - 1];
     MarkerDetection pred;
@@ -211,9 +216,35 @@ MarkerDetection MarkerTracker::predict_from_history() {
     pred.x_m = 2 * h2.x_m - h1.x_m;
     pred.y_m = 2 * h2.y_m - h1.y_m;
     pred.z_m = 2 * h2.z_m - h1.z_m;
-    pred.confidence = 0.3f;
+    pred.confidence = 0.0f;
     pred.detected = false;
     return pred;
+}
+
+MarkerDetection MarkerTracker::lost_detection() {
+    // THE MARKER WAS NOT SEEN, AND THAT IS WHAT GETS RECORDED. Every field that
+    // describes a measurement is NaN, because zero is a legal value for all of them --
+    // (0,0) is a real pixel, 0.0 m is a real position, 0 circularity is a real shape --
+    // so a zero here would be indistinguishable from data. NaN cannot be mistaken for a
+    // measurement and propagates loudly through anything that forgets to check
+    // `detected`. confidence is 0 rather than NaN: "no confidence" is a true statement
+    // about a frame with no measurement, and every gate already rejects it.
+    //
+    // What this replaces: a linear extrapolation reported as if it were a position,
+    // which was also fed back into history_ so each blind frame extrapolated from the
+    // previous fabrication. Measured on session_20260520_130331, 55 consecutive blind
+    // frames ramped the reported height to 0.70 m BELOW the floor, and two ground-truth
+    // rep boundaries ended up sitting on those invented frames.
+    constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
+    MarkerDetection d;
+    d.pixel_u = d.pixel_v = kNaN;
+    d.blob_area = d.circularity = d.snr = kNaN;
+    d.centrality = kNaN;
+    d.x_m = d.y_m = d.z_m = kNaN;
+    d.depth_source = MarkerDetection::DepthSource::NONE;
+    d.confidence = 0.0f;
+    d.detected = false;
+    return d;
 }
 
 MarkerDetection MarkerTracker::process(const cv::Mat& ir_left, const cv::Mat& ir_right,
@@ -252,14 +283,17 @@ MarkerDetection MarkerTracker::process(const cv::Mat& ir_left, const cv::Mat& ir
 
         stats_.detected_frames++;
     } else {
-        // Use prediction
-        det = predict_from_history();
+        det = lost_detection();
         stats_.lost_frames++;
     }
 
-    // Update history
-    history_.push_back(det);
-    if (history_.size() > MAX_HISTORY) history_.pop_front();
+    // Update history -- MEASUREMENTS ONLY. A lost frame contributes nothing, so the
+    // association hint in predict_from_history() always extrapolates from real
+    // detections and a run of blind frames cannot compound into a runaway position.
+    if (det.detected) {
+        history_.push_back(det);
+        if (history_.size() > MAX_HISTORY) history_.pop_front();
+    }
 
     // Update stats
     stats_.detection_rate = (float)stats_.detected_frames / std::max(stats_.total_frames, (uint64_t)1);

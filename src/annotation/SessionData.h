@@ -64,6 +64,12 @@ struct MarkerStream {
     /// bound to MarkerCleanConfig.
     std::vector<float>   pos_up_clean_m;
     std::vector<float>   vz_clean_mps;
+    /// 1 where pos_up_clean_m / vz_clean_mps come from an actual MEASUREMENT, 0 where
+    /// the sample was masked out (marker not seen, or below the quality gates) and only
+    /// carries a hold-over value so the filter stays continuous. Panels must break the
+    /// trace where this is 0 -- otherwise a dropout renders as a flat line and reads as
+    /// the bar standing still, which is the one thing it is not known to have done.
+    std::vector<uint8_t> clean_valid;
     bool                 clean_dirty = true;
     /// Indices into the marker arrays where the cleaned vz crosses zero.
     /// These are candidate rep boundaries — top and bottom of every rep.

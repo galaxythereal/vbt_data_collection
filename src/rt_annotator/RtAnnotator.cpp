@@ -19,7 +19,7 @@ void RtAnnotator::reset() {
     ext_frame_ = -1;
     run_peak_v_ = run_sum_v_ = run_min_a_ = 0.0;
     run_n_ = 0;
-    run_gap_ = false;
+    run_gap_frames_ = 0;
     last_dir_frame_ = hold_start_ = hold_end_ = -1;
     rest_run_start_ = rest_run_end_ = -1;
     prev_hold_start_ = prev_hold_end_ = -1;
@@ -41,7 +41,7 @@ void RtAnnotator::push(const RtSample& s) {
     if (s.detected) {
         trk_.update(-s.y_m, s.confidence);   // h = -y  (camera +y is down)
     } else {
-        run_gap_ = true;
+        ++run_gap_frames_;                   // how many frames of this run were unseen
     }
 
     if (!trk_.initialised()) {
@@ -117,12 +117,27 @@ void RtAnnotator::push(const RtSample& s) {
         run_sum_v_  = v;
         run_n_      = 1;
         run_min_a_  = a;
-        run_gap_    = !s.detected;
+        // run_gap_frames_ is NOT cleared here. This block also runs for reversals that
+        // on_turnaround() then REJECTS as too small to be real, and clearing the count
+        // there discarded the evidence: measured on session_20260518_144302 a 50-frame
+        // (0.56 s) dropout produced a rep flagged as clean, and on
+        // session_20260520_130331 only 7 of 15 cards were flagged against 17 in-set
+        // gaps. Only a turnaround that is actually accepted clears it.
     }
 
     // Maintain the TRUE-rest run: both velocity and acceleration statistically zero.
-    if (now != Dir::Unknown) {
-        rest_run_start_ = rest_run_end_ = -1;      // moving again
+    //
+    // ONLY MEASURED FRAMES MAY JOIN IT. "The bar was at rest here" is a claim about what
+    // the bar did, and it cannot be made about a frame the marker was not seen on. Worse,
+    // the test would PASS trivially there: with no measurement the filter only predicts,
+    // so sigma_a grows and |a| < k*sigma_a becomes true by construction -- a dropout
+    // would be read as a hold. Measured on session_20260520_130331 before this gate: one
+    // recorded "rest" spanned 39 frames of which 39 were lost, and because a rest's end
+    // is where the next phase begins, two rep boundaries landed on invented frames. A
+    // dropout therefore BREAKS the run rather than extending it: a pause interrupted by
+    // an unseen stretch is not a verifiable pause.
+    if (!s.detected || now != Dir::Unknown) {
+        rest_run_start_ = rest_run_end_ = -1;      // unseen, or moving again
     } else if (std::fabs(a) < cfg_.k_sigma * sa) {
         if (rest_run_start_ < 0) rest_run_start_ = s.frame_idx;
         rest_run_end_ = s.frame_idx;
@@ -158,15 +173,28 @@ void RtAnnotator::revise_last_turnaround(int64_t frame, double t_s, double h, do
     // This is the annotator's own definition of a rep, not a new threshold.
     if (r.confirmed) return;
 
+    bool moved = false;
     if (r.concentric_end_frame == was) {
         r.concentric_end_frame = frame;
         r.rom_m                = h - from_h;
         r.top_rest_start_frame = r.top_rest_end_frame = -1;
+        moved = true;
     }
     if (r.eccentric_end_frame == was) {
         r.eccentric_end_frame     = frame;
         r.bottom_rest_start_frame = r.bottom_rest_end_frame = -1;
+        moved = true;
     }
+    if (!moved) return;
+
+    // The phase just grew to cover the frames between the old extremum and this one, so
+    // any of those the marker was not seen on now belong to this rep. Without this the
+    // count silently omitted them: measured on session_20260520_124842 a lost frame sat
+    // inside a card that reported zero, because the boundary had been extended past it
+    // after the card was emitted.
+    r.gap_frames   += static_cast<int>(run_gap_frames_);
+    r.tracking_gap  = (r.gap_frames > 0);
+    run_gap_frames_ = 0;
 }
 
 void RtAnnotator::on_turnaround(RtTurnaround::Kind kind, int64_t frame, double t_s,
@@ -250,7 +278,8 @@ void RtAnnotator::on_turnaround(RtTurnaround::Kind kind, int64_t frame, double t
         const RtTurnaround& from = turns_[turns_.size() - 2];
         RtRep r;
         r.rep_id       = static_cast<int>(reps_.size()) + 1;
-        r.tracking_gap = run_gap_;
+        r.gap_frames   = run_gap_frames_;
+        r.tracking_gap = (run_gap_frames_ > 0);
         r.confirmed    = false;
         if (cfg_.down_first) {
             r.eccentric_start_frame = motion_start(from);
@@ -285,7 +314,8 @@ void RtAnnotator::on_turnaround(RtTurnaround::Kind kind, int64_t frame, double t
                 r.rom_m                  = t.height_m - from.height_m;
                 r.peak_velocity          = run_peak_v_;
                 r.mean_velocity          = (run_n_ > 0) ? run_sum_v_ / static_cast<double>(run_n_) : 0.0;
-                if (run_gap_) r.tracking_gap = true;
+                r.gap_frames            += run_gap_frames_;
+                r.tracking_gap           = (r.gap_frames > 0);
                 take_hold(r.top_rest_start_frame, r.top_rest_end_frame);
             }
         } else {
@@ -295,15 +325,18 @@ void RtAnnotator::on_turnaround(RtTurnaround::Kind kind, int64_t frame, double t
                 r.eccentric_end_frame   = t.frame_idx;
                 r.min_ecc_accel         = run_min_a_;
                 r.dropped_eccentric     = (run_min_a_ <= -cfg_.g);
-                if (run_gap_) r.tracking_gap = true;
+                r.gap_frames           += run_gap_frames_;
+                r.tracking_gap          = (r.gap_frames > 0);
                 take_hold(r.bottom_rest_start_frame, r.bottom_rest_end_frame);
             }
         }
     }
 
-    // This turnaround's pause becomes the previous one for the next excursion.
+    // This turnaround's pause becomes the previous one for the next excursion, and the
+    // blind-frame count starts again now that an accepted boundary has consumed it.
     prev_hold_start_ = hold_s;
     prev_hold_end_   = hold_e;
+    run_gap_frames_  = 0;
 
     close_cycle_if_returned();
 }

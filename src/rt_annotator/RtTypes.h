@@ -109,7 +109,13 @@ struct RtRep {
     /// than lowered. Counts as a rep either way; this is a descriptive flag.
     bool    dropped_eccentric = false;
 
-    /// Any frame in the rep span had no tracking.
+    /// HOW MANY FRAMES OF THIS REP THE MARKER WAS NOT SEEN ON. Reported as a count, not
+    /// just a flag, because the two are not equivalent for ground truth: one blind frame
+    /// (11 ms) is noise, while fifty (0.56 s, measured on a real bench rep) means the bar
+    /// travelled an unknown distance and the rep's velocity is not trustworthy. Anything
+    /// consuming this rep should decide using the number.
+    int     gap_frames = 0;
+    /// Convenience: gap_frames > 0.
     bool    tracking_gap = false;
 };
 

@@ -418,6 +418,10 @@ bool SessionData::load_marker_csv_(const fs::path& p, SessionLoadDiag& diag) {
         marker_.x_m.push_back(to_float(v[i_x]));
         marker_.y_m.push_back(to_float(v[i_y]));
         marker_.z_m.push_back(i_z >= 0 ? to_float(v[i_z]) : 0.0f);
+        // pixel_u/pixel_v are integers, so a frame with no marker (written as "nan")
+        // cannot be represented and falls back to 0. That is the one field here where a
+        // missing value does not stay visibly missing — it is safe only because the sole
+        // consumer, VideoPanel's overlay, draws nothing unless detected[i] is set.
         marker_.pixel_u.push_back(i_pu >= 0 ? to_int(v[i_pu]) : 0);
         marker_.pixel_v.push_back(i_pv >= 0 ? to_int(v[i_pv]) : 0);
         marker_.confidence.push_back(i_conf >= 0 ? to_float(v[i_conf]) : 0.0f);
@@ -722,8 +726,11 @@ void SessionData::recompute_clean_signal(const MarkerCleanConfig& cfg) {
                   && marker_.circularity[i] >= cfg.circ_min ? 1 : 0;
     }
 
-    // Linearly interpolate over masked-out samples so the filter doesn't see
-    // discontinuities.
+    // The Butterworth cannot run across holes, so a masked sample is held at the last
+    // measured value purely to keep the filter continuous. THAT SUBSTITUTE IS NOT DATA:
+    // `keep` is published as clean_valid_ so every panel can draw the stretch as a gap
+    // instead of as a flat line that looks like the bar standing still. Without it the
+    // studio showed a dropout as a plateau, indistinguishable from a real hold.
     int last_good = -1;
     for (int i = 0; i < (int)N; ++i) {
         if (keep[i]) last_good = i;
@@ -768,6 +775,7 @@ void SessionData::recompute_clean_signal(const MarkerCleanConfig& cfg) {
 
     marker_.pos_up_clean_m = std::move(pos_up);
     marker_.vz_clean_mps   = std::move(vz);
+    marker_.clean_valid    = std::move(keep);
 
     // ── Detection: zero-crossings and local extrema ──────────────────
     // Anything below this magnitude isn't a real rep — kills jitter.

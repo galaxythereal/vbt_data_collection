@@ -2,6 +2,8 @@
  * @file TimelinePanel.cpp
  */
 #include "annotation/TimelinePanel.h"
+
+#include <limits>
 #include <implot.h>
 #include <algorithm>
 #include <cmath>
@@ -345,11 +347,18 @@ void TimelinePanel::render_position_plot_(double t0_session, double t1_session,
         ImPlot::PopStyleColor();
     } else if (m.size() > 0 && m.pos_up_clean_m.size() == m.size()) {
         // fallback (from-scratch, no prefill): studio's own cleaned signal.
+        // A sample the marker was not seen on is plotted as NaN so ImPlot leaves a
+        // visible break. It must not be drawn: the cleaned array holds a hold-over value
+        // there only to keep the filter continuous, and drawing it renders a dropout as
+        // a flat line that is indistinguishable from the bar standing still.
         static std::vector<float> xs, ys;
         xs.resize(m.size()); ys.resize(m.size());
+        const bool have_valid = m.clean_valid.size() == m.size();
         for (size_t i = 0; i < m.size(); ++i) {
             xs[i] = (float)(m.unified_t_s[i] - t0_session);
-            ys[i] = m.pos_up_clean_m[i];
+            ys[i] = (!have_valid || m.clean_valid[i])
+                  ? m.pos_up_clean_m[i]
+                  : std::numeric_limits<float>::quiet_NaN();
         }
         ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(0.30f, 0.85f, 1.00f, 1));
         ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 2.6f);
@@ -439,10 +448,14 @@ void TimelinePanel::render_velocity_plot_(double t0_session, double t1_session,
         }
         vx = xs.data(); vy = ys.data(); vn = (int)xs.size();
     } else if (m.size() > 0 && m.vz_clean_mps.size() == m.size()) {
+        // Same rule as the position trace: an unmeasured sample is NaN, not a value.
         xs.resize(m.size()); ys.resize(m.size());
+        const bool have_valid = m.clean_valid.size() == m.size();
         for (size_t i = 0; i < m.size(); ++i) {
             xs[i] = (float)(m.unified_t_s[i] - t0_session);
-            ys[i] = m.vz_clean_mps[i];
+            ys[i] = (!have_valid || m.clean_valid[i])
+                  ? m.vz_clean_mps[i]
+                  : std::numeric_limits<float>::quiet_NaN();
         }
         vx = xs.data(); vy = ys.data(); vn = (int)xs.size();
     }
@@ -875,8 +888,16 @@ void TimelinePanel::render_hover_tooltip_(double t0_session) {
     ImGui::BeginTooltip();
     ImGui::Text("t = %.3f s   (frame %d)",
                  m.unified_t_s[idx] - t0_session, idx);
-    ImGui::Text("position : %.3f m", m.pos_up_clean_m[idx]);
-    ImGui::Text("velocity : %.3f m/s", m.vz_clean_mps[idx]);
+    const bool measured = m.clean_valid.size() == m.size() ? m.clean_valid[idx] != 0
+                                                           : m.detected[idx] != 0;
+    if (measured) {
+        ImGui::Text("position : %.3f m", m.pos_up_clean_m[idx]);
+        ImGui::Text("velocity : %.3f m/s", m.vz_clean_mps[idx]);
+    } else {
+        // Say so rather than quoting the hold-over value as if it were a reading.
+        ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.25f, 1.0f),
+                           "MARKER NOT SEEN — no position, no velocity");
+    }
     ImGui::Separator();
     ImGui::TextDisabled("conf %.2f · snr %.1f · circ %.2f",
                          m.confidence[idx], m.snr[idx], m.circularity[idx]);

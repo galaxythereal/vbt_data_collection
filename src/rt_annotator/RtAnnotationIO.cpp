@@ -45,6 +45,10 @@ bool rt_write_csv(const std::string& session_dir,
               << "# exercise=" << exercise
               << " rom_prior_m=" << rt_rom_prior_m(exercise)
               << " down_first=" << (rt_down_first(exercise) ? 1 : 0) << "\n"
+              << "# gap_frames counts the frames of the rep on which the marker was NOT "
+                 "seen. A missing measurement is never interpolated or extrapolated: no "
+                 "boundary, rest or statistic in this file is derived from an unseen "
+                 "frame.\n"
               << "# confirmed=1 means the rep's cycle CLOSED (the bar returned to the "
                  "level it started from). Provisional reps (confirmed=0) completed a "
                  "concentric but never returned - typically an unrack/rack/pickup.\n"
@@ -56,7 +60,7 @@ bool rt_write_csv(const std::string& session_dir,
                  "eccentric_start_frame,eccentric_end_frame,"
                  "top_rest_start_frame,top_rest_end_frame,"
                  "bottom_rest_start_frame,bottom_rest_end_frame,rom_m,peak_velocity,"
-                 "mean_velocity,confirmed,dropped_eccentric,tracking_gap\n";
+                 "mean_velocity,confirmed,dropped_eccentric,tracking_gap,gap_frames\n";
             for (const auto& r : reps) {
                 f << r.rep_id << ','
                   << r.concentric_start_frame  << ',' << r.concentric_end_frame  << ','
@@ -66,7 +70,7 @@ bool rt_write_csv(const std::string& session_dir,
                   << r.rom_m << ',' << r.peak_velocity << ',' << r.mean_velocity << ','
                   << (r.confirmed ? 1 : 0) << ','
                   << (r.dropped_eccentric ? 1 : 0) << ','
-                  << (r.tracking_gap ? 1 : 0) << '\n';
+                  << (r.tracking_gap ? 1 : 0) << ',' << r.gap_frames << '\n';
             }
             f.flush();
             if (!f) { err = "write failed: " + tmp.string(); return false; }
@@ -131,6 +135,7 @@ bool rt_read_csv(const std::string& session_dir,
         r.confirmed              = std::atoi(get("confirmed").c_str()) != 0;
         r.dropped_eccentric      = std::atoi(get("dropped_eccentric").c_str()) != 0;
         r.tracking_gap           = std::atoi(get("tracking_gap").c_str()) != 0;
+        r.gap_frames             = std::atoi(get("gap_frames").c_str());
         out.push_back(r);
     }
     return true;

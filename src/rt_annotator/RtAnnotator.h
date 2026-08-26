@@ -162,7 +162,10 @@ private:
     double  run_sum_v_     = 0.0;
     long    run_n_         = 0;
     double  run_min_a_     = 0.0;
-    bool    run_gap_       = false;
+    /// Frames of the current run on which the marker was NOT seen. Cleared only when a
+    /// turnaround is ACCEPTED, so a rejected micro-reversal cannot erase the evidence
+    /// that part of the run was unmeasured.
+    long    run_gap_frames_ = 0;
 
     /// Last frame whose direction matched `dir_`, i.e. the last frame the bar was still
     /// genuinely moving that way. The span between it and the frame the reversal is

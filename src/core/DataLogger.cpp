@@ -3,6 +3,8 @@
  * @brief Binary + CSV data logging implementation.
  */
 #include "core/DataLogger.h"
+#include <sstream>
+#include <cmath>
 #include <spdlog/spdlog.h>
 #include <filesystem>
 #include <iomanip>
@@ -114,10 +116,22 @@ void DataLogger::log_marker(double ts, const MarkerDetection& d) {
     if (!is_open_) return;
     std::lock_guard<std::mutex> lock(cam_mutex_);
     const char* src_str[] = {"depth", "stereo", "interp", "none"};
+    // A MISSING MEASUREMENT IS WRITTEN AS MISSING. MarkerTracker sets every measurement
+    // field to NaN on a frame where the marker was not seen (see lost_detection()), and
+    // this emits a literal "nan" for it rather than a platform-dependent spelling or a
+    // number that would read as data. std::atof("nan") and Python float("nan") both
+    // parse it, so a reader that honours `detected` is unaffected and a reader that
+    // forgets propagates NaN instead of silently trusting an invented position.
+    auto f = [](float v) -> std::string {
+        if (!std::isfinite(v)) return "nan";
+        std::ostringstream o;
+        o << std::fixed << std::setprecision(6) << v;
+        return o.str();
+    };
     marker_csv_ << std::fixed << std::setprecision(6) << ts << ","
-                << d.x_m << "," << d.y_m << "," << d.z_m << ","
-                << d.pixel_u << "," << d.pixel_v << ","
-                << d.confidence << "," << d.snr << "," << d.circularity << ","
+                << f(d.x_m) << "," << f(d.y_m) << "," << f(d.z_m) << ","
+                << f(d.pixel_u) << "," << f(d.pixel_v) << ","
+                << f(d.confidence) << "," << f(d.snr) << "," << f(d.circularity) << ","
                 << src_str[static_cast<int>(d.depth_source)] << ","
                 << (d.detected ? 1 : 0) << "\n";
     stats_.marker_samples_written++;
