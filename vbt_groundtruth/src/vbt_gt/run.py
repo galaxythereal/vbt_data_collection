@@ -10,26 +10,28 @@ from vbt_gt.io.writers import write_tables
 from vbt_gt.pipeline.s0_sets import s0_segment_sets
 from vbt_gt.pipeline.s1_condition import s1_condition
 from vbt_gt.pipeline.s2_kinematics import s2_kinematics
-from vbt_gt.pipeline.s3_zupt import s3_zupt
 from vbt_gt.pipeline.s4_traverse import s4_traverse
-from vbt_gt.pipeline.s5_matrixprofile import s5_matrix_profile
-from vbt_gt.pipeline.s6_hsmm import s6_hsmm
-from vbt_gt.pipeline.s7_ensemble import s7_ensemble
 from vbt_gt.pipeline.s8_kinematics_vbt import s8_vbt
 from vbt_gt.types import RawSession
 
+# UNWIRED (parked to /Users/mohamedsalah/code/_parked_vbt — see its README):
+#   s3_zupt          — ZUPT cancels integration drift; a camera measures position
+#                      directly, so the premise does not apply. S4 never read its output.
+#   s5_matrixprofile — a second independent counter; was never called here anyway.
+#   s6_hsmm          — its per-frame phase track was computed then discarded.
+#   s7_ensemble      — never implemented; existed only to reconcile the above (voting).
+# The offline path below is the interim one: it still uses the OLD S4 gates, which are
+# known-broken (whole-set p5/p95 range -> 22% of real movements rejected). It is kept
+# runnable only so the studio prefill keeps working while the replacement is built.
+
 
 def run_session(raw: RawSession, params: Params) -> dict:
-    cond = s1_condition(raw, params)                  # M1
-    kin  = s2_kinematics(cond, params)                # M1
-    sets = s0_segment_sets(cond, kin, params)         # M0 (uses ZUPT-like rest detection; see M0)
+    cond = s1_condition(raw, params)
+    kin  = s2_kinematics(cond, params)
+    sets = s0_segment_sets(cond, kin, params)
     reps_all = []
-    for st in sets:                                   # per-set isolation: recompute ROM/closure per set
-        z    = s3_zupt(cond, kin, st, params)         # M2
-        cand = s4_traverse(cond, kin, st, z, params)  # M2  (pass 1 closure)
-        mp   = s5_matrix_profile(cond, kin, st, cand, params)        # M3
-        track, z = s6_hsmm(cond, kin, st, z, cand, params)           # M3 two-pass; updates z.final_label
-        reps = s7_ensemble(cond, kin, st, z, cand, mp, track, params)# M4
-        reps = s8_vbt(cond, kin, st, reps, params)    # M5
+    for st in sets:                                   # per-set isolation
+        cand = s4_traverse(cond, kin, st, [], params)  # [] = no zupt (arg is unused)
+        reps = s8_vbt(cond, kin, st, cand, params)     # M5 (still a stub)
         reps_all += reps
-    return write_tables(raw, cond, kin, sets, reps_all, params)      # M5
+    return write_tables(raw, cond, kin, sets, reps_all, params)      # M5 (still a stub)

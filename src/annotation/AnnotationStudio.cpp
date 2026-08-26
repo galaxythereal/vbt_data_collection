@@ -4,6 +4,7 @@
 #include "annotation/AnnotationStudio.h"
 #include "annotation/Persistence.h"
 #include "annotation/GroundTruthIO.h"
+#include "rt_annotator/RtAnnotationIO.h"
 #include "app/Application.h"
 #include "utils/Notifications.h"
 #include <imgui.h>
@@ -388,10 +389,20 @@ void AnnotationStudio::render_top_toolbar_() {
     if (!can_delete) ImGui::EndDisabled();
     ImGui::TextDisabled("|"); ImGui::SameLine();
     if (session_.is_loaded()) {
-        ImGui::TextDisabled("visible %d | default %d | post %d",
-                            (int)session_.reps().size(),
-                            (int)session_.candidate_reps().size(),
-                            (int)session_.post_session_reps().size());
+        // Counting breakdown. NEVER present the total number of cards as the rep count:
+        // transport / no-count attempts are cards too. Counted = the FOUNDATION §0.5
+        // counting rule (completed / reduced-ROM / concentric-only).
+        session_.ensure_gt_attrs_aligned();
+        int counted = 0, transport = 0, nocount = 0;
+        for (const auto& g : session_.gt_attrs()) {
+            if (outcome_counts(g.status))                      ++counted;
+            else if (g.status == IntervalOutcome::Transport)    ++transport;
+            else                                               ++nocount;
+        }
+        ImGui::TextColored(ImVec4(0.55f, 0.95f, 0.55f, 1.0f), "reps %d", counted);
+        ImGui::SameLine();
+        ImGui::TextDisabled("| cards %d | transport %d | no-count %d",
+                            (int)session_.reps().size(), transport, nocount);
         ImGui::SameLine();
         ImGui::TextDisabled("|");
         ImGui::SameLine();
@@ -773,10 +784,20 @@ void AnnotationStudio::load_session_(const std::filesystem::path& dir) {
     std::string err;
     const fs::path gt_file   = fs::path(cfg2.gt_labels_root)  / sid / "ground_truth.json";
     const fs::path cand_file = fs::path(cfg2.gt_prefill_root) / sid / "ground_truth.candidate.json";
+    // The REAL-TIME annotation produced during acquisition is the DEFAULT prefill: it is
+    // what the operator saw while recording, it ships inside the session, and it needs no
+    // separate offline step. Priority: a saved human label (resume) > rt_annotation.csv >
+    // the legacy Python candidate > label from scratch.
+    std::vector<rt::RtRep> rt_reps;
+    std::string rt_err;
+    rt::rt_read_csv(dir.string(), rt_reps, rt_err);
+
     if (gio::load(gt_file, labels, err)) {
         gio::labels_to_reps(labels, f2t, session_.mutable_reps(), session_.mutable_gt_attrs());
         Notifications::get().info(std::to_string(labels.size()) +
                                   " saved ground-truth labels loaded for review.");
+    } else if (!rt_reps.empty()) {
+        load_rt_annotation_(rt_reps);
     } else if (gio::load(cand_file, labels, err)) {
         gio::labels_to_reps(labels, f2t, session_.mutable_reps(), session_.mutable_gt_attrs());
         Notifications::get().info(std::to_string(labels.size()) +
@@ -790,6 +811,115 @@ void AnnotationStudio::load_session_(const std::filesystem::path& dir) {
     session_.clear_dirty();
     run_validation_();
     if (!session_.reps().empty()) select_rep_(0);
+}
+
+void AnnotationStudio::load_rt_annotation_(const std::vector<rt::RtRep>& rt_reps) {
+    // Map the real-time annotator's frame-indexed reps onto the studio's editable
+    // model. Boundaries were MEASURED from the movement turnarounds, so the concentric
+    // and eccentric are already in the physically correct order for both families and
+    // never span a neighbouring rep — no pairing or re-ordering is done here.
+    //
+    // The rep's PHASE ORDER is the same single bit the annotator used, re-derived from
+    // the session's exercise rather than guessed from the frames: down-first lifts run
+    // eccentric -> bottom_rest -> concentric, up-first lifts the other way round.
+    const bool down_first = rt::rt_down_first(session_.info().exercise);
+
+    auto& reps  = session_.mutable_reps();
+    auto& attrs = session_.mutable_gt_attrs();
+    reps.clear();
+    attrs.clear();
+
+    int rep_id = 1, counted = 0, provisional = 0;
+    for (const auto& r : rt_reps) {
+        RepAnnotation a;
+        a.rep_id = rep_id++;
+        a.set_id = 1;
+        a.phase_order = down_first ? "eccentric_first" : "concentric_first";
+
+        // A rep whose second half never arrived (the set ended mid-cycle) has -1 for that
+        // half. Collapse it onto the phase that WAS measured instead of inventing times.
+        const bool has_con = r.concentric_start_frame >= 0
+                          && r.concentric_end_frame > r.concentric_start_frame;
+        const bool has_ecc = r.eccentric_start_frame >= 0
+                          && r.eccentric_end_frame > r.eccentric_start_frame;
+        const auto t_of = [this](int64_t f) {
+            return session_.time_for_frame(static_cast<int>(f));
+        };
+
+        a.concentric.phase  = RepPhase::CONCENTRIC;
+        a.concentric.source = "rt_annotator";
+        a.eccentric.phase   = RepPhase::ECCENTRIC;
+        a.eccentric.source  = "rt_annotator";
+        a.top_rest.phase    = RepPhase::REST;
+        a.bottom_rest.phase = RepPhase::REST;
+
+        if (has_con) {
+            a.concentric.t_start_s = t_of(r.concentric_start_frame);
+            a.concentric.t_end_s   = t_of(r.concentric_end_frame);
+        }
+        if (has_ecc) {
+            a.eccentric.t_start_s = t_of(r.eccentric_start_frame);
+            a.eccentric.t_end_s   = t_of(r.eccentric_end_frame);
+        }
+
+        // The intra-rep pause: at the top for an up-first lift, at the bottom for a
+        // down-first one. Drawn only when the bar actually stopped there (the annotator
+        // measured Still frames); zero-width otherwise, which the timeline hides.
+        if (down_first) {
+            if (!has_ecc) { a.eccentric.t_start_s = a.eccentric.t_end_s = a.concentric.t_start_s; }
+            if (!has_con) { a.concentric.t_start_s = a.concentric.t_end_s = a.eccentric.t_end_s; }
+            a.bottom_rest.t_start_s = a.eccentric.t_end_s;
+            a.bottom_rest.t_end_s   = a.concentric.t_start_s;
+            if (r.bottom_rest_start_frame >= 0
+                && r.bottom_rest_end_frame > r.bottom_rest_start_frame) {
+                a.bottom_rest.t_start_s = t_of(r.bottom_rest_start_frame);
+                a.bottom_rest.t_end_s   = t_of(r.bottom_rest_end_frame);
+            }
+            a.top_rest.t_start_s = a.top_rest.t_end_s = a.concentric.t_end_s;
+            a.t_start_s = a.eccentric.t_start_s;
+            a.t_end_s   = a.concentric.t_end_s;
+        } else {
+            if (!has_con) { a.concentric.t_start_s = a.concentric.t_end_s = a.eccentric.t_start_s; }
+            if (!has_ecc) { a.eccentric.t_start_s = a.eccentric.t_end_s = a.concentric.t_end_s; }
+            a.top_rest.t_start_s = a.concentric.t_end_s;
+            a.top_rest.t_end_s   = a.eccentric.t_start_s;
+            if (r.top_rest_start_frame >= 0
+                && r.top_rest_end_frame > r.top_rest_start_frame) {
+                a.top_rest.t_start_s = t_of(r.top_rest_start_frame);
+                a.top_rest.t_end_s   = t_of(r.top_rest_end_frame);
+            }
+            a.bottom_rest.t_start_s = a.bottom_rest.t_end_s = a.eccentric.t_end_s;
+            a.t_start_s = a.concentric.t_start_s;
+            a.t_end_s   = a.eccentric.t_end_s;
+        }
+
+        a.rom_m                    = static_cast<float>(r.rom_m);
+        a.peak_concentric_velocity = static_cast<float>(r.peak_velocity);
+        a.mean_concentric_velocity = static_cast<float>(r.mean_velocity);
+        reps.push_back(std::move(a));
+
+        GtAttr g;
+        g.source           = "rt_annotator";
+        g.rom_completeness = 1.0f;
+        // A rep whose cycle CLOSED is a counted rep.
+        //
+        // An UNCONFIRMED one is NOT asserted to be transport. "The cycle did not close"
+        // and "this is not a rep" are different statements, and conflating them was wrong:
+        // reviewed sessions contain unconfirmed cards that are genuine reps performed with
+        // inconsistent form (the bar returned, just not to the same level). Marking those
+        // TRANSPORT silently discards real reps.
+        //
+        // So an unconfirmed card is surfaced as UNCERTAIN_REVIEW: visible, not counted
+        // yet, and explicitly awaiting a human decision rather than pre-judged.
+        if (r.confirmed) { g.status = IntervalOutcome::CompletedRep;    ++counted; }
+        else             { g.status = IntervalOutcome::UncertainReview; ++provisional; }
+        attrs.push_back(std::move(g));
+    }
+    session_.ensure_gt_attrs_aligned();
+    Notifications::get().info(
+        "Real-time annotation loaded: " + std::to_string(counted) + " reps"
+        + (provisional ? " (+" + std::to_string(provisional) + " unconfirmed → needs review)" : "")
+        + ". Review, then run the post-session pass.");
 }
 
 void AnnotationStudio::save_() {

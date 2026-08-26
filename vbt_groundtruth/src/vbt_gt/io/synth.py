@@ -36,12 +36,20 @@ DEFAULT_INJECT = {
     "fatigue_drift": True,
 }
 
-_CAM_OFFSET = np.array([0.10, 0.60, 2.40])   # ~ real x/y/z ranges (REPO_MAP §1.2)
+_CAM_OFFSET = np.array([0.10, 0.25, 2.40])   # ~ real x/y/z ranges (REPO_MAP §1.2);
+                                             # y offset chosen so camera y spans the
+                                             # real range (~-0.5 .. +0.3 m) once world
+                                             # up is mapped to camera -y.
 _THETA_MAX = 2.0                              # curl arc sweep (rad)
 
 
 def _rot(rng) -> np.ndarray:
-    ax, ay, az = rng.uniform(-0.25, 0.25, 3)   # ~±14° about each axis
+    # Small residual camera misalignment, matching the MEASURED rig: total tilt of the
+    # vertical axis is 3-15° (median ~7°, n=22 vertical-lift sessions). Roll (about the
+    # optical z axis) is kept smallest — the tripod is levelled, and roll is the only
+    # rotation that could ever threaten the sign of the vertical.
+    ax, ay = rng.uniform(-0.12, 0.12, 2)       # pitch / yaw ~±7°
+    az = rng.uniform(-0.05, 0.05)              # roll        ~±3°
     cx, sx = np.cos(ax), np.sin(ax)
     cy, sy = np.cos(ay), np.sin(ay)
     cz, sz = np.cos(az), np.sin(az)
@@ -260,8 +268,16 @@ def make_synthetic_session_with_truth(
             rrad * (1.0 - np.cos(theta)),
         ])
 
-    rot = _rot(rng)
-    xyz = world @ rot.T + _CAM_OFFSET
+    # ── world → CAMERA frame, matching the REAL rig (measured, 84/84 sessions) ──
+    # The generator builds `world` with UP on +z. The real RealSense optical frame is
+    # +x right, +y DOWN, +z forward(depth) — verified on every real session by
+    # corr(y_m, pixel_v) = +0.9998 median (pixel_v grows downward in the image).
+    # So world-up maps to camera −y, and the lifter sits ~2.4 m away in +z.
+    W2C = np.array([[1.0, 0.0,  0.0],
+                    [0.0, 0.0, -1.0],
+                    [0.0, 1.0,  0.0]])
+    rot = _rot(rng)                              # small residual tilt (see _rot)
+    xyz = (world @ W2C.T) @ rot.T + _CAM_OFFSET
     xyz += rng.normal(0.0, max(params.meas_noise_m, 0.002), size=xyz.shape)
 
     # ── post-mapping camera phenomena (affect xyz/confidence, not the truth `s`) ──

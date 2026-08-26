@@ -3,6 +3,7 @@
  * @brief Session lifecycle implementation.
  */
 #include "core/Session.h"
+#include "rt_annotator/RtAnnotationIO.h"
 #include "utils/Notifications.h"
 #include "utils/Uuid.h"
 #include <spdlog/spdlog.h>
@@ -170,6 +171,11 @@ bool Session::start_recording() {
         Notifications::get().error("Could not open log files. Check disk space and permissions.");
         return false;
     }
+
+    // Start the real-time annotator for this set. Configured purely from the exercise
+    // (cycle order + the physiological ROM prior); it holds no state across sessions.
+    rt_annotator_ = std::make_unique<rt::RtAnnotator>(rt::rt_config_for(info_.exercise));
+    rt_frame_idx_ = 0;
 
     if (imu_reader_->is_running()) {
         sync_engine_->register_imu_clock(
@@ -452,6 +458,21 @@ void Session::process_camera_frame(const CameraFrame& f) {
         data_logger_->log_depth_at_marker(ts, det.z_m, det.pixel_u, det.pixel_v);
     }
     sync_engine_->feed_camera_detection(ts, det);
+
+    // Real-time annotation. One sample per camera frame, in order, causal. The frame
+    // index counts marker rows so it indexes marker_positions.csv / video_frames.csv
+    // directly, and the camera-only time base t = frame_idx/90 matches what the offline
+    // tools use — so live output and replay output are directly comparable.
+    if (rt_annotator_) {
+        rt::RtSample s;
+        s.frame_idx  = rt_frame_idx_;
+        s.t_s        = static_cast<double>(rt_frame_idx_) / 90.0;
+        s.y_m        = det.y_m;          // raw camera y; the annotator negates internally
+        s.detected   = det.detected;
+        s.confidence = det.confidence;
+        rt_annotator_->push(s);
+        ++rt_frame_idx_;
+    }
 }
 
 void Session::save() {
@@ -469,6 +490,27 @@ void Session::save() {
     compute_time_sync_check_();
     compute_imu_snapshot_post_();
     detect_mount_shift_();
+
+    // Persist the real-time annotation produced during this recording. Written BEFORE
+    // write_manifest() so the manifest picks the file up. Failure here must never block
+    // a save — the capture itself is the irreplaceable artefact.
+    if (rt_annotator_) {
+        std::string rt_err;
+        const auto& reps = rt_annotator_->reps();
+        if (rt::rt_write_csv(session_dir_, info_.exercise, reps, rt_err)) {
+            event_log_.info("session", "rt_annotation",
+                            "real-time annotation: " +
+                            std::to_string(rt_annotator_->confirmed_count()) +
+                            " confirmed of " +
+                            std::to_string(rt_annotator_->provisional_count()) +
+                            " provisional reps");
+            spdlog::info("rt_annotation: {} confirmed / {} provisional reps -> camera/rt_annotation.csv",
+                         rt_annotator_->confirmed_count(), rt_annotator_->provisional_count());
+        } else {
+            spdlog::warn("rt_annotation: could not write ({}) — capture is unaffected", rt_err);
+        }
+    }
+
     write_metadata();
     write_manifest();
     event_log_.info("session", "save", "Session finalised; renaming .partial → final");

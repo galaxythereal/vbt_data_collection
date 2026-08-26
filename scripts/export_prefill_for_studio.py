@@ -37,21 +37,11 @@ from vbt_gt.io.adapter import to_raw_session
 from vbt_gt.pipeline.s0_sets import s0_segment_sets
 from vbt_gt.pipeline.s1_condition import s1_condition
 from vbt_gt.pipeline.s2_kinematics import s2_kinematics
-from vbt_gt.pipeline.s3_zupt import s3_zupt
 from vbt_gt.pipeline.s4_traverse import s4_traverse
-from vbt_gt.pipeline.s6_hsmm import s6_hsmm
-from vbt_gt.types import IntervalOutcome, PhaseState
+from vbt_gt.types import IntervalOutcome
 
 DATASETS = Path("datasets/sessions")
 OUT = Path("vbt_groundtruth/out/prefill")
-
-_HOLD_TO_PAUSE = {
-    PhaseState.TOP_HOLD: "top_hold",
-    PhaseState.CHEST_PAUSE: "chest_pause",
-    PhaseState.BOTTOM_HOLD: "bottom_hold",
-    PhaseState.FLOOR_RESET: "floor_reset",
-}
-
 
 def _status_for(cand) -> str:
     if cand.kind == "transport":
@@ -64,8 +54,15 @@ def _status_for(cand) -> str:
     return IntervalOutcome.COMPLETED_REP.value
 
 
-def _labels_for_set(cond, kin, st, cand, zupt) -> list[dict]:
-    """Map S4 candidates + S6 ZUPT holds into eval.py gt-schema rows (frames)."""
+def _labels_for_set(cond, kin, st, cand) -> list[dict]:
+    """Map S4 candidates into eval.py gt-schema rows (integer frames).
+
+    INTERIM. This still inherits the two known S4 defects: the eccentric is GLUED ON
+    as [this rep's top -> next rep's kept bottom] (which is half a cycle wrong for the
+    down-first lifts, bench/squat), and the reps come from the whole-set p5/p95 gates.
+    Pause detection is gone with S6; `has_pause` is left False for the human to set.
+    Kept runnable only so the studio prefill still loads while the replacement is built.
+    """
     a, b = int(st.start), int(st.end)
     reps = sorted(cand, key=lambda c: c.cs)
     out = []
@@ -73,13 +70,7 @@ def _labels_for_set(cond, kin, st, cand, zupt) -> list[dict]:
         nxt = reps[i + 1].cs if i + 1 < len(reps) else b
         ecc_start = int(c.ce)
         ecc_end = int(min(nxt, b))
-        # a pause is a decoded hold overlapping the top turnaround [ce, ecc_end)
         has_pause, pause_kind = False, ""
-        for z in zupt:
-            lab = z.final_label
-            if lab in _HOLD_TO_PAUSE and z.start < ecc_end and z.end > c.ce:
-                has_pause, pause_kind = True, _HOLD_TO_PAUSE[lab]
-                break
         out.append({
             "set_id": int(st.set_id),
             "status": _status_for(c),
@@ -104,10 +95,8 @@ def export_session(session_dir: Path, params: Params) -> Path | None:
 
     labels: list[dict] = []
     for st in sets:
-        z = s3_zupt(cond, kin, st, params)
-        cand = s4_traverse(cond, kin, st, z, params)
-        _track, z = s6_hsmm(cond, kin, st, z, cand, params)
-        labels += _labels_for_set(cond, kin, st, cand, z)
+        cand = s4_traverse(cond, kin, st, [], params)   # [] = no zupt (arg unused)
+        labels += _labels_for_set(cond, kin, st, cand)
 
     sid = session_dir.name
     dest = OUT / sid

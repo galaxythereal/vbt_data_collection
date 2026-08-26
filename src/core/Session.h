@@ -28,6 +28,7 @@
 #include "core/DataLogger.h"
 #include "core/EventLog.h"
 #include "processing/StillnessGate.h"
+#include "rt_annotator/RtAnnotator.h"
 
 namespace vbt {
 
@@ -166,6 +167,15 @@ private:
     std::unique_ptr<DataLogger>     data_logger_;
     EventLog                        event_log_;
     StillnessGate                   stillness_gate_;
+
+    // ── Real-time (causal) rep annotator ────────────────────────────────────
+    // Fed one marker sample per camera frame in process_camera_frame(); its output is
+    // written to camera/rt_annotation.csv on save() and becomes the annotation studio's
+    // default prefill. It is strictly causal — no lookahead, no session statistics — so
+    // the labels here are exactly what was knowable live. It touches nothing else in the
+    // recording path: if it ever misbehaves it can be disabled without affecting capture.
+    std::unique_ptr<rt::RtAnnotator> rt_annotator_;
+    int64_t                          rt_frame_idx_ = 0;
 
     // IMU stream-quality bookkeeping. Drives event-log emission for
     // poll-loop gaps and per-sample saturation. Thresholds are derived

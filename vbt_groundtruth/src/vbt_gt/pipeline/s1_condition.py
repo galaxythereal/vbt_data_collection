@@ -1,14 +1,37 @@
-"""S1 — conditioning (M1).
+"""S1 — conditioning.
 
-Uniform 90 Hz resample, outlier rejection, gap/freeze handling, a camera-only
-gravity-aligned vertical, and the per-exercise segmentation coordinate `s`.
+Uniform 90 Hz resample, outlier rejection, gap/freeze handling, and the vertical
+coordinate `s` (up = +), which is the SAME single definition for all five exercises.
 
-Gravity vertical (camera-only, NO IMU, NOT the studio `pos_up = -y_m` proxy):
-the gravity axis is estimated as the dominant motion axis (PCA principal component)
-and its sign is oriented from the exercise `family` + the start-rest reference
-(up_first rests at the bottom, down_first at the top). For vertical-dominant lifts
-this principal axis IS the gravity vertical; for row/curl it is the best camera-only
-estimate (documented; a true gravity vector would come from a calibration vector).
+VERTICAL = the camera's own optical vertical axis, i.e. `-y_m`. No IMU.
+--------------------------------------------------------------------------------
+This REPLACES the previous PCA-derived vertical (dominant motion axis + a
+family/start-rest sign heuristic), which was measured to fail badly on the corpus:
+
+  * SIGN was wrong in 25 / 84 real sessions (back_squat 8/11, biceps_curl 15/29),
+    because an eigenvector has no direction — so the whole coordinate, and with it
+    every "concentric vs eccentric" decision, was inverted in ~30% of sessions.
+  * AXIS was wrong where the lift is hardest: bench_press PCA landed a median 46°
+    (worst 84.6°) away from vertical, because the horizontal unrack/re-rack travel
+    (sd_x = 0.145 m) rivals the entire press (sd_y = 0.136 m), so "most variance"
+    is not "the lift".
+  * It needs the whole set, so it cannot run in the real-time annotator.
+
+The camera axis has none of those problems and is verified on every real session:
+  * `corr(y_m, pixel_v)` = +0.9998 median (min +0.9661) across 84/84 sessions.
+    `pixel_v` is the marker's IMAGE ROW, which grows downward and is measured
+    independently of any motion model — so camera +y is physically DOWN, always.
+  * Residual rig tilt of this axis vs true gravity is 3-15° (median ~7°, from the
+    vertical-lift sessions), i.e. a 0.75% magnitude error and ZERO effect on rep
+    counting or phase direction. Between-day tilt spread (2.84°) equals within-day
+    scatter (2.84°), so the camera did not move across the 5 recording days.
+
+It is a coordinate definition, not a threshold: no offset is subtracted and no
+percentile/level is fitted, so only DIFFERENCES of `s` are ever meaningful — which
+is all the downstream stages use. Identical per-frame in real time and offline.
+
+Validate with `scripts/validate_orientation.py` (asserts s is anti-correlated with
+pixel_v per session); a failure means the coordinate is upside-down and must not ship.
 """
 
 from __future__ import annotations
@@ -112,65 +135,6 @@ def _detect_freeze(xyz: np.ndarray, conf: np.ndarray | None, fs: float, params: 
     return frozen
 
 
-def _static_reference(proj: np.ndarray, fs: float):
-    """Mean `proj` over the first low-movement span (the start rest)."""
-    win = max(3, int(round(0.30 * fs)))
-    rstd = pd.Series(proj).rolling(win, center=True, min_periods=1).std().to_numpy()
-    rng = np.percentile(proj, 95) - np.percentile(proj, 5)
-    static = rstd < max(1e-6, 0.10 * rng)
-    for a, b in _runs(static):
-        if (b - a) >= win:
-            return float(np.mean(proj[a:b]))
-    return float(np.mean(proj[:win]))
-
-
-def _gravity_vertical(xyz: np.ndarray, good: np.ndarray, family: str, fs: float):
-    """Estimate the oriented gravity-vertical axis + projection (centered)."""
-    pts = xyz[good] if good.sum() >= 8 else xyz
-    centroid = pts.mean(axis=0)
-    _, _, vt = np.linalg.svd(pts - centroid, full_matrices=False)
-    axis = vt[0]
-    proj = (xyz - centroid) @ axis
-    rest_val = _static_reference(proj, fs)
-    p_lo, p_hi = np.percentile(proj, [5, 95])
-    if family == "up_first":
-        flip = abs(rest_val - p_hi) < abs(rest_val - p_lo)   # rest should sit at the bottom
-    else:                                                    # down_first: rest at the top
-        flip = abs(rest_val - p_lo) < abs(rest_val - p_hi)
-    if flip:
-        axis, proj = -axis, -proj
-    return axis, proj, centroid
-
-
-def _arc_coordinate(xyz: np.ndarray, centroid: np.ndarray, axes2: np.ndarray, fs: float):
-    """Principal-curve arc length for curl. Returns (s_arc, params).
-
-    Fit a robust low-degree polynomial principal curve w = f(u) in the arc plane
-    (chord u, transverse w) — least-squares averages out wobble/noise — then
-    integrate sqrt(1+f'^2) du for arc length. This is monotonic in rep progress and
-    does not compress the arc ends like a straight chord, without the under-smoothing
-    of a fine interpolating spline."""
-    u = (xyz - centroid) @ axes2[0]          # chord param
-    w = (xyz - centroid) @ axes2[1]          # transverse
-    coef = np.polyfit(u, w, 3)
-    dcoef = np.polyder(coef)
-    grid = np.linspace(float(u.min()), float(u.max()), 400)
-    dwdu = np.polyval(dcoef, grid)
-    integrand = np.sqrt(1.0 + dwdu ** 2)
-    arc_grid = np.concatenate([[0.0],
-                               np.cumsum(0.5 * (integrand[:-1] + integrand[1:]) * np.diff(grid))])
-    s_arc = np.interp(u, grid, arc_grid)
-    params = {
-        "centroid": centroid.tolist(),
-        "chord_axis": axes2[0].tolist(),
-        "transverse_axis": axes2[1].tolist(),
-        "poly_w_of_u": coef.tolist(),
-        "u_grid": grid.tolist(),
-        "arc_grid": arc_grid.tolist(),
-    }
-    return s_arc, params
-
-
 # ───────────────────────── S1 ─────────────────────────
 
 def s1_condition(raw: RawSession, params: Params) -> Conditioned:
@@ -216,33 +180,19 @@ def s1_condition(raw: RawSession, params: Params) -> Conditioned:
         quality[a:b] = 0.05 if (b - a) / fs > params.gap_fill_max_s else 0.30
     quality[freeze_mask] = 0.02
 
-    # 6. gravity-aligned vertical (camera-only PCA axis + family orientation)
-    good = (~gap_mask) & (~freeze_mask) & np.isfinite(xyz).all(axis=1)
-    v_axis, v_proj, centroid = _gravity_vertical(xyz, good, family, fs)
-    vertical = v_proj - float(np.percentile(v_proj, 1.0))   # robust bottom → 0
+    # 6. VERTICAL = the camera's optical vertical axis (-y). Up = +, metric, no
+    #    offset subtracted, no fitted level (see the module docstring for the
+    #    measurements that rule out the previous PCA axis).
+    vertical = -xyz[:, 1].copy()
 
-    # 7. movement axis + segmentation coordinate `s`
+    # 7. segmentation coordinate `s` — the SAME vertical for all five exercises.
+    #    (The former per-exercise coordinates are retired: 'arc' for curl and the
+    #    'pca' axis for row were extra machinery on top of an axis that was itself
+    #    unreliable. A curl's bar still rises ~0.5 m vertically, and one uniform
+    #    definition is what makes real-time and offline agree.)
+    s = vertical.copy()
+    move_axis = np.array([0.0, -1.0, 0.0])              # camera optical vertical
     arc_params = None
-    if coord == "vertical":
-        move_axis = v_axis
-        s = vertical.copy()
-    elif coord == "pca":
-        move_axis = v_axis                              # dominant motion axis
-        s = vertical.copy()                             # projection along it (bottom 0)
-    else:                                               # "arc" (curl)
-        c = xyz - centroid
-        _, _, vt = np.linalg.svd(c[good] if good.sum() >= 8 else c, full_matrices=False)
-        axes2 = vt[:2]
-        s_arc, arc_params = _arc_coordinate(xyz, centroid, axes2, fs)
-        move_axis = vt[0]
-        s = s_arc - float(np.percentile(s_arc, 1.0))    # robust bottom → 0
-
-    # 8. orient s so increasing = concentric. vertical/pca already oriented via
-    # family in _gravity_vertical. For the arc, align its direction with the
-    # gravity-vertical so increasing s tracks the upward (concentric) work.
-    if coord == "arc":
-        if np.corrcoef(s, vertical)[0, 1] < 0:
-            s = float(np.max(s)) - s
 
     return Conditioned(
         session_id=raw.session_id,

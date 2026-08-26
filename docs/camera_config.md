@@ -3,6 +3,20 @@
 Frozen description of the camera configuration the collection app applies.
 Mirrored to every session's `metadata.json` under `camera_snapshot`.
 
+> ⚠ **Authority note (2026-06-05).** This file is authoritative for the
+> *capture-time camera/tracker configuration only* (resolution, fps, sync
+> chain, the marker-tracker steps). Its **dataset statistics are historical**
+> — the "9-session" / "existing dataset" numbers below predate the cleaned
+> 84-session corpus — and several implications are **superseded** by the
+> offline, camera-only ground-truth pipeline. **Where anything here conflicts
+> with [REPO_MAP.md](REPO_MAP.md) or [00_FOUNDATION.md](00_FOUNDATION.md),
+> those win — ignore the conflicting statement here.** Known supersessions:
+> marker-quality stats (current detected=1 mean confidence ≈ 0.707, not
+> 0.616); `confidence` is a tracker quality score, **not** a probability; the
+> offline pipeline derives a **gravity-aligned vertical** (it does not treat
+> camera `y` as "up"); and it uses the **camera frame timeline**
+> (`frame_idx / 90`), not `unified_time_s`.
+
 ## Active configuration
 
 | Setting | Value | Reason |

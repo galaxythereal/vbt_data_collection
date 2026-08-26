@@ -64,7 +64,7 @@ double VideoPanel::render(double playhead_t_s, double t0_session) {
             ImGui::Image((void*)(intptr_t)tex, ImVec2(disp_w, disp_h));
             const ImVec2 after_image_cursor = ImGui::GetCursorScreenPos();
             draw_marker_overlay_(pos, ImVec2(disp_w, disp_h));
-            draw_phase_badge_(pos);
+            draw_phase_badge_(pos, disp_w);
 
             auto* draw = ImGui::GetWindowDrawList();
             const ImVec2 controls_pos(pos.x + 8.0f, pos.y + 8.0f);
@@ -217,7 +217,7 @@ void VideoPanel::draw_marker_overlay_(const ImVec2& image_pos, const ImVec2& ima
     draw->AddText(tp, IM_COL32(255, 255, 255, 240), buf);
 }
 
-void VideoPanel::draw_phase_badge_(const ImVec2& image_pos) {
+void VideoPanel::draw_phase_badge_(const ImVec2& image_pos, float image_w) {
     if (!session_) return;
     const char* phase = "—";
     ImU32 col = IM_COL32(120, 120, 120, 220);
@@ -256,8 +256,11 @@ void VideoPanel::draw_phase_badge_(const ImVec2& image_pos) {
                   idx >= 0 ? session_->reps()[idx].rep_id : -1);
     ImVec2 sz = ImGui::CalcTextSize(text);
     auto draw = ImGui::GetWindowDrawList();
-    ImVec2 a(image_pos.x + 10, image_pos.y + 10);
-    ImVec2 b(a.x + sz.x + 16, a.y + sz.y + 8);
+    // Top-RIGHT of the video. The playback transport (play/pause, speed, frame step)
+    // is anchored at the top-LEFT, so a left-anchored badge sat underneath it.
+    const float pad = 10.0f, bw = sz.x + 16, bh = sz.y + 8;
+    ImVec2 a(image_pos.x + image_w - pad - bw, image_pos.y + pad);
+    ImVec2 b(a.x + bw, a.y + bh);
     draw->AddRectFilled(a, b, col, 4.0f);
     draw->AddText(ImVec2(a.x + 8, a.y + 4), IM_COL32(255, 255, 255, 240), text);
 }

@@ -30,6 +30,7 @@
 #include "annotation/VideoPanel.h"
 #include "annotation/RepTablePanel.h"
 #include "annotation/MarkerQualityPanel.h"
+#include "rt_annotator/RtAnnotationIO.h"
 #include <memory>
 #include <string>
 
@@ -63,6 +64,8 @@ private:
     void load_session_(const std::filesystem::path& dir);
     void save_();
     void reload_();
+    /// Load the real-time annotation (camera/rt_annotation.csv) as the working set.
+    void load_rt_annotation_(const std::vector<rt::RtRep>& rt_reps);
     void use_base_proposal_();
     void use_post_session_proposal_();
     void seek_(double t_unified_s);

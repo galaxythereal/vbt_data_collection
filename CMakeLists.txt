@@ -188,6 +188,10 @@ set(APP_SOURCES
     src/utils/Notifications.cpp
     src/utils/DiagnosticExport.cpp
     src/utils/SubjectRegistry.cpp
+    # real-time annotator (runs inside the acquisition loop; also used by the studio)
+    src/rt_annotator/CausalTracker.cpp
+    src/rt_annotator/RtAnnotator.cpp
+    src/rt_annotator/RtAnnotationIO.cpp
 )
 
 add_executable(${PROJECT_NAME} ${APP_SOURCES})
@@ -214,6 +218,27 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 if(VBT_WITH_REALSENSE)
     target_link_libraries(${PROJECT_NAME} PRIVATE realsense2::realsense2)
 endif()
+
+# ==============================================================================
+# Real-time annotator core + offline replay harness
+# ==============================================================================
+# src/rt_annotator/ is intentionally dependency-free (no ImGui / OpenCV / RealSense /
+# Eigen / JSON) so the exact same code runs inside the acquisition loop and inside the
+# replay tool. rt_replay streams a recorded session through it frame by frame with no
+# lookahead, which is how the live algorithm is validated against all 84 sessions
+# without hardware.
+set(RT_ANNOTATOR_SOURCES
+    src/rt_annotator/CausalTracker.cpp
+    src/rt_annotator/RtAnnotator.cpp
+    src/rt_annotator/RtAnnotationIO.cpp
+)
+
+add_executable(rt_replay
+    tools/rt_replay.cpp
+    ${RT_ANNOTATOR_SOURCES}
+)
+target_include_directories(rt_replay PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_compile_features(rt_replay PRIVATE cxx_std_17)
 
 # ==============================================================================
 # Tests

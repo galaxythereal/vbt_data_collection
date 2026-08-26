@@ -39,7 +39,7 @@ public:
 
 private:
     void draw_marker_overlay_(const ImVec2& image_pos, const ImVec2& image_size);
-    void draw_phase_badge_(const ImVec2& image_pos);
+    void draw_phase_badge_(const ImVec2& image_pos, float image_w);
     int  current_rep_index_at_(double t_s) const;
     double rep_start_(const RepAnnotation& rep) const;
     double rep_end_(const RepAnnotation& rep) const;

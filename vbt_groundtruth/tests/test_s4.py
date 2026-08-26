@@ -7,7 +7,6 @@ from vbt_gt.io.synth import ALL_EXERCISES, make_synthetic_session_with_truth
 from vbt_gt.pipeline.s0_sets import s0_segment_sets
 from vbt_gt.pipeline.s1_condition import s1_condition
 from vbt_gt.pipeline.s2_kinematics import s2_kinematics
-from vbt_gt.pipeline.s3_zupt import s3_zupt
 from vbt_gt.pipeline.s4_traverse import s4_traverse
 from vbt_gt.types import Exercise, IntervalOutcome
 
@@ -24,8 +23,7 @@ def _run(ex, seed, inject=None):
     kin = s2_kinematics(cond, p)
     cands = []
     for st in s0_segment_sets(cond, kin, p):
-        z = s3_zupt(cond, kin, st, p)
-        cands += s4_traverse(cond, kin, st, z, p)
+        cands += s4_traverse(cond, kin, st, [], p)   # [] = no zupt (arg unused)
     return gt, cands
 
 
