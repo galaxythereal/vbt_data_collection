@@ -19,7 +19,7 @@ void RtAnnotator::reset() {
     ext_frame_ = -1;
     run_peak_v_ = run_sum_v_ = run_min_a_ = 0.0;
     run_n_ = 0;
-    run_gap_frames_ = 0;
+    lost_total_ = ext_lost_ = open_start_lost_ = 0;
     last_dir_frame_ = hold_start_ = hold_end_ = -1;
     rest_run_start_ = rest_run_end_ = -1;
     prev_hold_start_ = prev_hold_end_ = -1;
@@ -41,7 +41,7 @@ void RtAnnotator::push(const RtSample& s) {
     if (s.detected) {
         trk_.update(-s.y_m, s.confidence);   // h = -y  (camera +y is down)
     } else {
-        ++run_gap_frames_;                   // how many frames of this run were unseen
+        ++lost_total_;                       // monotonic; never reset
     }
 
     if (!trk_.initialised()) {
@@ -77,14 +77,18 @@ void RtAnnotator::push(const RtSample& s) {
     if (s.detected) {
         if (!have_ext_) {
             ext_h_ = h; ext_frame_ = s.frame_idx; ext_t_s_ = s.t_s; ext_sigma_ = sp;
+            ext_lost_ = lost_total_;
             have_ext_ = true;
         } else if (dir_ == Dir::Up) {
-            if (h > ext_h_) { ext_h_ = h; ext_frame_ = s.frame_idx; ext_t_s_ = s.t_s; ext_sigma_ = sp; }
+            if (h > ext_h_) { ext_h_ = h; ext_frame_ = s.frame_idx; ext_t_s_ = s.t_s;
+                              ext_sigma_ = sp; ext_lost_ = lost_total_; }
         } else if (dir_ == Dir::Down) {
-            if (h < ext_h_) { ext_h_ = h; ext_frame_ = s.frame_idx; ext_t_s_ = s.t_s; ext_sigma_ = sp; }
+            if (h < ext_h_) { ext_h_ = h; ext_frame_ = s.frame_idx; ext_t_s_ = s.t_s;
+                              ext_sigma_ = sp; ext_lost_ = lost_total_; }
         } else {
             // direction not yet established: keep the most recent point as the reference
             ext_h_ = h; ext_frame_ = s.frame_idx; ext_t_s_ = s.t_s; ext_sigma_ = sp;
+            ext_lost_ = lost_total_;
         }
     }
 
@@ -107,22 +111,23 @@ void RtAnnotator::push(const RtSample& s) {
         // that is the pause at the turnaround (empty when the bar just reversed).
         hold_start_ = rest_run_start_;
         hold_end_   = rest_run_end_;
-        on_turnaround(kind, ext_frame_, ext_t_s_, ext_h_, ext_sigma_);
+        on_turnaround(kind, ext_frame_, ext_t_s_, ext_h_, ext_sigma_, ext_lost_);
         hold_start_ = hold_end_ = -1;
         last_dir_frame_ = s.frame_idx;
         rest_run_start_ = rest_run_end_ = -1;
         // start the new run from the extremum we just committed (trusted frames only)
-        if (s.detected) { ext_h_ = h; ext_frame_ = s.frame_idx; ext_t_s_ = s.t_s; ext_sigma_ = sp; }
+        if (s.detected) { ext_h_ = h; ext_frame_ = s.frame_idx; ext_t_s_ = s.t_s;
+                          ext_sigma_ = sp; ext_lost_ = lost_total_; }
         run_peak_v_ = std::fabs(v);
         run_sum_v_  = v;
         run_n_      = 1;
         run_min_a_  = a;
-        // run_gap_frames_ is NOT cleared here. This block also runs for reversals that
-        // on_turnaround() then REJECTS as too small to be real, and clearing the count
-        // there discarded the evidence: measured on session_20260518_144302 a 50-frame
-        // (0.56 s) dropout produced a rep flagged as clean, and on
-        // session_20260520_130331 only 7 of 15 cards were flagged against 17 in-set
-        // gaps. Only a turnaround that is actually accepted clears it.
+        // Nothing to reset for the blind-frame count: lost_total_ is monotonic and a
+        // rep's count is a difference between turnarounds, so a reversal that
+        // on_turnaround() then REJECTS as too small cannot lose the evidence. The
+        // earlier per-run counter did: session_20260518_144302 reported a 50-frame
+        // (0.56 s) dropout as clean, and session_20260520_130331 flagged 7 of 15 cards
+        // against 17 in-set gaps.
     }
 
     // Maintain the TRUE-rest run: both velocity and acceleration statistically zero.
@@ -146,10 +151,12 @@ void RtAnnotator::push(const RtSample& s) {
     if (now != Dir::Unknown) dir_ = now;
 }
 
-void RtAnnotator::revise_last_turnaround(int64_t frame, double t_s, double h, double sigma) {
+void RtAnnotator::revise_last_turnaround(int64_t frame, double t_s, double h, double sigma,
+                                        long lost) {
     RtTurnaround& b = turns_.back();
     const int64_t was = b.frame_idx;
     b.frame_idx = frame; b.t_s = t_s; b.height_m = h; b.sigma_m = sigma;
+    b.lost_before = lost;
     prev_hold_start_ = prev_hold_end_ = -1;   // that pause was measured at the old extremum
 
     // A TURNAROUND IS PROVISIONAL UNTIL THE NEXT ONE ARRIVES: while the bar is still
@@ -188,17 +195,16 @@ void RtAnnotator::revise_last_turnaround(int64_t frame, double t_s, double h, do
     if (!moved) return;
 
     // The phase just grew to cover the frames between the old extremum and this one, so
-    // any of those the marker was not seen on now belong to this rep. Without this the
+    // the count is recomputed over the NEW span rather than adjusted. Without this the
     // count silently omitted them: measured on session_20260520_124842 a lost frame sat
     // inside a card that reported zero, because the boundary had been extended past it
     // after the card was emitted.
-    r.gap_frames   += static_cast<int>(run_gap_frames_);
-    r.tracking_gap  = (r.gap_frames > 0);
-    run_gap_frames_ = 0;
+    r.gap_frames   = static_cast<int>(lost - open_start_lost_);
+    r.tracking_gap = (r.gap_frames > 0);
 }
 
 void RtAnnotator::on_turnaround(RtTurnaround::Kind kind, int64_t frame, double t_s,
-                                double h, double sigma) {
+                                double h, double sigma, long lost) {
     // A reversal is real only if the excursion is BOTH
     //   (a) statistically distinguishable from the filter's own position noise, and
     //   (b) on the scale of a human repetition for this lift.
@@ -216,18 +222,19 @@ void RtAnnotator::on_turnaround(RtTurnaround::Kind kind, int64_t frame, double t
                                                                     : (h < prev.height_m);
         if (amp <= tol) {
             // Not a real reversal: keep whichever extremum is more extreme and bail.
-            if (same_kind && more_extreme) revise_last_turnaround(frame, t_s, h, sigma);
+            if (same_kind && more_extreme) revise_last_turnaround(frame, t_s, h, sigma, lost);
             return;
         }
         // Two same-kind turnarounds in a row would break alternation; keep the extreme.
         if (same_kind) {
-            if (more_extreme) revise_last_turnaround(frame, t_s, h, sigma);
+            if (more_extreme) revise_last_turnaround(frame, t_s, h, sigma, lost);
             return;
         }
     }
 
     RtTurnaround t;
     t.kind = kind; t.frame_idx = frame; t.t_s = t_s; t.height_m = h; t.sigma_m = sigma;
+    t.lost_before = lost;
     turns_.push_back(t);
 
     // ---- phases become reps -------------------------------------------------
@@ -278,8 +285,10 @@ void RtAnnotator::on_turnaround(RtTurnaround::Kind kind, int64_t frame, double t
         const RtTurnaround& from = turns_[turns_.size() - 2];
         RtRep r;
         r.rep_id       = static_cast<int>(reps_.size()) + 1;
-        r.gap_frames   = run_gap_frames_;
-        r.tracking_gap = (run_gap_frames_ > 0);
+        // Unseen frames BETWEEN the two turnarounds this phase runs between.
+        open_start_lost_ = from.lost_before;
+        r.gap_frames   = static_cast<int>(t.lost_before - open_start_lost_);
+        r.tracking_gap = (r.gap_frames > 0);
         r.confirmed    = false;
         if (cfg_.down_first) {
             r.eccentric_start_frame = motion_start(from);
@@ -314,7 +323,7 @@ void RtAnnotator::on_turnaround(RtTurnaround::Kind kind, int64_t frame, double t
                 r.rom_m                  = t.height_m - from.height_m;
                 r.peak_velocity          = run_peak_v_;
                 r.mean_velocity          = (run_n_ > 0) ? run_sum_v_ / static_cast<double>(run_n_) : 0.0;
-                r.gap_frames            += run_gap_frames_;
+                r.gap_frames             = static_cast<int>(t.lost_before - open_start_lost_);
                 r.tracking_gap           = (r.gap_frames > 0);
                 take_hold(r.top_rest_start_frame, r.top_rest_end_frame);
             }
@@ -325,18 +334,16 @@ void RtAnnotator::on_turnaround(RtTurnaround::Kind kind, int64_t frame, double t
                 r.eccentric_end_frame   = t.frame_idx;
                 r.min_ecc_accel         = run_min_a_;
                 r.dropped_eccentric     = (run_min_a_ <= -cfg_.g);
-                r.gap_frames           += run_gap_frames_;
+                r.gap_frames            = static_cast<int>(t.lost_before - open_start_lost_);
                 r.tracking_gap          = (r.gap_frames > 0);
                 take_hold(r.bottom_rest_start_frame, r.bottom_rest_end_frame);
             }
         }
     }
 
-    // This turnaround's pause becomes the previous one for the next excursion, and the
-    // blind-frame count starts again now that an accepted boundary has consumed it.
+    // This turnaround's pause becomes the previous one for the next excursion.
     prev_hold_start_ = hold_s;
     prev_hold_end_   = hold_e;
-    run_gap_frames_  = 0;
 
     close_cycle_if_returned();
 }

@@ -136,10 +136,10 @@ private:
     enum class Dir { Unknown, Up, Down };
 
     void on_turnaround(RtTurnaround::Kind kind, int64_t frame, double t_s,
-                       double h, double sigma);
+                       double h, double sigma, long lost);
     /// Move the most recent turnaround to a more extreme point, carrying any rep that was
     /// already emitted from it. Turnarounds are provisional until the NEXT one arrives.
-    void revise_last_turnaround(int64_t frame, double t_s, double h, double sigma);
+    void revise_last_turnaround(int64_t frame, double t_s, double h, double sigma, long lost);
     void close_cycle_if_returned();
 
     Config        cfg_;
@@ -162,10 +162,15 @@ private:
     double  run_sum_v_     = 0.0;
     long    run_n_         = 0;
     double  run_min_a_     = 0.0;
-    /// Frames of the current run on which the marker was NOT seen. Cleared only when a
-    /// turnaround is ACCEPTED, so a rejected micro-reversal cannot erase the evidence
-    /// that part of the run was unmeasured.
-    long    run_gap_frames_ = 0;
+    /// Frames the marker was not seen on since the session began. Monotonic, never
+    /// reset: a rep's blind-frame count is the difference between this total at its
+    /// bounding turnarounds, so no reversal -- accepted or rejected -- can lose it.
+    long    lost_total_    = 0;
+    /// The same total as of the current running extremum (updated only on measured
+    /// frames, alongside ext_h_/ext_frame_).
+    long    ext_lost_      = 0;
+    /// The total as of the turnaround the currently-open rep started from.
+    long    open_start_lost_ = 0;
 
     /// Last frame whose direction matched `dir_`, i.e. the last frame the bar was still
     /// genuinely moving that way. The span between it and the frame the reversal is

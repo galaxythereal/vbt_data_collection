@@ -13,6 +13,13 @@
  *   rt_replay <session_dir> [more_session_dirs...]     # per-rep detail + summary
  *   rt_replay --summary <session_dir>...               # one line per session
  *   rt_replay --csv out.csv <session_dir>...           # machine-readable summary
+ *   rt_replay --check <session_dir>...                 # verify the invariant, exit 1 if broken
+ *
+ * --check proves that nothing in the annotation was derived from a frame the marker was
+ * not seen on. It is a regression guard, not a feature: this defect class reached the
+ * annotator twice through two different code paths, and both times it was found by
+ * reading a column by hand. Removing the `detected` guard on the rest run makes it
+ * report the exact five violations that were originally found that way.
  *
  * Reads only; writes nothing into the dataset.
  */
@@ -21,6 +28,7 @@
 #include "rt_annotator/RtAnnotationIO.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -29,6 +37,7 @@
 #include <map>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -84,6 +93,9 @@ struct Result {
     bool ok = false;
     std::string error;
     std::vector<RtRep> reps;
+    /// Per-frame `detected` exactly as recorded. Retained so --check can prove that
+    /// nothing in the annotation was derived from a frame the marker was not seen on.
+    std::vector<uint8_t> detected;
 };
 
 Result replay(const fs::path& dir, bool verbose) {
@@ -126,6 +138,7 @@ Result replay(const fs::path& dir, bool verbose) {
         s.y_m        = std::atof(v[ix["y_m"]].c_str());
         s.detected   = std::atoi(v[ix["detected"]].c_str()) != 0;
         s.confidence = std::atof(v[ix["confidence"]].c_str());
+        R.detected.push_back(s.detected ? 1 : 0);
         ann.push(s);
 
         // measure how long after lockout a rep becomes confirmed
@@ -178,25 +191,145 @@ Result replay(const fs::path& dir, bool verbose) {
     return R;
 }
 
+// ============================================================================
+// --check : the annotation must never depend on data that was not measured
+// ============================================================================
+// This defect class got into the annotator TWICE through two different code paths --
+// a rep boundary placed on a frame where the marker was never seen. Both times it was
+// caught by reading a column by hand and noticing one squat rep bottoming 0.36 m below
+// its neighbours. Nothing reported it. These four rules are the invariant that was
+// being violated, checked over every session so a regression fails loudly instead of
+// waiting to be noticed.
+//
+// The checker only READS what the annotator produced. It cannot change the algorithm,
+// the output, or the recording path.
+struct Violation {
+    std::string session;
+    int         rep_id = 0;
+    std::string what;
+};
+
+/// Frame span a rep occupies: from its earliest boundary to its latest.
+bool rep_span(const RtRep& r, int64_t& lo, int64_t& hi) {
+    const int64_t f[4] = {r.concentric_start_frame, r.concentric_end_frame,
+                          r.eccentric_start_frame,  r.eccentric_end_frame};
+    bool any = false;
+    for (int64_t v : f) {
+        if (v < 0) continue;
+        if (!any) { lo = hi = v; any = true; }
+        else { lo = std::min(lo, v); hi = std::max(hi, v); }
+    }
+    return any;
+}
+
+void check_session(const Result& R, std::vector<Violation>& out) {
+    const auto& det = R.detected;
+    const int64_t n = static_cast<int64_t>(det.size());
+    auto seen = [&](int64_t f) { return f >= 0 && f < n && det[f]; };
+
+    long unseen_in_any_rep = 0, reported = 0;
+    std::vector<uint8_t> covered(det.size(), 0);   // frames lying inside some rep span
+
+    for (const auto& r : R.reps) {
+        // ---- RULE 1: no rep boundary sits on a frame the marker was not seen on.
+        // A boundary is an assertion about where the bar turned around. On an unseen
+        // frame there is no position, so the assertion has no basis.
+        const std::pair<const char*, int64_t> bnd[4] = {
+            {"concentric_start_frame", r.concentric_start_frame},
+            {"concentric_end_frame",   r.concentric_end_frame},
+            {"eccentric_start_frame",  r.eccentric_start_frame},
+            {"eccentric_end_frame",    r.eccentric_end_frame},
+        };
+        for (const auto& b : bnd) {
+            if (b.second < 0) continue;
+            if (b.second >= n)
+                out.push_back({R.session, r.rep_id,
+                    std::string(b.first) + "=" + std::to_string(b.second) +
+                    " is past the end of the recording (" + std::to_string(n) + " frames)"});
+            else if (!det[b.second])
+                out.push_back({R.session, r.rep_id,
+                    std::string(b.first) + "=" + std::to_string(b.second) +
+                    " is on a frame where the marker was not seen"});
+        }
+
+        // ---- RULE 2: no rest window contains an unseen frame.
+        // "The bar was at rest here" cannot be claimed about frames nobody measured,
+        // and a rest's end is where the next phase begins.
+        const std::pair<const char*, std::pair<int64_t,int64_t>> rest[2] = {
+            {"top_rest",    {r.top_rest_start_frame,    r.top_rest_end_frame}},
+            {"bottom_rest", {r.bottom_rest_start_frame, r.bottom_rest_end_frame}},
+        };
+        for (const auto& w : rest) {
+            const int64_t a = w.second.first, b = w.second.second;
+            if (a < 0 || b <= a) continue;
+            long lost = 0;
+            for (int64_t i = a; i <= b && i < n; ++i) if (!det[i]) ++lost;
+            if (lost)
+                out.push_back({R.session, r.rep_id,
+                    std::string(w.first) + " " + std::to_string(a) + "-" + std::to_string(b) +
+                    " contains " + std::to_string(lost) + " unseen frame(s)"});
+        }
+
+        // ---- RULE 3: every unseen frame inside a rep is admitted in gap_frames.
+        int64_t lo = 0, hi = 0;
+        if (rep_span(r, lo, hi)) {
+            long lost = 0;
+            for (int64_t i = lo; i <= hi && i < n; ++i) {
+                if (i >= 0 && !covered[i]) { covered[i] = 1; if (!det[i]) ++unseen_in_any_rep; }
+                if (i >= 0 && !det[i]) ++lost;
+            }
+            if (lost > 0 && r.gap_frames <= 0)
+                out.push_back({R.session, r.rep_id,
+                    "spans " + std::to_string(lost) + " unseen frame(s) but reports "
+                    "gap_frames=0"});
+        }
+        reported += r.gap_frames;
+
+        // ---- RULE 4: no reported number is NaN or infinite.
+        // NaN is how an unmeasured field now travels; if one reaches a statistic, some
+        // computation consumed a frame it should have skipped.
+        const std::pair<const char*, double> num[4] = {
+            {"rom_m", r.rom_m}, {"peak_velocity", r.peak_velocity},
+            {"mean_velocity", r.mean_velocity}, {"min_ecc_accel", r.min_ecc_accel},
+        };
+        for (const auto& q : num)
+            if (!std::isfinite(q.second))
+                out.push_back({R.session, r.rep_id,
+                    std::string(q.first) + " is not a finite number"});
+    }
+
+    // ---- RULE 3 (session total): nothing under-reported overall. Over-reporting by a
+    // frame or two is fine and expected -- a gap straddling a boundary is charged to the
+    // adjacent card -- but the total must never be short.
+    if (reported < unseen_in_any_rep)
+        out.push_back({R.session, 0,
+            "reports " + std::to_string(reported) + " gap frames in total but " +
+            std::to_string(unseen_in_any_rep) + " unseen frames fall inside a rep"});
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
     std::vector<fs::path> dirs;
     bool summary_only = false;
     bool write_sessions = false;   // write camera/rt_annotation.csv INTO each session
+    bool check_only = false;       // verify the no-fabrication invariant, print PASS/FAIL
     std::string csv_out;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--summary") summary_only = true;
         else if (a == "--csv" && i + 1 < argc) csv_out = argv[++i];
         else if (a == "--write") write_sessions = true;
+        else if (a == "--check") check_only = true;
         else dirs.emplace_back(a);
     }
     if (dirs.empty()) {
         std::fprintf(stderr,
-            "usage: rt_replay [--summary] [--csv out.csv] <session_dir>...\n");
+            "usage: rt_replay [--summary] [--check] [--csv out.csv] <session_dir>...\n"
+            "  --check  prove the annotation depends on no unseen frame; exit 1 if not\n");
         return 2;
     }
+    if (check_only) { summary_only = true; write_sessions = false; }
 
     std::vector<Result> results;
     for (const auto& d : dirs) {
@@ -211,6 +344,37 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "write failed for %s: %s\n",
                              d.string().c_str(), werr.c_str());
         }
+    }
+
+    if (check_only) {
+        std::vector<Violation> v;
+        int sessions = 0, cards = 0, skipped = 0;
+        for (const auto& r : results) {
+            if (!r.ok) { ++skipped;
+                std::printf("SKIP %-28s %s\n", r.session.c_str(), r.error.c_str());
+                continue; }
+            ++sessions; cards += static_cast<int>(r.reps.size());
+            check_session(r, v);
+        }
+        if (v.empty()) {
+            std::printf("CHECK PASSED — %d sessions, %d cards"
+                        "%s\n", sessions, cards,
+                        skipped ? " (some sessions skipped, see above)" : "");
+            std::printf("  no rep boundary on an unseen frame\n"
+                        "  no rest window containing an unseen frame\n"
+                        "  every unseen frame inside a rep admitted in gap_frames\n"
+                        "  no non-finite number reported\n");
+            return skipped ? 1 : 0;
+        }
+        std::printf("CHECK FAILED\n");
+        for (const auto& x : v) {
+            if (x.rep_id) std::printf("  %-28s rep %-4d %s\n",
+                                      x.session.c_str(), x.rep_id, x.what.c_str());
+            else          std::printf("  %-28s          %s\n",
+                                      x.session.c_str(), x.what.c_str());
+        }
+        std::printf("%zu violation(s) over %d sessions, %d cards\n", v.size(), sessions, cards);
+        return 1;
     }
 
     std::printf("\n%-28s %-13s %7s %7s %7s %7s %9s\n",

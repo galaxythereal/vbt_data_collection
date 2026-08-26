@@ -55,6 +55,15 @@ struct RtTurnaround {
     double  t_s       = 0.0;
     double  height_m  = 0.0;     ///< vertical position at the extremum (up = +)
     double  sigma_m   = 0.0;     ///< filter's position uncertainty there
+    /// Frames the marker was NOT seen on, counted from the start of the session up to
+    /// this extremum. The difference between two turnarounds' values is exactly how many
+    /// frames were unseen between them, which is how a rep's blind-frame count is
+    /// derived: by SPAN, not by direction-run. The two are not the same, because a
+    /// turnaround's extremum is identified several frames before the reversal is
+    /// confirmed -- so a frame lost just after an extremum would otherwise be charged to
+    /// the run still open, i.e. to the previous rep. Measured: one card reported
+    /// gap_frames=0 while an unseen frame sat inside its own span.
+    long    lost_before = 0;
 };
 
 /// One repetition. Phases are MEASURED from the turnarounds, never paired afterwards,
