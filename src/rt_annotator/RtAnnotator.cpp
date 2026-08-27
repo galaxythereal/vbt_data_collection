@@ -201,6 +201,20 @@ void RtAnnotator::revise_last_turnaround(int64_t frame, double t_s, double h, do
     // after the card was emitted.
     r.gap_frames   = static_cast<int>(lost - open_start_lost_);
     r.tracking_gap = (r.gap_frames > 0);
+
+    // AND RE-ASK WHETHER THE CYCLE CLOSED. Whether the bar came back is measured from
+    // this turnaround's height, so asking against the provisional extremum asks against
+    // the wrong number, and the question was never asked again. It is the same rule with
+    // the same parameters -- only the moment it is evaluated changes.
+    //
+    // Measured on the corpus: four reps that had genuinely returned were left uncounted.
+    // Three are plainly clean reps -- a bench rep back to within 1.4 mm of where it
+    // started (3% of its 44 cm excursion), another within 1.1 mm (2% of 47 cm), and a
+    // curl within 6.2 mm (15% of 42 cm). The fourth is a squat first rep that only
+    // qualifies at 34% against the 35% allowance, so it is accepted here for the same
+    // reason the rule accepts anything -- not because it is a good rep. It carries the
+    // walkout inside its eccentric, which the post-session pass is expected to strip.
+    close_cycle_if_returned();
 }
 
 void RtAnnotator::on_turnaround(RtTurnaround::Kind kind, int64_t frame, double t_s,
