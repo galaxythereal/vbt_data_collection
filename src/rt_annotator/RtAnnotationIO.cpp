@@ -29,12 +29,15 @@ RtAnnotator::Config rt_config_for(const std::string& exercise) {
     return c;
 }
 
-bool rt_write_csv(const std::string& session_dir,
+bool rt_write_csv(const std::string& out_dir,
                   const std::string& exercise,
                   const std::vector<RtRep>& reps,
                   std::string& err) {
+    // The CALLER names the directory. This used to append "camera" and write inside the
+    // session folder, which put annotator output in the same place as the measurement.
+    // The measurement now lives in a sealed, read-only tree that nothing may write to.
     try {
-        const fs::path dir = fs::path(session_dir) / "camera";
+        const fs::path dir = fs::path(out_dir);
         fs::create_directories(dir);
         const fs::path tmp = dir / "rt_annotation.csv.tmp";
         const fs::path out = dir / "rt_annotation.csv";
@@ -83,11 +86,11 @@ bool rt_write_csv(const std::string& session_dir,
     }
 }
 
-bool rt_read_csv(const std::string& session_dir,
+bool rt_read_csv(const std::string& in_dir,
                  std::vector<RtRep>& out,
                  std::string& err) {
     out.clear();
-    const fs::path p = fs::path(session_dir) / "camera" / "rt_annotation.csv";
+    const fs::path p = fs::path(in_dir) / "rt_annotation.csv";
     std::error_code ec;
     if (!fs::exists(p, ec)) return true;          // absent is not an error
 

@@ -4,10 +4,10 @@
 For every session it renders what the online annotator produced on top of the corrected
 vertical signal, so the annotation can be judged by eye without scrubbing video:
 
-  <out>/<session_id>/session_annotation.png   whole set: s(t), v(t), phase bands, rep ids
-  <out>/<session_id>/rep_grid.png             one small panel PER REP (the fast review)
-  <out>/<session_id>/rt_reps.csv              the rep table as annotated
-  <out>/<session_id>/summary.json             counts + parameters for the session
+  <out>/<session_id>/audit/session_annotation.png  whole set: s(t), v(t), phase bands, ids
+  <out>/<session_id>/audit/rep_grid.png            one small panel PER REP (fast review)
+  <out>/<session_id>/audit/rt_reps.csv             the rep table as annotated
+  <out>/<session_id>/audit/summary.json            counts + parameters for the session
   <out>/RT_AUDIT_INDEX.md                     priority-ordered review list
   <out>/rt_audit_manifest.csv                 machine-readable summary
 
@@ -36,8 +36,13 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
 
-DATASETS = Path("datasets/sessions")
-OUT = Path("vbt_groundtruth/out/debug/rt_audit")
+# The measurement is sealed and read-only; this script only reads it.
+DATASETS = Path("datasets/raw")
+# The live annotation and its audit live together, one directory per session, outside the
+# sealed tree. The offline pass reads both and writes to datasets/offline -- it never
+# touches either of these.
+ONLINE = Path("datasets/online")
+OUT = ONLINE
 FPS = 90.0
 
 C_CON  = "#2e9e4f"   # concentric  (up)
@@ -85,7 +90,7 @@ def load_signal(d: Path):
 
 
 def load_reps(d: Path):
-    p = d / "camera" / "rt_annotation.csv"
+    p = ONLINE / d.name / "rt_annotation.csv"
     if not p.exists():
         return []
     rows = []
@@ -234,7 +239,7 @@ def process(d: Path):
     exercise = json.loads((d / "metadata.json").read_text()).get("exercise", "?")
     h, hs, v, det, conf = load_signal(d)
     reps = load_reps(d)
-    dest = OUT / sid
+    dest = OUT / sid / "audit"
     dest.mkdir(parents=True, exist_ok=True)
 
     make_overview(sid, exercise, h, hs, v, det, reps, dest)
@@ -320,8 +325,8 @@ def main():
                   f"lost {s['lost_frames']}f ({s['lost_pct']:.2f}%), "
                   f"reps w/ gap {s['tracking_gap_reps']} "
                   f"(worst {s['worst_rep_gap_frames']}f)",
-                  f"  - `{OUT}/{s['session_id']}/session_annotation.png`",
-                  f"  - `{OUT}/{s['session_id']}/rep_grid.png`"]
+                  f"  - `{OUT}/{s['session_id']}/audit/session_annotation.png`",
+                  f"  - `{OUT}/{s['session_id']}/audit/rep_grid.png`"]
     (OUT / "RT_AUDIT_INDEX.md").write_text("\n".join(lines) + "\n")
     if errors:
         (OUT / "errors.json").write_text(json.dumps(errors, indent=2))

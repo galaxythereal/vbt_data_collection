@@ -32,7 +32,7 @@ from vbt_gt.config import Params
 from vbt_gt.io.adapter import to_raw_session
 from vbt_gt.pipeline.s1_condition import s1_condition
 
-DATASETS = Path("datasets/sessions")
+DATASETS = Path("datasets/raw")
 # |corr| below this means pixel_v does not determine the orientation for that session
 # (the marker barely moved vertically) -> report as INDETERMINATE, not as a pass.
 WEAK = 0.50

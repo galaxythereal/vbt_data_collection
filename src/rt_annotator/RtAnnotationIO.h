@@ -34,13 +34,13 @@ double rt_rom_prior_m(const std::string& exercise);
 RtAnnotator::Config rt_config_for(const std::string& exercise);
 
 /// Write reps to `<session_dir>/camera/rt_annotation.csv`. Returns false on IO error.
-bool rt_write_csv(const std::string& session_dir,
+bool rt_write_csv(const std::string& out_dir,
                   const std::string& exercise,
                   const std::vector<RtRep>& reps,
                   std::string& err);
 
 /// Read that file back. Missing file is NOT an error — `out` is left empty.
-bool rt_read_csv(const std::string& session_dir,
+bool rt_read_csv(const std::string& in_dir,
                  std::vector<RtRep>& out,
                  std::string& err);
 

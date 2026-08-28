@@ -790,7 +790,7 @@ void AnnotationStudio::load_session_(const std::filesystem::path& dir) {
     // the legacy Python candidate > label from scratch.
     std::vector<rt::RtRep> rt_reps;
     std::string rt_err;
-    rt::rt_read_csv(dir.string(), rt_reps, rt_err);
+    rt::rt_read_csv((fs::path(cfg2.online_annotation_root) / sid).string(), rt_reps, rt_err);
 
     if (gio::load(gt_file, labels, err)) {
         gio::labels_to_reps(labels, f2t, session_.mutable_reps(), session_.mutable_gt_attrs());

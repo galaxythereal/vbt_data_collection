@@ -497,7 +497,10 @@ void Session::save() {
     if (rt_annotator_) {
         std::string rt_err;
         const auto& reps = rt_annotator_->reps();
-        if (rt::rt_write_csv(session_dir_, info_.exercise, reps, rt_err)) {
+        // The live annotation is part of THIS session's record, so it is written beside
+        // the capture while the session directory is still being built. Sealing the
+        // session afterwards moves the measurement into the read-only tree.
+        if (rt::rt_write_csv(session_dir_ + "/camera", info_.exercise, reps, rt_err)) {
             event_log_.info("session", "rt_annotation",
                             "real-time annotation: " +
                             std::to_string(rt_annotator_->confirmed_count()) +

@@ -314,18 +314,22 @@ int main(int argc, char** argv) {
     bool summary_only = false;
     bool write_sessions = false;   // write camera/rt_annotation.csv INTO each session
     bool check_only = false;       // verify the no-fabrication invariant, print PASS/FAIL
+    // --write takes an explicit destination. It used to write inside the session folder,
+    // next to the measurement; the measurement is now sealed and read-only.
+    std::string write_root;
     std::string csv_out;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--summary") summary_only = true;
         else if (a == "--csv" && i + 1 < argc) csv_out = argv[++i];
-        else if (a == "--write") write_sessions = true;
+        else if (a == "--write" && i + 1 < argc) { write_sessions = true; write_root = argv[++i]; }
         else if (a == "--check") check_only = true;
         else dirs.emplace_back(a);
     }
     if (dirs.empty()) {
         std::fprintf(stderr,
-            "usage: rt_replay [--summary] [--check] [--csv out.csv] <session_dir>...\n"
+            "usage: rt_replay [--summary] [--check] [--csv out.csv]\n"
+            "                 [--write OUT_ROOT] <session_dir>...\n"
             "  --check  prove the annotation depends on no unseen frame; exit 1 if not\n");
         return 2;
     }
@@ -334,12 +338,13 @@ int main(int argc, char** argv) {
     std::vector<Result> results;
     for (const auto& d : dirs) {
         results.push_back(replay(d, !summary_only && csv_out.empty()));
-        // Backfill: produce the same camera/rt_annotation.csv a live recording would
-        // have written, so already-captured sessions open in the studio with the
-        // real-time annotation as their default prefill.
+        // Replay the live annotator over an already-captured session and write the result
+        // to OUT_ROOT/<session>/rt_annotation.csv. Never into the session's own directory:
+        // that tree holds the measurement and is read-only.
         if (write_sessions && results.back().ok) {
             std::string werr;
-            if (!vbt::rt::rt_write_csv(d.string(), results.back().exercise,
+            const fs::path out = fs::path(write_root) / d.filename();
+            if (!vbt::rt::rt_write_csv(out.string(), results.back().exercise,
                                        results.back().reps, werr))
                 std::fprintf(stderr, "write failed for %s: %s\n",
                              d.string().c_str(), werr.c_str());
