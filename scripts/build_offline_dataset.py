@@ -100,8 +100,24 @@ def build(d: Path, sha: str):
                 q = R @ p
                 row["x_m"], row["y_m"], row["z_m"] = (f"{q[0]:.6f}", f"{q[1]:.6f}", f"{q[2]:.6f}")
             else:
+                # A LOST FRAME IS PRESENTED EXACTLY AS THE FIXED TRACKER WOULD WRITE IT
+                # TODAY (MarkerTracker::lost_detection), so a session captured before the
+                # fix and one captured after are indistinguishable in form.
+                #
+                # Every field that describes a measurement goes to nan. In raw/ these hold
+                # the old extrapolation, and it is not only the position: pixel_u/pixel_v
+                # run outside the 848x480 image on 5 frames, z reaches 37.2 m for a bar
+                # 2.4 m away, and confidence is a flat 0.300 -- a claim of 30% confidence
+                # in something that was never seen. snr and circularity read 0, but 0 is a
+                # legal value for both, so they are nan here too rather than left looking
+                # like a measurement.
+                #
+                # confidence is 0, not nan: "no confidence" is a true statement about a
+                # frame with no measurement, and every quality gate already rejects it.
                 n_lost += 1
-                row["x_m"] = row["y_m"] = row["z_m"] = "nan"
+                for k in ("x_m", "y_m", "z_m", "pixel_u", "pixel_v", "snr", "circularity"):
+                    row[k] = "nan"
+                row["confidence"] = "0.000000"
             w.writerow(row)
 
     for rel in ("camera/video_frames.csv", "metadata.json"):
