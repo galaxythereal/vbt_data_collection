@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -37,12 +38,17 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
 
 # The measurement is sealed and read-only; this script only reads it.
-DATASETS = Path("datasets/raw")
+# Both roots are overridable so the same audit can be run over a derived variant
+# (e.g. the gravity-aligned positions) without touching the defaults.
+DATASETS = Path(os.environ.get("RT_AUDIT_DATASETS", "datasets/raw"))
 # The live annotation and its audit live together, one directory per session, outside the
 # sealed tree. The offline pass reads both and writes to datasets/offline -- it never
 # touches either of these.
-ONLINE = Path("datasets/online")
-OUT = ONLINE
+# Two separate roots: where the annotation to be audited LIVES, and where the audit is
+# WRITTEN. They coincide by default but must be separable, so a derived variant can be
+# audited without its output landing on top of the online annotation.
+ONLINE = Path(os.environ.get("RT_AUDIT_ANNOT", "datasets/online"))
+OUT    = Path(os.environ.get("RT_AUDIT_OUT",   str(ONLINE)))
 FPS = 90.0
 
 C_CON  = "#2e9e4f"   # concentric  (up)
