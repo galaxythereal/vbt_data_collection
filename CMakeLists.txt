@@ -240,6 +240,15 @@ add_executable(rt_replay
 target_include_directories(rt_replay PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_features(rt_replay PRIVATE cxx_std_17)
 
+# Whole-session smoother: the same constant-jerk model as the acquisition tracker, run
+# backwards as well as forwards. Offline only -- it needs the future.
+add_executable(smooth_session
+    tools/smooth_session.cpp
+    src/offline/RtsSmoother.cpp
+)
+target_include_directories(smooth_session PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_compile_features(smooth_session PRIVATE cxx_std_17)
+
 # ==============================================================================
 # Tests
 # ==============================================================================

@@ -162,11 +162,17 @@ def build(d: Path, sha: str):
                                "events.jsonl", "manifest.json"],
     }, indent=2) + "\n")
 
+    seal(dest)
+    return n_rows, n_lost
+
+def seal(dest: Path):
+    """Checksum every file in a session directory. Called again by anything that ADDS a
+    file here (the smoother writes smoothed.csv), so the seal never silently stops
+    covering part of the tree."""
     lines = []
     for p in sorted(x for x in dest.rglob("*") if x.is_file() and x.name != "CHECKSUMS.sha256"):
         lines.append(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.relative_to(dest)}")
     (dest / "CHECKSUMS.sha256").write_text("\n".join(lines) + "\n")
-    return n_rows, n_lost
 
 def main(argv):
     dirs = [Path(a) for a in argv[1:]] or sorted(RAW.glob("session_*"))
