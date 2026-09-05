@@ -81,7 +81,8 @@ void minmax(const std::vector<double>& v, double& lo, double& hi) {
 
 } // namespace
 
-bool write_audit_image(const PipelineResult& r, const fs::path& out_png, std::string& err) {
+bool write_audit_image(const PipelineResult& r, const fs::path& out_png, std::string& err,
+                       bool blind) {
     const auto& an = r.annotation;
     const size_t n = r.track.size();
     if (n < 2) { err = "nothing to draw"; return false; }
@@ -105,21 +106,32 @@ bool write_audit_image(const PipelineResult& r, const fs::path& out_png, std::st
     // ---- title -----------------------------------------------------------------------
     {
         char buf[512];
-        int kept = 0; for (const auto& x : an.reps) if (!x.rejected) ++kept;
-        std::snprintf(buf, sizeof buf,
-                      "%s   [%s]   %d reps, %d kept   |   camera tilt %.2f deg   |   "
-                      "%ld frames the marker was not seen on   |   %s",
-                      r.session_id.c_str(), r.exercise.c_str(), (int)an.reps.size(), kept,
-                      r.frame.tilt_deg, r.lost_frames,
-                      an.down_first ? "down then up" : "up then down");
-        cv::putText(m, buf, {L, 46}, cv::FONT_HERSHEY_SIMPLEX, 0.62, kInk, 1, cv::LINE_AA);
-        cv::putText(m, "a rep is one round trip across the MIDDLE line; it begins where it "
-                       "set off and ends where the bar stopped being brought back",
-                    {L, 70}, cv::FONT_HERSHEY_SIMPLEX, 0.42, kGrey, 1, cv::LINE_AA);
+        if (blind) {
+            // Nothing here may hint at the answer: not the count, not which way the lift
+            // goes, not how many frames were reconstructed.
+            std::snprintf(buf, sizeof buf, "%s   [%s]", r.session_id.c_str(), r.exercise.c_str());
+            cv::putText(m, buf, {L, 46}, cv::FONT_HERSHEY_SIMPLEX, 0.62, kInk, 1, cv::LINE_AA);
+            cv::putText(m, "Mark every repetition you see: the time it starts and the time it "
+                           "ends. Write them in the sheet that came with this image.",
+                        {L, 70}, cv::FONT_HERSHEY_SIMPLEX, 0.42, kGrey, 1, cv::LINE_AA);
+        } else {
+            int kept = 0; for (const auto& x : an.reps) if (!x.rejected) ++kept;
+            std::snprintf(buf, sizeof buf,
+                          "%s   [%s]   %d reps, %d kept   |   camera tilt %.2f deg   |   "
+                          "%ld frames the marker was not seen on   |   %s",
+                          r.session_id.c_str(), r.exercise.c_str(), (int)an.reps.size(), kept,
+                          r.frame.tilt_deg, r.lost_frames,
+                          an.down_first ? "down then up" : "up then down");
+            cv::putText(m, buf, {L, 46}, cv::FONT_HERSHEY_SIMPLEX, 0.62, kInk, 1, cv::LINE_AA);
+            cv::putText(m, "a rep is one round trip across the MIDDLE line; it begins where it "
+                           "set off and ends where the bar stopped being brought back",
+                        {L, 70}, cv::FONT_HERSHEY_SIMPLEX, 0.42, kGrey, 1, cv::LINE_AA);
+        }
     }
 
     // ---- frames the marker was not seen on, on every panel ----------------------------
     for (const Axes* a : {&ap, &av, &aa}) {
+        if (blind) break;
         size_t i = 0;
         while (i < n) {
             if (r.track.measured[i]) { ++i; continue; }
@@ -133,6 +145,7 @@ bool write_audit_image(const PipelineResult& r, const fs::path& out_png, std::st
     // ---- height ----------------------------------------------------------------------
     frame_axes(m, ap, "height (m)");
     for (const auto& rep : an.reps) {
+        if (blind) break;
         const cv::Scalar cc = rep.rejected ? kGrey : kCon;
         const cv::Scalar ce = rep.rejected ? kGrey : kEcc;
         if (rep.concentric_end_frame > rep.concentric_start_frame)
@@ -142,7 +155,7 @@ bool write_audit_image(const PipelineResult& r, const fs::path& out_png, std::st
             band(m, ap, t[rep.eccentric_start_frame], t[rep.eccentric_end_frame], ce,
                  rep.rejected ? 0.12 : 0.22);
     }
-    if (an.lines.valid) {
+    if (an.lines.valid && !blind) {
         for (auto [lv, thick] : {std::pair<double,int>{an.lines.low, 1},
                                  {an.lines.high, 1}, {an.lines.mid, 2}}) {
             const int y = ap.py(lv);
@@ -152,6 +165,7 @@ bool write_audit_image(const PipelineResult& r, const fs::path& out_png, std::st
     }
     plot(m, ap, t, r.track.pos, kInk, 2);
     for (const auto& rep : an.reps) {
+        if (blind) break;
         const int64_t a = std::min(rep.concentric_start_frame, rep.eccentric_start_frame);
         const int64_t b = std::max(rep.concentric_end_frame,   rep.eccentric_end_frame);
         if (a < 0 || (size_t)b >= n) continue;
@@ -168,6 +182,7 @@ bool write_audit_image(const PipelineResult& r, const fs::path& out_png, std::st
     { const int y = av.py(0.0); cv::line(m, {av.x0, y}, {av.x0 + av.w, y}, kGrid, 1, cv::LINE_AA); }
     plot(m, av, t, r.track.vel, kInk, 1);
     for (const auto& b : an.boundaries) {
+        if (blind) break;
         if (b.frame < 0 || (size_t)b.frame >= n) continue;
         const cv::Point p(av.px(t[b.frame]), av.py(r.track.vel[b.frame]));
         cv::circle(m, p, 4, kLine, b.arrived ? -1 : 1, cv::LINE_AA);
@@ -196,7 +211,7 @@ bool write_audit_image(const PipelineResult& r, const fs::path& out_png, std::st
                 cv::FONT_HERSHEY_SIMPLEX, 0.40, kGrey, 1, cv::LINE_AA);
 
     // ---- legend -----------------------------------------------------------------------
-    {
+    if (!blind) {
         int x = L, y = H - 16;
         auto key = [&](const cv::Scalar& c, const char* label, bool filled) {
             cv::circle(m, {x + 5, y - 4}, 4, c, filled ? -1 : 1, cv::LINE_AA);

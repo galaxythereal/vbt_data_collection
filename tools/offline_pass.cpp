@@ -28,6 +28,7 @@ int main(int argc, char** argv) {
     bool quiet = false;
     bool do_export = false;
     bool do_audit  = false;
+    bool do_blind  = false;
     std::vector<fs::path> sessions;
 
     for (int i = 1; i < argc; ++i) {
@@ -36,6 +37,7 @@ int main(int argc, char** argv) {
         else if (a == "--quiet")            quiet = true;
         else if (a == "--export")           do_export = true;
         else if (a == "--audit")            do_audit = true;
+        else if (a == "--blind")            do_blind = true;
         else if (a.rfind("--", 0) == 0) {
             std::fprintf(stderr, "unknown option %s\n", a.c_str()); return 2;
         } else sessions.push_back(a);
@@ -44,7 +46,8 @@ int main(int argc, char** argv) {
         // default: every session in the dataset
         if (!fs::exists(root)) {
             std::fprintf(stderr,
-                "usage: offline_pass [--root DIR] [--quiet] [--export] [--audit] <session_dir>...\n"
+                "usage: offline_pass [--root DIR] [--quiet] [--export] [--audit] [--blind]\n"
+                "                    <session_dir>...\n"
                 "  no dataset at %s -- run from the repository root\n", root.string().c_str());
             return 2;
         }
@@ -83,6 +86,11 @@ int main(int argc, char** argv) {
             std::string aerr;
             if (!write_audit_image(r, paths.dir / "audit_post_session.png", aerr))
                 std::fprintf(stderr, "  %-28s AUDIT FAILED: %s\n", paths.id.c_str(), aerr.c_str());
+        }
+        if (do_blind) {
+            std::string aerr;
+            if (!write_audit_image(r, paths.dir / "audit_blind.png", aerr, true))
+                std::fprintf(stderr, "  %-28s BLIND AUDIT FAILED: %s\n", paths.id.c_str(), aerr.c_str());
         }
         total_reps += (long)r.annotation.reps.size();
         ++done;

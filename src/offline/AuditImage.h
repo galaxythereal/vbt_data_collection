@@ -27,8 +27,15 @@
 namespace vbt::offline {
 
 /// Draw the audit for one session and write it. Returns false and fills `err` on failure.
+///
+/// `blind` draws the same three panels with NOTHING the algorithm decided on them: no
+/// repetitions shaded, no lines, no boundaries, no count in the title. It is for a second
+/// rater who must mark the repetitions without being shown the answer first -- an
+/// agreement measured against a rater who was looking at the algorithm's own shading is
+/// not an agreement, it is a reading test.
 bool write_audit_image(const PipelineResult& r,
                        const std::filesystem::path& out_png,
-                       std::string& err);
+                       std::string& err,
+                       bool blind = false);
 
 } // namespace vbt::offline
