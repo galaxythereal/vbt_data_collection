@@ -10,8 +10,10 @@
  *      part's ~6% scale error (it reads 9.198 where gravity is 9.807) cancels exactly.
  *      Gravity fixes pitch and roll; which way the camera faces is invisible to any
  *      accelerometer and is a stated convention, not a measurement.
- *   2. Read the sealed raw marker track, blank every position the acquisition tracker
- *      fabricated on a frame it could not see, and rotate the rest upright.
+ *   2. Read the sealed raw marker track on the camera's OWN frame numbering, so a frame
+ *      the camera never delivered leaves a hole of the right length instead of being
+ *      closed up. Blank every position the acquisition tracker fabricated on a frame it
+ *      could not see, and rotate the rest upright.
  *   3. Smooth the whole session forwards and backwards. This also fills the gaps, by
  *      pinning the trajectory between two anchors instead of extrapolating off one.
  *   4. Re-run the SAME causal annotator the acquisition loop ran, on the corrected track,
@@ -43,6 +45,7 @@ struct SessionPaths {
     std::filesystem::path markers()    const { return dir / "camera" / "marker_positions.csv"; }
     std::filesystem::path camera_imu() const { return dir / "imu" / "camera_imu.csv"; }
     std::filesystem::path metadata()   const { return dir / "metadata.json"; }
+    std::filesystem::path frames()     const { return dir / "camera" / "video_frames.csv"; }
     std::filesystem::path rotation()   const { return dir / "rotation.json"; }
     std::filesystem::path smoothed()   const { return dir / "smoothed.csv"; }
     std::filesystem::path live()       const { return dir / "annotation_live.csv"; }
@@ -90,7 +93,16 @@ struct PipelineResult {
     std::vector<rt::RtRep> online;     ///< the causal pass, re-run on this track
     Annotation             annotation; ///< the post-session pass
     double                 nis[3] = {0,0,0};   ///< smoother innovation consistency, per axis
-    long                   lost_frames = 0;
+
+    /// TWO DIFFERENT WAYS A FRAME CARRIES NO MEASUREMENT, counted apart because they have
+    /// different causes even though the smoother must treat them the same.
+    long lost_frames    = 0;   ///< the camera delivered the frame; the marker was not seen
+    long dropped_frames = 0;   ///< the camera never delivered the frame at all
+
+    /// For each frame of the track, which row of the video holds it, or -1 if the camera
+    /// dropped that frame. The video file contains only DELIVERED frames, so its row
+    /// numbering and the track's frame numbering part company at the first drop.
+    std::vector<int> video_row;
 };
 
 class OfflinePipeline {

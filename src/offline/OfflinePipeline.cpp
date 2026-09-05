@@ -141,9 +141,36 @@ PipelineResult OfflinePipeline::run(const SessionPaths& paths, const ProgressFn&
     R.frame = gravity_frame(paths.camera_imu());
     if (!R.frame.valid) { R.message = "not enough accelerometer data to fix the tilt"; return R; }
 
-    // ---- 2. sealed raw track: blank what was fabricated, rotate the rest ------------
+    // ---- 2. sealed raw track, on the camera's own frame numbering --------------------
     step("Reading the sealed marker track", 0.15f);
     {
+        // WHY THE CAMERA'S FRAME COUNTER MATTERS. marker_positions.csv holds one row per
+        // frame the camera DELIVERED. When the camera drops a frame it is simply not
+        // there, so treating the row index as the time base closes the hole up: 11.1 ms
+        // of the session disappears at every drop, the smoother is told the bar covered
+        // two frames' distance in one frame's time, and the rest of the session is early.
+        // Measured over this corpus: 731 dropped frames, and 28% of repetitions contain
+        // at least one. video_frames.csv carries the camera's own hardware frame counter,
+        // which says exactly where the holes are.
+        std::vector<long long> fnum;
+        {
+            std::ifstream vf(paths.frames());
+            if (vf) {
+                std::string line;
+                if (std::getline(vf, line)) {
+                    auto vix = header_index(line);
+                    if (vix.count("frame_number")) {
+                        while (std::getline(vf, line)) {
+                            if (line.empty()) continue;
+                            auto v = split(line, ',');
+                            if (v.size() <= vix["frame_number"]) continue;
+                            fnum.push_back(std::atoll(v[vix["frame_number"]].c_str()));
+                        }
+                    }
+                }
+            }
+        }
+
         std::ifstream f(paths.markers());
         if (!f) { R.message = "cannot read camera/marker_positions.csv"; return R; }
         std::string line;
@@ -152,33 +179,60 @@ PipelineResult OfflinePipeline::run(const SessionPaths& paths, const ProgressFn&
         for (const char* need : {"x_m", "y_m", "z_m", "detected"})
             if (!ix.count(need)) { R.message = std::string("marker_positions.csv has no ") + need; return R; }
 
-        int64_t frame = 0;
+        // read the delivered rows first, then place them on the true grid
+        struct Row { bool detected; double p[3]; double raw_y; };
+        std::vector<Row> rows;
         while (std::getline(f, line)) {
             if (line.empty()) continue;
             auto v = split(line, ',');
             if (v.size() <= ix["detected"]) continue;
-            Sample3 s;
-            s.frame_idx = frame;
-            s.t_s       = (double)frame / kFps;
-            s.detected  = std::atoi(v[ix["detected"]].c_str()) != 0;
-            if (s.detected) {
+            Row r{};
+            r.detected = std::atoi(v[ix["detected"]].c_str()) != 0;
+            r.raw_y    = std::nan("");
+            if (r.detected) {
                 const double p[3] = {to_d(v[ix["x_m"]]), to_d(v[ix["y_m"]]), to_d(v[ix["z_m"]])};
                 if (std::isfinite(p[0]) && std::isfinite(p[1]) && std::isfinite(p[2])) {
-                    for (int r = 0; r < 3; ++r)
-                        s.p[r] = R.frame.R[r][0]*p[0] + R.frame.R[r][1]*p[1] + R.frame.R[r][2]*p[2];
+                    for (int k = 0; k < 3; ++k)
+                        r.p[k] = R.frame.R[k][0]*p[0] + R.frame.R[k][1]*p[1] + R.frame.R[k][2]*p[2];
+                    r.raw_y = -to_d(v[ix["y_m"]]);   // the vertical as recorded: up is -y
                 } else {
-                    // detected=1 with a non-finite position is not a measurement.
-                    s.detected = false;
+                    r.detected = false;   // detected=1 with a non-finite position is not a measurement
                 }
             }
-            // A frame the marker was not seen on carries NO position. The acquisition
-            // tracker's extrapolation is not read: on one session it reached 37.2 m of
-            // depth for a bar 2.4 m away.
-            if (!s.detected) ++R.lost_frames;
-            // the vertical as recorded: up is -y, and a frame with no marker has no value
-            R.raw_pos.push_back(s.detected ? -to_d(v[ix["y_m"]]) : std::nan(""));
-            R.samples.push_back(s);
-            ++frame;
+            rows.push_back(r);
+        }
+        if (rows.empty()) { R.message = "marker_positions.csv has no rows"; return R; }
+
+        // The two files are written together, one row each per delivered frame. If they
+        // disagree the counter cannot be trusted, so fall back to the row index and say so.
+        const bool have_counter = (fnum.size() == rows.size()) && fnum.size() > 1
+                                  && fnum.back() >= fnum.front();
+        const long long span = have_counter ? (fnum.back() - fnum.front() + 1)
+                                            : (long long)rows.size();
+        if (!have_counter && !fnum.empty())
+            R.message = "video_frames.csv does not line up with marker_positions.csv; "
+                        "dropped frames could not be located";
+
+        R.samples.assign((size_t)span, Sample3{});
+        R.raw_pos.assign((size_t)span, std::nan(""));
+        R.video_row.assign((size_t)span, -1);
+        for (size_t i = 0; i < R.samples.size(); ++i) {
+            R.samples[i].frame_idx = (int64_t)i;
+            R.samples[i].t_s       = (double)i / kFps;
+            R.samples[i].detected  = false;      // a hole until something is placed in it
+        }
+        for (size_t i = 0; i < rows.size(); ++i) {
+            const long long at = have_counter ? (fnum[i] - fnum.front()) : (long long)i;
+            if (at < 0 || at >= span) continue;
+            auto& s = R.samples[(size_t)at];
+            s.detected = rows[i].detected;
+            for (int k = 0; k < 3; ++k) s.p[k] = rows[i].p[k];
+            R.raw_pos[(size_t)at]   = rows[i].raw_y;
+            R.video_row[(size_t)at] = (int)i;    // where this frame sits in ir_video.mp4
+        }
+        for (size_t i = 0; i < R.samples.size(); ++i) {
+            if (R.video_row[i] < 0)             ++R.dropped_frames;   // never delivered
+            else if (!R.samples[i].detected)    ++R.lost_frames;      // delivered, marker unseen
         }
     }
     if (R.samples.size() < 32) { R.message = "too few frames"; return R; }
@@ -318,7 +372,8 @@ bool OfflinePipeline::write(const PipelineResult& R, const SessionPaths& paths,
         meta["line_mid_m"]  = R.annotation.lines.mid;
         meta["line_high_m"] = R.annotation.lines.high;
         meta["n_reps"]      = (int)R.annotation.reps.size();
-        meta["lost_frames"] = R.lost_frames;
+        meta["lost_frames"]    = R.lost_frames;      // marker not seen
+        meta["dropped_frames"] = R.dropped_frames;   // camera never delivered the frame
         meta["smoother_nis"] = {R.nis[0], R.nis[1], R.nis[2]};
         meta["produced_by"] = "app: OfflinePipeline";
 

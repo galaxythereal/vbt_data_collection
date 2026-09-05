@@ -570,7 +570,14 @@ void PostSessionPanel::draw_video() {
         const int64_t rb = std::max(r.concentric_end_frame,   r.eccentric_end_frame);
         if (cursor_frame_ >= ra && cursor_frame_ <= rb) { rep_here = (int)k; break; }
     }
+    const bool delivered = cursor_frame_ >= 0
+                        && (size_t)cursor_frame_ < result_->video_row.size()
+                        && result_->video_row[cursor_frame_] >= 0;
     ImGui::Text("frame %d / %d   %.2f s", cursor_frame_, n - 1, (double)cursor_frame_ / kFps);
+    if (!delivered) {
+        ImGui::SameLine(0, 10);
+        ImGui::TextColored(ImVec4(0.90f, 0.65f, 0.25f, 1), "camera dropped this frame");
+    }
     ImGui::SameLine(0, 12);
     if (rep_here >= 0) {
         const auto& r = result_->annotation.reps[rep_here];
@@ -592,7 +599,18 @@ void PostSessionPanel::draw_video() {
         ImGui::TextDisabled("  no camera/ir_video.mp4 in this session");
         ImGui::Dummy(ImVec2(0, img_h - 40));
     } else {
-        video_.seek(cursor_frame_);
+        // The video holds only the frames the camera DELIVERED, while the track counts
+        // every frame the camera should have delivered. They part company at the first
+        // drop, so the row has to be looked up rather than assumed equal.
+        int row = -1;
+        if (cursor_frame_ >= 0 && (size_t)cursor_frame_ < result_->video_row.size())
+            row = result_->video_row[cursor_frame_];
+        if (row < 0) {
+            // this frame was never delivered; show the last one that was
+            for (int i = cursor_frame_; i >= 0 && row < 0; --i)
+                if ((size_t)i < result_->video_row.size()) row = result_->video_row[i];
+        }
+        video_.seek(row < 0 ? 0 : row);
         const unsigned int tex = video_.texture();
         if (tex && video_.width() > 0 && video_.height() > 0) {
             // fit inside the pane, keeping the aspect ratio, so the controls always show
