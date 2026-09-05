@@ -119,12 +119,51 @@ def pair(pulses, frames, rounds=6):
     return px, fy
 
 
+def read_frame_numbers(session: Path):
+    """The camera's own hardware frame counter, and its timestamp. The counter is what
+    says a frame was DROPPED: the row index does not, because a dropped frame simply is
+    not there."""
+    fn, hw = [], []
+    p = session / "camera" / "video_frames.csv"
+    if not p.exists(): return fn, hw
+    with p.open() as f:
+        for r in csv.DictReader(f):
+            try: fn.append(int(r["frame_number"])); hw.append(float(r["hw_timestamp_s"]))
+            except (ValueError, KeyError): pass
+    return fn, hw
+
+
+def cadence_rms(idx, ts):
+    """How far the events sit from a perfectly uniform cadence. Indexed by the TRUE index,
+    so a dropped frame is not counted as a timing error -- doing it by row number makes
+    every frame after a drop look one period late and inflates this tenfold."""
+    a, b = fit(idx, ts)
+    if a is None: return None, None
+    r = [t - (a * i + b) for i, t in zip(idx, ts)]
+    return a, math.sqrt(sum(x * x for x in r) / len(r))
+
+
 def analyse(session: Path):
     pulses, frames = read_pulses(session), read_frames(session)
     px, fy = pair(pulses, frames)
     row = dict(session=session.name, pulses=len(pulses), frames=len(frames), pairs=len(px))
     if not px:
         row.update(converged=0, note="no usable pairing"); return row
+    # WHICH CLOCK IS THE NOISY ONE. Each stream is compared against a uniform 90 Hz
+    # cadence on its own terms. The pulse train is what the camera actually emitted, read
+    # in the bar's clock; the timestamps are what the camera says about the same events.
+    fn, hw = read_frame_numbers(session)
+    if fn:
+        fn0 = [x - fn[0] for x in fn]
+        cam_per, cam_rms = cadence_rms(fn0, hw)
+        row["dropped_frames"] = fn[-1] - fn[0] + 1 - len(fn)
+        row["camera_cadence_rms_ms"] = 1e3 * cam_rms if cam_rms else float("nan")
+        row["camera_period_ms"] = 1e3 * cam_per if cam_per else float("nan")
+    pm = merge_duplicates(pulses)
+    imu_per, imu_rms = cadence_rms(list(range(len(pm))), pm)
+    row["imu_cadence_rms_ms"] = 1e3 * imu_rms if imu_rms else float("nan")
+    row["imu_period_ms"] = 1e3 * imu_per if imu_per else float("nan")
+
     a, b = fit(px, fy)
     res = [abs(y - (a * x + b)) for x, y in zip(px, fy)]
     res.sort()
@@ -155,13 +194,14 @@ def main(argv):
     rows = [analyse(s) for s in sessions]
     rows = [r for r in rows if r["pairs"]]
 
-    print(f"{'session':<14}{'pairs':>7}{'yield%':>8}{'med ms':>8}{'RMS ms':>8}"
-          f"{'p95':>7}{'p99':>7}{'worst':>8}{'ppm':>8}{'ok':>4}")
+    print(f"{'session':<14}{'pairs':>7}{'med ms':>8}{'RMS ms':>8}{'p99':>7}{'ppm':>7}"
+          f"{'IMU rms':>9}{'cam rms':>9}{'drops':>7}")
     for r in sorted(rows, key=lambda x: x["session"]):
-        print(f"{r['session'][-13:]:<14}{r['pairs']:>7}{r['yield_pct']:>8.1f}"
-              f"{r['median_ms']:>8.2f}{r['rms_ms']:>8.2f}{r['p95_ms']:>7.2f}"
-              f"{r['p99_ms']:>7.2f}{r['worst_ms']:>8.2f}{r['slope_ppm']:>8.0f}"
-              f"{'  y' if r['converged'] else '  n':>4}")
+        print(f"{r['session'][-13:]:<14}{r['pairs']:>7}"
+              f"{r['median_ms']:>8.2f}{r['rms_ms']:>8.2f}{r['p99_ms']:>7.2f}"
+              f"{r['slope_ppm']:>7.0f}{r.get('imu_cadence_rms_ms',float('nan')):>9.3f}"
+              f"{r.get('camera_cadence_rms_ms',float('nan')):>9.3f}"
+              f"{r.get('dropped_frames',0):>7}")
 
     conv = [r for r in rows if r["converged"]]
     allres_med = [r["median_ms"] for r in conv]
@@ -181,6 +221,24 @@ def main(argv):
               f"({st.median(ppm)*60/1000:.1f} ms/min), "
               f"90th pct {ppm[int(0.9*(len(ppm)-1))]:.0f} ppm")
         print(f"  pairing yield    {st.median([r['yield_pct'] for r in conv]):.1f}% (median)")
+    # the two clocks, judged separately
+    imu = sorted(r["imu_cadence_rms_ms"] for r in rows if r.get("imu_cadence_rms_ms") == r.get("imu_cadence_rms_ms"))
+    cam = sorted(r["camera_cadence_rms_ms"] for r in rows if r.get("camera_cadence_rms_ms") == r.get("camera_cadence_rms_ms"))
+    drops = [r.get("dropped_frames", 0) for r in rows]
+    if imu and cam:
+        print(f"\nDeviation from a uniform 90 Hz cadence, RMS per session:")
+        print(f"  the pulse train, read in the bar's clock   median {st.median(imu):.3f} ms")
+        print(f"  the camera's own timestamps                median {st.median(cam):.3f} ms")
+        print(f"  -> the camera's timestamps are {st.median(cam)/st.median(imu):.1f}x noisier than the")
+        print(f"     pulse train that produced the frames, so the frame times are better")
+        print(f"     taken from the IMU than from the camera.")
+        print(f"  sessions whose camera clock misbehaves (RMS > 3 ms): "
+              f"{sum(1 for c in cam if c > 3)} of {len(cam)}")
+    print(f"\nDropped camera frames: {sum(drops)} over the corpus, median {st.median(drops):.0f} "
+          f"per session, worst {max(drops)}")
+    print(f"  A dropped frame is absent from marker_positions.csv, so anything using the row")
+    print(f"  index as a time base believes 11.1 ms passed where 22.2 ms did.")
+
     bad = [r for r in rows if not r["converged"]]
     if bad:
         print(f"\n  did NOT converge ({len(bad)}) -- the recorder flags these and falls back:")
