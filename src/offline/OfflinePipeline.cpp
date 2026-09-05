@@ -432,7 +432,7 @@ bool OfflinePipeline::export_ground_truth(const fs::path& datasets_root,
     // at all -- refusals live in the session's own annotation_reviewed.csv.
     static const char* kHeader =
         "session_id,session_date,subject_id,exercise,down_first,load_kg,target_reps,"
-        "reviewed,rep_id,"
+        "reviewed,rep_id,annotation_rep_id,"
         "rep_start_frame,turnaround_frame,rep_end_frame,"
         "concentric_start_frame,concentric_end_frame,"
         "eccentric_start_frame,eccentric_end_frame,"
@@ -471,8 +471,10 @@ bool OfflinePipeline::export_ground_truth(const fs::path& datasets_root,
     };
 
     o.setf(std::ios::fixed);
+    int released = 0;
     for (const auto& r : R.annotation.reps) {
         if (r.rejected) continue;             // a refused rep is not ground truth
+        ++released;
         const int64_t a = std::min(r.concentric_start_frame, r.eccentric_start_frame);
         const int64_t b = std::max(r.concentric_end_frame,   r.eccentric_end_frame);
         const int64_t t = R.down_first ? r.eccentric_end_frame : r.concentric_end_frame;
@@ -504,7 +506,9 @@ bool OfflinePipeline::export_ground_truth(const fs::path& datasets_root,
         o << R.session_id << ',' << R.session_date << ',' << R.subject_id << ','
           << R.exercise << ',' << (R.down_first ? 1 : 0) << ',';
         o.precision(2); o << R.load_kg << ',';
-        o << R.target_reps << ',' << (R.reviewed ? 1 : 0) << ',' << r.rep_id << ','
+        // released reps are numbered 1..N with no gaps; a refused rep leaves no hole
+        o << R.target_reps << ',' << (R.reviewed ? 1 : 0) << ','
+          << released << ',' << r.rep_id << ','
           << a << ',' << t << ',' << b << ','
           << r.concentric_start_frame << ',' << r.concentric_end_frame << ','
           << r.eccentric_start_frame  << ',' << r.eccentric_end_frame  << ',';

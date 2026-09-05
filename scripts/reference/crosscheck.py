@@ -46,8 +46,10 @@ def main():
                                  ", ".join(f"{k} app {a[k]} ref {r[k]}" for k in bad)))
             else:
                 same += 1
-    print(f"{len(sessions)} sessions, {reps} reps")
-    print(f"{same}/{reps} reps identical in both implementations")
+    print(f"{len(sessions)} sessions, {reps} repetitions found by the annotator")
+    print(f"{same}/{reps} identical in both implementations")
+    print("(this is the annotator's output BEFORE review; the released set is "
+          "ground_truth.csv, which excludes the repetitions the reviewers refused)")
     if not problems:
         print("\nthe app and the reference agree exactly.")
         return 0

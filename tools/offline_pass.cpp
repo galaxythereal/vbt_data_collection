@@ -91,7 +91,8 @@ int main(int argc, char** argv) {
                         paths.id.c_str(), r.exercise.c_str(), r.annotation.reps.size(),
                         r.frame.tilt_deg, r.lost_frames, r.nis[1]);
     }
-    std::printf("\n%ld reps over %d sessions -> %s%s\n",
+    std::printf("\n%ld repetitions found over %d sessions -> %s%s\n"
+                "(before review; ground_truth.csv holds only what the reviewers accepted)\n",
                 total_reps, done, root.string().c_str(),
                 failed ? ("   (" + std::to_string(failed) + " failed)").c_str() : "");
     return failed ? 1 : 0;
