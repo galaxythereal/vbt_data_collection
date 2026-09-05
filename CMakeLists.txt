@@ -171,17 +171,12 @@ set(APP_SOURCES
     src/gui/SessionInfoForm.cpp
     src/gui/PlotPanel.cpp
     src/gui/CalibrationPanel.cpp
-    src/annotation/AnnotationStudio.cpp
-    src/annotation/SessionData.cpp
-    src/annotation/SessionLibrary.cpp
-    src/annotation/GroundTruthIO.cpp
-    src/annotation/VideoCache.cpp
-    src/annotation/Persistence.cpp
-    src/annotation/TimelinePanel.cpp
-    src/annotation/VideoPanel.cpp
-    src/annotation/RepTablePanel.cpp
-    src/annotation/MetadataPanel.cpp
-    src/annotation/MarkerQualityPanel.cpp
+    src/gui/PostSessionPanel.cpp
+    # src/annotation/ -- the old Annotation Studio. It reads
+    # <session>/annotations/rep_segments*.json, of which there are ZERO in the corpus, and
+    # raw/ is read-only so it cannot write them either. Every control in it acted on an
+    # empty list. Left on disk, no longer built or reachable; the post-session annotation
+    # window replaces it.
     src/utils/SerialPort.cpp
     src/utils/Timer.cpp
     src/utils/AudioCue.cpp
@@ -192,6 +187,12 @@ set(APP_SOURCES
     src/rt_annotator/CausalTracker.cpp
     src/rt_annotator/RtAnnotator.cpp
     src/rt_annotator/RtAnnotationIO.cpp
+    # post-session annotator (the button in the app; same code the reference scripts check)
+    src/offline/RtsSmoother.cpp
+    src/offline/OfflineAnnotator.cpp
+    src/offline/OfflinePipeline.cpp
+    src/offline/SessionVideo.cpp
+    src/offline/AuditImage.cpp
 )
 
 add_executable(${PROJECT_NAME} ${APP_SOURCES})
@@ -261,3 +262,18 @@ endif()
 # Install
 # ==============================================================================
 install(TARGETS ${PROJECT_NAME} DESTINATION bin)
+
+# The post-session pass from the command line. Same OfflinePipeline the app's button
+# runs -- used to process sessions recorded before the button existed, and to be checked
+# against scripts/reference/annotate_v2.py.
+add_executable(offline_pass
+    tools/offline_pass.cpp
+    src/offline/RtsSmoother.cpp
+    src/offline/OfflineAnnotator.cpp
+    src/offline/OfflinePipeline.cpp
+    src/offline/AuditImage.cpp
+    ${RT_ANNOTATOR_SOURCES}
+)
+target_include_directories(offline_pass PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(offline_pass PRIVATE nlohmann_json::nlohmann_json ${OpenCV_LIBS})
+target_compile_features(offline_pass PRIVATE cxx_std_17)

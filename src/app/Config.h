@@ -668,7 +668,7 @@ struct SessionInfo {
 // ============================================================================
 struct AppConfig {
     int           schema_version = 2;
-    std::string   dataset_root = "./datasets/raw";
+    std::string   dataset_root = "./datasets";
     /// Step-7 ground-truth labeling tool roots (kept OUT of the read-only
     /// dataset). Labels the studio writes go to gt_labels_root/<session_id>/
     /// ground_truth.json; pipeline prefill + reference trace are read from

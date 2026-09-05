@@ -13,8 +13,14 @@ Mirrored to every session's `metadata.json` under `camera_snapshot`.
 > those win — ignore the conflicting statement here.** Known supersessions:
 > marker-quality stats (current detected=1 mean confidence ≈ 0.707, not
 > 0.616); `confidence` is a tracker quality score, **not** a probability; the
-> offline pipeline derives a **gravity-aligned vertical** (it does not treat
-> camera `y` as "up"); and it uses the **camera frame timeline**
+> offline pipeline rotates the track into a **gravity-aligned frame** using the
+> camera's own accelerometer, direction only, before annotating — but the
+> vertical it annotates is still `-y`: the camera's `+y` points DOWN, verified
+> as `corr(y_m, pixel_v) = +0.9998` on 84/84 sessions, and the rotation moves
+> that axis by a median of 6.86 deg without changing which axis it is. The
+> gravity-aligned vertical the IMU-only work needs is the same frame, derived
+> the same way; it is not a different vertical. It uses the **camera frame
+> timeline**
 > (`frame_idx / 90`), not `unified_time_s`.
 
 ## Active configuration

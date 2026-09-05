@@ -12,7 +12,7 @@
 #include "gui/PreflightPanel.h"
 #include "gui/CalibrationWizard.h"
 #include "gui/ReplayMode.h"
-#include "annotation/AnnotationStudio.h"
+#include "gui/PostSessionPanel.h"
 #include "app/Application.h"
 #include "app/Config.h"
 #include "app/Version.h"
@@ -66,7 +66,7 @@ MainWindow::MainWindow(Application& app) : app_(app) {
     preflight_        = std::make_unique<PreflightPanel>(app);
     calib_wizard_     = std::make_unique<CalibrationWizard>(app, shared_calib_mgr());
     replay_           = std::make_unique<ReplayMode>(app);
-    studio_           = std::make_unique<AnnotationStudio>(app);
+    post_session_     = std::make_unique<PostSessionPanel>(app);
 }
 
 MainWindow::~MainWindow() = default;
@@ -87,9 +87,9 @@ void MainWindow::process_hotkeys() {
     if (ImGui::IsKeyPressed(ImGuiKey_F2, false)) {
         replay_->open();
     }
-    // F3 — open Annotation Studio (post-recording workspace)
-    if (ImGui::IsKeyPressed(ImGuiKey_F3, false)) {
-        studio_->open();
+    // F4 — post-session annotation (runs the offline pass, opens the review window)
+    if (ImGui::IsKeyPressed(ImGuiKey_F4, false)) {
+        post_session_->open();
     }
     // F5 — diagnostic export
     if (ImGui::IsKeyPressed(ImGuiKey_F5, false)) {
@@ -147,15 +147,17 @@ void MainWindow::render() {
     process_hotkeys();
     check_orphaned_partials_once();
 
-    const bool annotation_studio_open = studio_ && studio_->is_open();
-    if (!annotation_studio_open) {
-        render_menu_bar();
+    if (post_session_ && post_session_->is_open()) {
+        post_session_->render();
+        return;
     }
+
+    render_menu_bar();
 
     ImGuiIO& io = ImGui::GetIO();
     float W = io.DisplaySize.x;
     float H = io.DisplaySize.y;
-    float menu_h    = annotation_studio_open ? 0.0f : ImGui::GetFrameHeight();
+    float menu_h    = ImGui::GetFrameHeight();
     float header_h  = 70.0f;   // compact header band
     float status_h  = ImGui::GetFrameHeightWithSpacing();
 
@@ -288,11 +290,11 @@ void MainWindow::render() {
     ImGui::Begin("Rep Stats", nullptr,
                  ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
                  ImGuiWindowFlags_NoCollapse);
-    ImGui::TextDisabled("(F1 calib · F2 replay · F3 studio)");
+    ImGui::TextDisabled("(F1 calib · F2 replay · F4 post-session annotation)");
     ImGui::Separator();
     ImGui::TextWrapped(
         "Live rep segmentation was removed with the old realtime algorithm. "
-        "Label reps offline in the Annotation Studio (F3).");
+        "Review the reps offline: Post-session annotation (F4).");
     ImGui::End();
 
     // RIGHT — Set + Metrics tabs (Camera moved to center-bottom)
@@ -331,7 +333,6 @@ void MainWindow::render() {
     }
     calib_wizard_->render();
     replay_->render();
-    studio_->render();
     render_preflight_modal();
 
     if (show_demo_window_) ImGui::ShowDemoWindow(&show_demo_window_);
@@ -406,7 +407,7 @@ void MainWindow::render_menu_bar() {
             if (ImGui::MenuItem("Pre-flight Checklist...", "Space")) show_preflight_ = true;
             if (ImGui::MenuItem("Calibration Wizard...",   "F1"))  calib_wizard_->open();
             if (ImGui::MenuItem("Replay Saved Set...", "F2"))  replay_->open();
-            if (ImGui::MenuItem("Annotation Studio...", "F3"))     studio_->open();
+            if (ImGui::MenuItem("Post-session annotation...", "F4")) post_session_->open();
             ImGui::Separator();
             ImGui::MenuItem("Legacy Calibration Panel", nullptr, &show_calib_window_);
             ImGui::Separator();
@@ -514,8 +515,20 @@ void MainWindow::render_top_toolbar() {
     ImGui::BeginDisabled(!can_record && !is_recording);
     if (ImGui::Button(rec_label, ImVec2(rec_w, rec_h))) {
         if (is_recording) {
+            const std::string dir = session.get_session_dir();
             session.stop_recording();
             AudioCue::play(Cue::StopRecord);
+            // The set is finished. Offer the post-session pass on THIS session, so the
+            // reviewer never has to go looking for what was just recorded.
+            if (post_session_ && !dir.empty()) {
+                std::string id = dir;
+                const auto slash = id.find_last_of("/\\");
+                if (slash != std::string::npos) id = id.substr(slash + 1);
+                const auto part = id.find(".partial");
+                if (part != std::string::npos) id = id.substr(0, part);
+                post_session_->on_session_finished(id);
+                just_recorded_ = id;
+            }
         } else {
             show_preflight_ = true;
         }
@@ -524,6 +537,24 @@ void MainWindow::render_top_toolbar() {
     if (g_font_metric) ImGui::PopFont();
     ImGui::PopStyleVar();
     ImGui::PopStyleColor(3);
+
+    // POST-SESSION ANNOTATION. Beside the record button, on the same row: the header band
+    // is 70 px tall, so a second row would be clipped away and the button would not exist.
+    {
+        const bool fresh = !just_recorded_.empty() && !is_recording;
+        const float psw = 200.0f;
+        ImGui::SetCursorPos(ImVec2(ImGui::GetWindowWidth() - rec_w - 16 - psw - 10, 8));
+        if (fresh) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.12f, 0.40f, 0.66f, 1.0f));
+        ImGui::BeginDisabled(is_recording);
+        if (ImGui::Button("Post-session annotation", ImVec2(psw, rec_h))) {
+            post_session_->open(just_recorded_);
+        }
+        ImGui::EndDisabled();
+        if (fresh) ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Run the offline pass on a session and review the reps it "
+                              "found  (F4)");
+    }
 
     // ─────── MIDDLE row of bottom: connect/tap buttons ───────
     // Continue inline below the title

@@ -25,16 +25,28 @@ dataset_root/
       marker_positions.csv
       ir_video.mp4
       video_frames.csv
-    annotations/
-      rep_segments.json
-    calibration/
-      accel_calib.json
-      gyro_bias.json
-      camera_extrinsic.json
-    session_info.json
+    rotation.json
+    smoothed.csv
+    annotation_live.csv
+    annotation_online.csv
+    annotation_offline.csv
+    annotation_reviewed.csv
+    audit_post_session.png
+    metadata.json
     manifest.json
     events.jsonl
+    CHECKSUMS.sha256
+  ground_truth.csv
 \end{lstlisting}
+
+\paragraph{Measurement and derivation are separated by file permission, not by
+directory nesting.} Within a session, \texttt{camera/} and \texttt{imu/} hold the
+measurement and are read-only with SHA-256 checksums; every other file is derived from
+them and can be deleted and rebuilt in a single pass. \texttt{ground\_truth.csv} is the
+released label set: one row per accepted repetition, 45 columns, self-contained so that
+no downstream consumer needs to open a session directory. Repetitions a reviewer refused
+are absent from it, and the refusal itself is recorded in that session's
+\texttt{annotation\_reviewed.csv} rather than being a silent deletion.
 
 \paragraph{BIDS Mode (Multi-Subject Archiving):}
 When enabled, the directory follows the Brain Imaging Data Structure (BIDS) convention adapted for movement science:

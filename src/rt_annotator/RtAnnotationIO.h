@@ -9,13 +9,14 @@
  * identically — otherwise "what the live annotator did" and "what replay says it did"
  * could silently diverge.
  *
- * On-disk: `<session>/camera/rt_annotation.csv`, written at save() time. It is the
- * live annotator's own output, so it is what the studio loads by default — the labels
- * the operator saw while recording are the labels they start reviewing from.
+ * On-disk: `<session>/annotation_live.csv`, written at save() time. It is the live
+ * annotator's own output — the labels the operator saw while the set was being recorded.
+ * It sits beside camera/ and imu/, never inside them: those hold the measurement.
  */
 
 #include "rt_annotator/RtAnnotator.h"
 
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -33,15 +34,15 @@ double rt_rom_prior_m(const std::string& exercise);
 /// Fully configured annotator settings for an exercise name.
 RtAnnotator::Config rt_config_for(const std::string& exercise);
 
-/// Write reps to `<session_dir>/camera/rt_annotation.csv`. Returns false on IO error.
-bool rt_write_csv(const std::string& out_dir,
-                  const std::string& exercise,
-                  const std::vector<RtRep>& reps,
-                  std::string& err);
+/// Write reps to an explicit file. The live annotation is DERIVED, so it belongs beside
+/// the measurement, not inside camera/ which is sealed read-only.
+bool rt_write_file(const std::string& file,
+                   const std::string& exercise,
+                   const std::vector<RtRep>& reps,
+                   std::string& err);
 
-/// Read that file back. Missing file is NOT an error — `out` is left empty.
-bool rt_read_csv(const std::string& in_dir,
-                 std::vector<RtRep>& out,
-                 std::string& err);
+/// Read that file back. Missing file is NOT an error -- `out` is left empty.
+bool rt_read_file(const std::string& file, std::vector<RtRep>& out, std::string& err);
+
 
 } // namespace vbt::rt

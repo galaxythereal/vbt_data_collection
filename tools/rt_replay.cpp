@@ -98,20 +98,31 @@ struct Result {
     std::vector<uint8_t> detected;
 };
 
+static bool use_smoothed = false;
+
 Result replay(const fs::path& dir, bool verbose) {
     Result R;
     R.session = dir.filename().string();
     R.exercise = read_exercise(dir / "metadata.json");
 
-    std::ifstream f(dir / "camera" / "marker_positions.csv");
-    if (!f) { R.error = "cannot open marker_positions.csv"; return R; }
+    // --source smoothed reads the whole-session smoothed track instead of the raw marker
+    // stream. Everything after the rotation works on the new data, so when this pass is
+    // used to seed the post-session annotation it must read the same track that pass does.
+    // Every frame carries an estimate there, including the ones the marker was not seen
+    // on, because the smoother reconstructed them -- which is the point.
+    const fs::path src = use_smoothed ? (dir / "smoothed.csv")
+                                     : (dir / "camera" / "marker_positions.csv");
+    std::ifstream f(src);
+    if (!f) { R.error = "cannot open " + src.filename().string(); return R; }
 
     std::string header;
     if (!std::getline(f, header)) { R.error = "empty csv"; return R; }
     auto cols = split(header, ',');
     std::map<std::string, int> ix;
     for (size_t i = 0; i < cols.size(); ++i) ix[cols[i]] = static_cast<int>(i);
-    for (const char* need : {"y_m", "detected", "confidence"})
+    const char* ycol = use_smoothed ? "pos_y"    : "y_m";
+    const char* dcol = use_smoothed ? "measured"  : "detected";
+    for (const char* need : {ycol, dcol})
         if (!ix.count(need)) { R.error = std::string("missing column ") + need; return R; }
 
     RtAnnotator::Config cfg;
@@ -135,9 +146,13 @@ Result replay(const fs::path& dir, bool verbose) {
         RtSample s;
         s.frame_idx  = frame;
         s.t_s        = static_cast<double>(frame) / kFps;
-        s.y_m        = std::atof(v[ix["y_m"]].c_str());
-        s.detected   = std::atoi(v[ix["detected"]].c_str()) != 0;
-        s.confidence = std::atof(v[ix["confidence"]].c_str());
+        s.y_m        = std::atof(v[ix[ycol]].c_str());
+        // On the smoothed track every frame has an estimate, so every frame is usable.
+        // `measured` is still carried through so a rep that rests on reconstructed frames
+        // is still reported as such.
+        s.detected   = use_smoothed ? true
+                                    : (std::atoi(v[ix[dcol]].c_str()) != 0);
+        s.confidence = ix.count("confidence") ? std::atof(v[ix["confidence"]].c_str()) : 0.70;
         R.detected.push_back(s.detected ? 1 : 0);
         ann.push(s);
 
@@ -324,12 +339,24 @@ int main(int argc, char** argv) {
         else if (a == "--csv" && i + 1 < argc) csv_out = argv[++i];
         else if (a == "--write" && i + 1 < argc) { write_sessions = true; write_root = argv[++i]; }
         else if (a == "--check") check_only = true;
+        // Was documented in the usage text but never parsed, so every run silently read
+        // camera/marker_positions.csv and treated "--source" and "smoothed" as session
+        // directories. Anything produced with this flag before this fix was NOT computed
+        // on the smoothed track.
+        else if (a == "--source" && i + 1 < argc) {
+            const std::string v = argv[++i];
+            if (v == "smoothed") use_smoothed = true;
+            else if (v != "raw") {
+                std::fprintf(stderr, "--source takes 'raw' or 'smoothed', got '%s'\n", v.c_str());
+                return 2;
+            }
+        }
         else dirs.emplace_back(a);
     }
     if (dirs.empty()) {
         std::fprintf(stderr,
             "usage: rt_replay [--summary] [--check] [--csv out.csv]\n"
-            "                 [--write OUT_ROOT] <session_dir>...\n"
+            "                 [--write OUT_ROOT] [--source smoothed] <session_dir>...\n"
             "  --check  prove the annotation depends on no unseen frame; exit 1 if not\n");
         return 2;
     }
@@ -344,7 +371,7 @@ int main(int argc, char** argv) {
         if (write_sessions && results.back().ok) {
             std::string werr;
             const fs::path out = fs::path(write_root) / d.filename();
-            if (!vbt::rt::rt_write_csv(out.string(), results.back().exercise,
+            if (!vbt::rt::rt_write_file((out / "annotation_live.csv").string(), results.back().exercise,
                                        results.back().reps, werr))
                 std::fprintf(stderr, "write failed for %s: %s\n",
                              d.string().c_str(), werr.c_str());

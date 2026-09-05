@@ -8,6 +8,7 @@
  */
 
 #include <memory>
+#include <string>
 
 namespace vbt {
 
@@ -20,7 +21,7 @@ class CameraPanel;
 class PreflightPanel;
 class CalibrationWizard;
 class ReplayMode;
-class AnnotationStudio;
+class PostSessionPanel;
 
 class MainWindow {
 public:
@@ -53,7 +54,8 @@ private:
     std::unique_ptr<PreflightPanel>   preflight_;
     std::unique_ptr<CalibrationWizard> calib_wizard_;
     std::unique_ptr<ReplayMode>       replay_;
-    std::unique_ptr<AnnotationStudio> studio_;
+    std::unique_ptr<PostSessionPanel> post_session_;
+    std::string                       just_recorded_;
 
     bool show_demo_window_   = false;
     bool show_calib_window_  = false;

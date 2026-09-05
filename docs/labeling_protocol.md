@@ -55,7 +55,10 @@ reached closure it counts (`concentric_only`).
   the exact `frame_idx`** on save via the per-frame timestamps in `video_frames.csv`
   (true ~89.7 fps), so the exported integer frames align with the pipeline /
   `eval.py` with no offset.
-- The legacy time-based `annotations/rep_segments.json` path is untouched and
+- The legacy time-based `annotations/rep_segments.json` path no longer exists: no
+  session has ever carried that file, and the annotation now lives in
+  `datasets/<session>/annotation_*.csv`. The paragraph below is kept only as a
+  record of what the old studio expected. It was untouched and
   read-only; ground-truth labels are a separate `GroundTruthLabel` model.
 - For held-out sessions, skip the prefill so the studio opens with no reps and you
   label fully from scratch.

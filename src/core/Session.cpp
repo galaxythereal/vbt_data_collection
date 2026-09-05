@@ -497,17 +497,18 @@ void Session::save() {
     if (rt_annotator_) {
         std::string rt_err;
         const auto& reps = rt_annotator_->reps();
-        // The live annotation is part of THIS session's record, so it is written beside
-        // the capture while the session directory is still being built. Sealing the
-        // session afterwards moves the measurement into the read-only tree.
-        if (rt::rt_write_csv(session_dir_ + "/camera", info_.exercise, reps, rt_err)) {
+        // The live annotation is DERIVED from the capture, so it sits beside camera/ and
+        // imu/ rather than inside them: those two hold the measurement and are sealed
+        // read-only once the session is finished.
+        if (rt::rt_write_file(session_dir_ + "/annotation_live.csv",
+                              info_.exercise, reps, rt_err)) {
             event_log_.info("session", "rt_annotation",
                             "real-time annotation: " +
                             std::to_string(rt_annotator_->confirmed_count()) +
                             " confirmed of " +
                             std::to_string(rt_annotator_->provisional_count()) +
                             " provisional reps");
-            spdlog::info("rt_annotation: {} confirmed / {} provisional reps -> camera/rt_annotation.csv",
+            spdlog::info("rt_annotation: {} confirmed / {} provisional reps -> annotation_live.csv",
                          rt_annotator_->confirmed_count(), rt_annotator_->provisional_count());
         } else {
             spdlog::warn("rt_annotation: could not write ({}) — capture is unaffected", rt_err);

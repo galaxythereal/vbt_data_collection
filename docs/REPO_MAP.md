@@ -1,5 +1,13 @@
 # REPO_MAP — vbt_data_collection (Step 0 orientation)
 
+> **LAYOUT SUPERSEDED (2026-09-05).** This map describes `datasets/sessions/<session>/`
+> with a nested `annotations/` directory. The dataset is now **one folder per session
+> directly under `datasets/`**, with the measurement (`camera/`, `imu/`) read-only inside
+> it and everything derived beside it. See [../datasets/README.md](../datasets/README.md)
+> for the current layout, and `src/offline/` for the pipeline that produces it. The
+> acquisition facts below (what the camera writes, the 84-session audit, the exercise
+> vocabulary) are still correct; only the paths changed.
+
 **Purpose.** This is the Step 0 deliverable from [docs/AGENT_RUNBOOK.md](AGENT_RUNBOOK.md#L17): a read-only map of the existing repository so the new **offline, camera-only VBT ground-truth pipeline** can be scaffolded (Step 1), the old realtime algorithm removed cleanly (Step 2), and the annotation studio repurposed later (Steps 7/10). No code was created, modified, or deleted to produce this document.
 
 **Scope — camera/marker data only.** The new pipeline's only input is the single-marker 3D camera trajectory. The IMU files in each session (`imu/raw_imu.bin`, `imu/raw_imu.csv`, `imu/camera_imu.csv`, and `imu/raw_imu.before_time_repair_*.csv` in older batches) are **out of scope**; this map only notes that they exist. Where the legacy C++ algorithm or studio happens to read IMU, that is documented solely to scope removal — not to bring the IMU into the new pipeline.

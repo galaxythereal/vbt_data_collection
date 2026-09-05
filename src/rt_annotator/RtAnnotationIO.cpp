@@ -29,18 +29,16 @@ RtAnnotator::Config rt_config_for(const std::string& exercise) {
     return c;
 }
 
-bool rt_write_csv(const std::string& out_dir,
-                  const std::string& exercise,
-                  const std::vector<RtRep>& reps,
-                  std::string& err) {
-    // The CALLER names the directory. This used to append "camera" and write inside the
-    // session folder, which put annotator output in the same place as the measurement.
-    // The measurement now lives in a sealed, read-only tree that nothing may write to.
+bool rt_write_file(const std::string& file,
+                   const std::string& exercise,
+                   const std::vector<RtRep>& reps,
+                   std::string& err) {
+    // The CALLER names the file. The live annotation is DERIVED from the measurement, so
+    // it is written beside camera/ and imu/ rather than inside them: those two hold the
+    // measurement and are sealed read-only.
     try {
-        const fs::path dir = fs::path(out_dir);
-        fs::create_directories(dir);
-        const fs::path tmp = dir / "rt_annotation.csv.tmp";
-        const fs::path out = dir / "rt_annotation.csv";
+        const fs::path tmp = fs::path(file).string() + ".tmp";
+        const fs::path out = file;
         {
             std::ofstream f(tmp, std::ios::trunc);
             if (!f) { err = "cannot open " + tmp.string(); return false; }
@@ -86,11 +84,9 @@ bool rt_write_csv(const std::string& out_dir,
     }
 }
 
-bool rt_read_csv(const std::string& in_dir,
-                 std::vector<RtRep>& out,
-                 std::string& err) {
+bool rt_read_file(const std::string& file, std::vector<RtRep>& out, std::string& err) {
     out.clear();
-    const fs::path p = fs::path(in_dir) / "rt_annotation.csv";
+    const fs::path p = file;
     std::error_code ec;
     if (!fs::exists(p, ec)) return true;          // absent is not an error
 

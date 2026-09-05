@@ -24,3 +24,4 @@ diagnostics/
 # Runtime
 imgui.ini
 
+.superseded/
