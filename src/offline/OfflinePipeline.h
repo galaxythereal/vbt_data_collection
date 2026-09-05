@@ -14,11 +14,13 @@
  *      the camera never delivered leaves a hole of the right length instead of being
  *      closed up. Blank every position the acquisition tracker fabricated on a frame it
  *      could not see, and rotate the rest upright.
- *   3. Smooth the whole session forwards and backwards. This also fills the gaps, by
+ *   3. Take the frame rate from the camera's own trigger pulses, read inside the
+ *      inertial stream: it is 89.8654 Hz, not the 90.000 that was assumed.
+ *   4. Smooth the whole session forwards and backwards. This also fills the gaps, by
  *      pinning the trajectory between two anchors instead of extrapolating off one.
- *   4. Re-run the SAME causal annotator the acquisition loop ran, on the corrected track,
+ *   5. Re-run the SAME causal annotator the acquisition loop ran, on the corrected track,
  *      so anything taken from it afterwards refers to the data actually being worked on.
- *   5. Take the three lines from its middle reps and annotate. See OfflineAnnotator.h.
+ *   6. Take the three lines from its middle reps and annotate. See OfflineAnnotator.h.
  *
  * Nothing here writes inside camera/ or imu/. Those are the measurement; everything
  * this produces is written beside them in the session directory.
@@ -32,6 +34,7 @@
 
 #include "offline/OfflineAnnotator.h"
 #include "offline/RtsSmoother.h"
+#include "offline/SyncMap.h"
 #include "rt_annotator/RtTypes.h"
 
 namespace vbt::offline {
@@ -103,6 +106,10 @@ struct PipelineResult {
     /// dropped that frame. The video file contains only DELIVERED frames, so its row
     /// numbering and the track's frame numbering part company at the first drop.
     std::vector<int> video_row;
+
+    /// Which inertial sample is which camera frame, and the frame period measured from
+    /// this session's own trigger pulses rather than assumed to be 90 Hz.
+    SyncMap sync;
 };
 
 class OfflinePipeline {

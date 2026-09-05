@@ -91,7 +91,8 @@ bool write_audit_image(const PipelineResult& r, const fs::path& out_png, std::st
     cv::Mat m(H, W, CV_8UC3, kBg);
 
     std::vector<double> t(n);
-    for (size_t i = 0; i < n; ++i) t[i] = (double)i / 90.0;
+    // the time axis uses the rate measured for this session
+    for (size_t i = 0; i < n; ++i) t[i] = (double)i * r.sync.frame_period;
     const double t0 = 0.0, t1 = t.back();
 
     double plo, phi, vlo, vhi, alo, ahi;

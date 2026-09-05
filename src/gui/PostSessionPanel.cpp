@@ -19,7 +19,10 @@ using namespace vbt::offline;
 namespace vbt {
 namespace {
 
-constexpr double kFps = 90.0;
+// Nominal only, for the moments before a session is loaded. Once one is, the rate
+// measured from that session's own trigger pulses is used instead -- the camera runs
+// at 89.8654 Hz, and assuming 90.000 puts the end of a minute-long set 90 ms out.
+constexpr double kNominalFps = 90.0;
 
 // The two phases keep the colours the whole project uses for them.
 const ImVec4 kCon   {0.18f, 0.62f, 0.31f, 1.00f};   // concentric: sent up
@@ -39,6 +42,12 @@ void draw_cursor(double t_s) {
 }
 
 } // namespace
+
+double PostSessionPanel::fps() const {
+    if (have_result_ && result_ && result_->sync.frame_period > 0)
+        return 1.0 / result_->sync.frame_period;
+    return kNominalFps;
+}
 
 PostSessionPanel::PostSessionPanel(Application& app) : app_(app) {}
 PostSessionPanel::~PostSessionPanel() = default;
@@ -159,7 +168,7 @@ void PostSessionPanel::run_pass() {
     t_.resize(n); pos_.resize(n); vel_.resize(n); acc_.resize(n);
     raw_pos_.assign(n, std::numeric_limits<double>::quiet_NaN());
     for (size_t i = 0; i < n; ++i) {
-        t_[i]   = (double)i / kFps;
+        t_[i]   = (double)i / fps();
         pos_[i] = r->track.pos[i];
         vel_[i] = r->track.vel[i];
         acc_[i] = r->track.acc[i];
@@ -417,9 +426,9 @@ void PostSessionPanel::draw_audit() {
                 for (const auto& hf : halves) {
                     if (hf.a < 0 || hf.b <= hf.a || (size_t)hf.b >= n) continue;
                     ImPlot::PushPlotClipRect();
-                    const ImVec2 p0 = ImPlot::PlotToPixels((double)hf.a / kFps,
+                    const ImVec2 p0 = ImPlot::PlotToPixels((double)hf.a / fps(),
                                                            ImPlot::GetPlotLimits().Y.Max);
-                    const ImVec2 p1 = ImPlot::PlotToPixels((double)hf.b / kFps,
+                    const ImVec2 p1 = ImPlot::PlotToPixels((double)hf.b / fps(),
                                                            ImPlot::GetPlotLimits().Y.Min);
                     ImPlot::GetPlotDrawList()->AddRectFilled(
                         p0, p1, shade(hf.c, r.confirmed ? 0.22f : 0.10f));
@@ -437,7 +446,7 @@ void PostSessionPanel::draw_audit() {
                 {r.eccentric_start_frame,  r.eccentric_end_frame,  r.rejected ? kRefused : kEcc}};
             for (const auto& hf : halves) {
                 if (hf.a < 0 || hf.b <= hf.a || (size_t)hf.b >= n) continue;
-                double xs[2] = {(double)hf.a / kFps, (double)hf.b / kFps};
+                double xs[2] = {(double)hf.a / fps(), (double)hf.b / fps()};
                 ImPlot::PushPlotClipRect();
                 const ImVec2 p0 = ImPlot::PlotToPixels(xs[0], ImPlot::GetPlotLimits().Y.Max);
                 const ImVec2 p1 = ImPlot::PlotToPixels(xs[1], ImPlot::GetPlotLimits().Y.Min);
@@ -462,7 +471,7 @@ void PostSessionPanel::draw_audit() {
             const int64_t a = std::min(r.concentric_start_frame, r.eccentric_start_frame);
             const int64_t b = std::max(r.concentric_end_frame,   r.eccentric_end_frame);
             if (a < 0 || (size_t)b >= n) continue;
-            double xs[2] = {(double)a / kFps, (double)b / kFps};
+            double xs[2] = {(double)a / fps(), (double)b / fps()};
             double ys[2] = {curve[a], curve[b]};
             ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 4,
                                        r.rejected ? kRefused : ImVec4(1,1,1,1), 0);
@@ -472,10 +481,10 @@ void PostSessionPanel::draw_audit() {
             ImPlot::PlotScatter("##e", &xs[1], &ys[1], 1);
         }
 
-        draw_cursor((double)cursor_frame_ / kFps);
+        draw_cursor((double)cursor_frame_ / fps());
         if (ImPlot::IsPlotHovered()) {
             const double mx = ImPlot::GetPlotMousePos().x;
-            const int f = (int)std::llround(mx * kFps);
+            const int f = (int)std::llround(mx * fps());
             if (follow_mouse_ && f >= 0 && f < (int)n) cursor_frame_ = f;
             // a click always parks the cursor there, so it can be studied
             if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) && f >= 0 && f < (int)n) {
@@ -487,7 +496,7 @@ void PostSessionPanel::draw_audit() {
         // annotation can be refused: the live one is a record of what happened.
         if (!show_live_ && ImPlot::IsPlotHovered()) {
             const double mx = ImPlot::GetPlotMousePos().x;
-            const int64_t f = (int64_t)std::llround(mx * kFps);
+            const int64_t f = (int64_t)std::llround(mx * fps());
             for (size_t k = 0; k < an.reps.size(); ++k) {
                 const auto& r = an.reps[k];
                 const int64_t a = std::min(r.concentric_start_frame, r.eccentric_start_frame);
@@ -521,13 +530,13 @@ void PostSessionPanel::draw_audit() {
         // the boundaries: filled = the bar arrived, hollow = it was let go while moving
         for (const auto& b : an.boundaries) {
             if (b.frame < 0 || (size_t)b.frame >= n) continue;
-            double x = (double)b.frame / kFps, y = vel_[b.frame];
+            double x = (double)b.frame / fps(), y = vel_[b.frame];
             ImPlot::SetNextMarkerStyle(ImPlotMarker_Down, 4,
                                        b.arrived ? ImVec4(0.35f,0.62f,0.92f,1) : ImVec4(0,0,0,0),
                                        1, ImVec4(0.35f,0.62f,0.92f,1));
             ImPlot::PlotScatter("##b", &x, &y, 1);
         }
-        draw_cursor((double)cursor_frame_ / kFps);
+        draw_cursor((double)cursor_frame_ / fps());
         ImPlot::EndPlot();
     }
 
@@ -537,7 +546,7 @@ void PostSessionPanel::draw_audit() {
         ImPlot::SetupAxisLinks(ImAxis_X1, &x_min_, &x_max_);
         ImPlot::SetNextLineStyle(ImVec4(0.75f, 0.75f, 0.80f, 1.0f), 1.0f);
         ImPlot::PlotLine("push", t_.data(), acc_.data(), (int)n);
-        draw_cursor((double)cursor_frame_ / kFps);
+        draw_cursor((double)cursor_frame_ / fps());
         ImPlot::EndPlot();
     }
 }
@@ -552,7 +561,7 @@ void PostSessionPanel::draw_video() {
 
     // ---- play head ------------------------------------------------------------------
     if (playing_) {
-        play_accum_ += (double)ImGui::GetIO().DeltaTime * kFps * (double)play_speed_;
+        play_accum_ += (double)ImGui::GetIO().DeltaTime * fps() * (double)play_speed_;
         const int step = (int)play_accum_;
         if (step != 0) {
             play_accum_ -= step;
@@ -573,7 +582,7 @@ void PostSessionPanel::draw_video() {
     const bool delivered = cursor_frame_ >= 0
                         && (size_t)cursor_frame_ < result_->video_row.size()
                         && result_->video_row[cursor_frame_] >= 0;
-    ImGui::Text("frame %d / %d   %.2f s", cursor_frame_, n - 1, (double)cursor_frame_ / kFps);
+    ImGui::Text("frame %d / %d   %.2f s", cursor_frame_, n - 1, (double)cursor_frame_ / fps());
     if (!delivered) {
         ImGui::SameLine(0, 10);
         ImGui::TextColored(ImVec4(0.90f, 0.65f, 0.25f, 1), "camera dropped this frame");
@@ -633,7 +642,7 @@ void PostSessionPanel::draw_video() {
     auto step = [&](int d) { cursor_frame_ = clampf(cursor_frame_ + d); playing_ = false; follow_mouse_ = false; };
     const float bw = 44.0f;
     if (ImGui::Button("|<", ImVec2(34, 0)))       { cursor_frame_ = 0; playing_ = false; }
-    ImGui::SameLine(); if (ImGui::Button("-1s", ImVec2(bw, 0)))  step(-(int)kFps);
+    ImGui::SameLine(); if (ImGui::Button("-1s", ImVec2(bw, 0)))  step(-(int)fps());
     ImGui::SameLine(); if (ImGui::Button("-1f", ImVec2(bw, 0)))  step(-1);
     ImGui::SameLine();
     if (ImGui::Button(playing_ ? "Pause" : "Play", ImVec2(64, 0))) {
@@ -641,7 +650,7 @@ void PostSessionPanel::draw_video() {
         if (playing_ && cursor_frame_ >= n - 1) cursor_frame_ = 0;
     }
     ImGui::SameLine(); if (ImGui::Button("+1f", ImVec2(bw, 0)))  step(+1);
-    ImGui::SameLine(); if (ImGui::Button("+1s", ImVec2(bw, 0)))  step(+(int)kFps);
+    ImGui::SameLine(); if (ImGui::Button("+1s", ImVec2(bw, 0)))  step(+(int)fps());
     ImGui::SameLine(); if (ImGui::Button(">|", ImVec2(34, 0)))   { cursor_frame_ = n - 1; playing_ = false; }
     ImGui::SameLine(0, 10);
     ImGui::SetNextItemWidth(90);
@@ -649,8 +658,8 @@ void PostSessionPanel::draw_video() {
 
     // arrow keys step too, so the hand can stay off the mouse
     if (ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows)) {
-        if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow,  true)) step(ImGui::GetIO().KeyShift ? -(int)kFps : -1);
-        if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true)) step(ImGui::GetIO().KeyShift ? +(int)kFps : +1);
+        if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow,  true)) step(ImGui::GetIO().KeyShift ? -(int)fps() : -1);
+        if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true)) step(ImGui::GetIO().KeyShift ? +(int)fps() : +1);
     }
 
     // ---- jump to a rep, and judge it ------------------------------------------------
@@ -708,8 +717,8 @@ void PostSessionPanel::draw_rep_table() {
             if (ImGui::Checkbox("##k", &keep)) { r.rejected = !keep; review_dirty_ = true; }
             ImGui::PopID();
             ImGui::TableSetColumnIndex(1); ImGui::Text("%d", r.rep_id);
-            ImGui::TableSetColumnIndex(2); ImGui::Text("%.2f", (double)a / kFps);
-            ImGui::TableSetColumnIndex(3); ImGui::Text("%.2f", (double)b / kFps);
+            ImGui::TableSetColumnIndex(2); ImGui::Text("%.2f", (double)a / fps());
+            ImGui::TableSetColumnIndex(3); ImGui::Text("%.2f", (double)b / fps());
             ImGui::TableSetColumnIndex(4); ImGui::Text("%.0f", r.rom_m * 1000);
             ImGui::TableSetColumnIndex(5); ImGui::Text("%.2f", r.peak_velocity);
             ImGui::TableSetColumnIndex(6);

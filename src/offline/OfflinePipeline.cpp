@@ -237,17 +237,30 @@ PipelineResult OfflinePipeline::run(const SessionPaths& paths, const ProgressFn&
     }
     if (R.samples.size() < 32) { R.message = "too few frames"; return R; }
 
-    // ---- 3. smooth the whole session, both ways ------------------------------------
-    step("Smoothing the session forwards and backwards", 0.35f);
+    // ---- 3. the frame rate, from the camera's own trigger pulses ---------------------
+    step("Reading the frame rate from the trigger", 0.30f);
+    R.sync = build_sync_map(paths.dir, R.video_row, R.samples.size());
     {
-        RtsSmoother sm;
+        // The camera does not run at 90.000 Hz. Its own pulses, read inside the inertial
+        // stream, put it at 89.8654 -- consistently, to within 35 ppm in all 84 sessions.
+        // Every sample is re-dated on the measured period, so no rate is assumed.
+        const double dt = R.sync.frame_period;
+        for (size_t i = 0; i < R.samples.size(); ++i) R.samples[i].t_s = (double)i * dt;
+    }
+
+    // ---- 4. smooth the whole session, both ways ------------------------------------
+    step("Smoothing the session forwards and backwards", 0.45f);
+    {
+        RtsSmoother::Config sc;
+        sc.dt = R.sync.frame_period;
+        RtsSmoother sm(sc);
         R.smoothed = sm.run(R.samples);
         sm.innovation_consistency(R.samples, R.nis);
     }
     R.track = OfflineAnnotator::track_from(R.smoothed);
 
-    // ---- 4. the same causal annotator, re-run on the corrected track ----------------
-    step("Re-running the live annotator on the corrected track", 0.70f);
+    // ---- 5. the same causal annotator, re-run on the corrected track ----------------
+    step("Re-running the live annotator on the corrected track", 0.72f);
     {
         rt::RtAnnotator::Config cfg;
         cfg.down_first  = R.down_first;
@@ -256,7 +269,7 @@ PipelineResult OfflinePipeline::run(const SessionPaths& paths, const ProgressFn&
         for (size_t i = 0; i < R.smoothed.size(); ++i) {
             rt::RtSample s;
             s.frame_idx = (int64_t)i;
-            s.t_s       = (double)i / kFps;
+            s.t_s       = (double)i * R.sync.frame_period;
             s.y_m       = R.smoothed[i].pos[1];   // the annotator negates it internally
             // On the smoothed track every frame carries an estimate, so every frame is
             // usable. `measured` is still carried through the annotation, so a rep
@@ -268,7 +281,7 @@ PipelineResult OfflinePipeline::run(const SessionPaths& paths, const ProgressFn&
         R.online = ann.reps();
     }
 
-    // ---- 5. the post-session annotation ---------------------------------------------
+    // ---- 6. the post-session annotation ---------------------------------------------
     step("Finding the reps and their boundaries", 0.90f);
     {
         OfflineAnnotator off;
@@ -349,6 +362,12 @@ bool OfflinePipeline::write(const PipelineResult& R, const SessionPaths& paths,
         }
     }
 
+    // which inertial sample is which camera frame
+    {
+        std::string serr;
+        if (!write_sync_map(R.sync, paths.dir / "sync_map.csv", serr)) { err = serr; return false; }
+    }
+
     // the causal pass on this track
     {
         std::ofstream o(paths.online());
@@ -374,7 +393,9 @@ bool OfflinePipeline::write(const PipelineResult& R, const SessionPaths& paths,
         meta["n_reps"]      = (int)R.annotation.reps.size();
         meta["lost_frames"]    = R.lost_frames;      // marker not seen
         meta["dropped_frames"] = R.dropped_frames;   // camera never delivered the frame
-        meta["smoother_nis"] = {R.nis[0], R.nis[1], R.nis[2]};
+        meta["smoother_nis"]   = {R.nis[0], R.nis[1], R.nis[2]};
+        meta["frame_period_s"] = R.sync.frame_period;
+        meta["frame_rate_hz"]  = 1.0 / R.sync.frame_period;
         meta["produced_by"] = "app: OfflinePipeline";
 
         std::ofstream o(paths.offline());
@@ -518,7 +539,8 @@ bool OfflinePipeline::export_ground_truth(const fs::path& datasets_root,
 
     const auto&  T   = R.track;
     const size_t n   = T.size();
-    const double fps = 1.0 / 90.0;
+    // seconds come from the period measured for THIS session, not from 90.000
+    const double fps = R.sync.frame_period;
     auto med = [](std::vector<double> v) {
         if (v.empty()) return 0.0;
         std::sort(v.begin(), v.end());

@@ -69,6 +69,10 @@ private:
 
     void load_live_annotation();          ///< what the annotator produced during the set
 
+    /// Frames per second for the session on screen, measured from its own trigger
+    /// pulses. Falls back to the nominal rate when nothing is loaded.
+    double fps() const;
+
     void generate_audit();
     void draw_verdict();          ///< the one line that says whether the set is usable
 

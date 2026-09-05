@@ -192,6 +192,7 @@ set(APP_SOURCES
     src/offline/OfflineAnnotator.cpp
     src/offline/OfflinePipeline.cpp
     src/offline/SessionVideo.cpp
+    src/offline/SyncMap.cpp
     src/offline/AuditImage.cpp
 )
 
@@ -272,6 +273,7 @@ add_executable(offline_pass
     src/offline/OfflineAnnotator.cpp
     src/offline/OfflinePipeline.cpp
     src/offline/AuditImage.cpp
+    src/offline/SyncMap.cpp
     ${RT_ANNOTATOR_SOURCES}
 )
 target_include_directories(offline_pass PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${OpenCV_INCLUDE_DIRS})
@@ -285,6 +287,7 @@ add_executable(velocity_robustness
     src/offline/RtsSmoother.cpp
     src/offline/OfflineAnnotator.cpp
     src/offline/OfflinePipeline.cpp
+    src/offline/SyncMap.cpp
     ${RT_ANNOTATOR_SOURCES}
 )
 target_include_directories(velocity_robustness PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
