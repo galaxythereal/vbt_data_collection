@@ -277,3 +277,16 @@ add_executable(offline_pass
 target_include_directories(offline_pass PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${OpenCV_INCLUDE_DIRS})
 target_link_libraries(offline_pass PRIVATE nlohmann_json::nlohmann_json ${OpenCV_LIBS})
 target_compile_features(offline_pass PRIVATE cxx_std_17)
+
+# Is the velocity reference an artefact of the smoother's one free number? Runs the same
+# sessions at a 25x range of model stiffness and reports how far peak velocity moves.
+add_executable(velocity_robustness
+    tools/velocity_robustness.cpp
+    src/offline/RtsSmoother.cpp
+    src/offline/OfflineAnnotator.cpp
+    src/offline/OfflinePipeline.cpp
+    ${RT_ANNOTATOR_SOURCES}
+)
+target_include_directories(velocity_robustness PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(velocity_robustness PRIVATE nlohmann_json::nlohmann_json)
+target_compile_features(velocity_robustness PRIVATE cxx_std_17)
