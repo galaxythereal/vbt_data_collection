@@ -9,7 +9,7 @@ Mirrored to every session's `metadata.json` under `camera_snapshot`.
 > — the "9-session" / "existing dataset" numbers below predate the cleaned
 > 84-session corpus — and several implications are **superseded** by the
 > offline, camera-only ground-truth pipeline. **Where anything here conflicts
-> with [REPO_MAP.md](REPO_MAP.md) or [00_FOUNDATION.md](00_FOUNDATION.md),
+> with [REPO_MAP.md](REPO_MAP.md) or [../datasets/README.md](../datasets/README.md),
 > those win — ignore the conflicting statement here.** Known supersessions:
 > marker-quality stats (current detected=1 mean confidence ≈ 0.707, not
 > 0.616); `confidence` is a tracker quality score, **not** a probability; the

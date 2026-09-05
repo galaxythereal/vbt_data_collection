@@ -26,7 +26,7 @@ namespace vbt::rt {
 bool rt_down_first(const std::string& exercise);
 
 /// Nominal ROM per lift (m) — a PHYSIOLOGICAL prior (human anatomy), matching
-/// vbt_gt/config.py EXERCISE_CONFIG. Never fitted to a session. Used only to establish
+/// human anatomy. Never fitted to a session. Used only to establish
 /// that a movement is on the scale of a human repetition (tracker jitter is ~5-12 mm,
 /// a rep is ~0.5 m; no gravity-derived quantity separates those, amplitude does).
 double rt_rom_prior_m(const std::string& exercise);

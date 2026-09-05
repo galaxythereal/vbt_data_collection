@@ -1,6 +1,21 @@
 # REPO_MAP — vbt_data_collection (Step 0 orientation)
 
-> **LAYOUT SUPERSEDED (2026-09-05).** This map describes `datasets/sessions/<session>/`
+> **MOSTLY SUPERSEDED (2026-09-05). Read the banner before trusting anything below.**
+>
+> This document was the orientation deliverable for a design that was **never built**: a
+> Python package `vbt_gt`, milestones M0-M5, PCA projection, an HSMM decoder, ZUPT states,
+> a matrix-profile auditor and parquet output. Its specification (`00_FOUNDATION.md`, the
+> M0-M5 files, `AGENT_RUNBOOK.md`) was deleted, so **every link to those files below is
+> dead**, and §5 in particular is a plan for a system that does not exist. What was
+> actually built is a C++ post-session pass inside the acquisition app: see
+> `src/offline/OfflineAnnotator.h` for the rules and
+> [../datasets/README.md](../datasets/README.md) for the output.
+>
+> **What is still true here** is §1: the acquisition audit — what the camera writes per
+> session, the 84-session survey, the exercise vocabulary, the 0.10% dropout. Those were
+> verified against the corpus and have not changed.
+>
+> **LAYOUT SUPERSEDED.** This map describes `datasets/sessions/<session>/`
 > with a nested `annotations/` directory. The dataset is now **one folder per session
 > directly under `datasets/`**, with the measurement (`camera/`, `imu/`) read-only inside
 > it and everything derived beside it. See [../datasets/README.md](../datasets/README.md)
@@ -8,11 +23,11 @@
 > acquisition facts below (what the camera writes, the 84-session audit, the exercise
 > vocabulary) are still correct; only the paths changed.
 
-**Purpose.** This is the Step 0 deliverable from [docs/AGENT_RUNBOOK.md](AGENT_RUNBOOK.md#L17): a read-only map of the existing repository so the new **offline, camera-only VBT ground-truth pipeline** can be scaffolded (Step 1), the old realtime algorithm removed cleanly (Step 2), and the annotation studio repurposed later (Steps 7/10). No code was created, modified, or deleted to produce this document.
+**Purpose.** This was the Step 0 deliverable of an abandoned design (see the banner above): a read-only map of the existing repository so the new **offline, camera-only VBT ground-truth pipeline** can be scaffolded (Step 1), the old realtime algorithm removed cleanly (Step 2), and the annotation studio repurposed later (Steps 7/10). No code was created, modified, or deleted to produce this document.
 
 **Scope — camera/marker data only.** The new pipeline's only input is the single-marker 3D camera trajectory. The IMU files in each session (`imu/raw_imu.bin`, `imu/raw_imu.csv`, `imu/camera_imu.csv`, and `imu/raw_imu.before_time_repair_*.csv` in older batches) are **out of scope**; this map only notes that they exist. Where the legacy C++ algorithm or studio happens to read IMU, that is documented solely to scope removal — not to bring the IMU into the new pipeline.
 
-**Source of truth.** The frozen contracts are [docs/00_FOUNDATION.md](00_FOUNDATION.md) plus the milestone specs [M0](M0_harness_and_set_segmentation.md)/[M1](M1_conditioning_and_derivatives.md)/[M2](M2_zupt_and_traverse_counter.md)/[M3-M5](M3-M5_downstream.md). If anything below conflicts with those, those win. [camera_config.md](camera_config.md) is authoritative for the *capture-time camera/tracker configuration only* (resolution, fps, sync, the marker-tracker steps); its dataset statistics are historical (9-session era) and — per user direction (2026-06-05) — are **superseded by this map + FOUNDATION wherever they conflict** (see §5.2). camera_config.md now carries a banner saying so.
+**Source of truth.** [../datasets/README.md](../datasets/README.md) for the layout and the released columns, and `src/offline/OfflineAnnotator.h` for the annotation rules. (An earlier design — a Python package `vbt_gt` built in milestones M0-M5 around PCA projection, an HSMM decoder and ZUPT states — was specified in `docs/00_FOUNDATION.md` and the M0-M5 files. It was never built; those documents were deleted in 2026-09 because they described a system that does not exist.) [camera_config.md](camera_config.md) is authoritative for the *capture-time camera/tracker configuration only* (resolution, fps, sync, the marker-tracker steps); its dataset statistics are historical (9-session era) and — per user direction (2026-06-05) — are **superseded by this map + FOUNDATION wherever they conflict** (see §5.2). camera_config.md now carries a banner saying so.
 
 **How this was produced & confirmation status.** Four parallel read-only surveys (acquisition+data-audit, studio, old-algo C++, old-algo Python+build) read/grepped the repo and the full 84-session corpus. The author then **personally re-verified** the headline facts below. The runbook gate for Step 0 is exactly this confirmation.
 

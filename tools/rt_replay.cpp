@@ -76,7 +76,7 @@ bool is_down_first(const std::string& exercise) {
 }
 
 /// Nominal ROM per lift (metres) — physiological priors, identical to the values in
-/// vbt_gt/config.py EXERCISE_CONFIG. Used only to establish that a movement is on the
+/// human anatomy. Used only to establish that a movement is on the
 /// scale of a human repetition; NOT fitted to any session.
 double rom_prior_for(const std::string& exercise) {
     if (exercise == "deadlift")    return 0.60;
