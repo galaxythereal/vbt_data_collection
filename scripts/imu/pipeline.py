@@ -90,6 +90,14 @@ def load_reps(session: Path):
     return meta, out
 
 
+def camera_position(session: Path):
+    """The reference height, up positive."""
+    p = []
+    with (session/"smoothed.csv").open() as f:
+        for r in csv.DictReader(f): p.append(-float(r["pos_y"]))
+    return np.asarray(p)
+
+
 def camera_velocity(session: Path):
     """The reference: the smoothed vertical velocity, up positive."""
     v = []
@@ -158,13 +166,16 @@ def orientation_vqf(t, a, g, bias, lever=True):
         out[i] = R @ a[i]
     out[:, 2] -= G0           # VQF's world frame has z up
     if lever:
-        # v_marker = v_sensor + omega x r, so the correction enters the velocity directly
-        # rather than the acceleration; carried here as an extra term for the integrator
+        # The offset is fixed in the BODY, so in the world frame it turns with the bar.
+        #   position: p_marker(t) - p_marker(0) = dp_sensor + (R(t) - R(0)) r
+        #   velocity: v_marker = v_sensor + R (omega x r)
+        # which is the derivative of the first, so the two stay consistent.
         om = g - bias
-        cr = np.cross(om, LEVER_ARM_M[None, :])
-        out_lever = np.einsum('ijk,ik->ij', rot, cr)
-        return out, out_lever[:, 2]
-    return out, np.zeros(len(t))
+        vel_lever = np.einsum('ijk,ik->ij', rot, np.cross(om, LEVER_ARM_M[None, :]))
+        pos_lever = np.einsum('ijk,k->ij', rot, LEVER_ARM_M)
+        return out, vel_lever[:, 2], pos_lever[:, 2]
+    z = np.zeros(len(t))
+    return out, z, z
 
 
 # ---------------------------------------------------------------------------- filtering
@@ -182,6 +193,12 @@ def bandlimit(x, fs, lp=10.0, hp=0.0, order=4):
 
 
 # --------------------------------------------------------------------------- integrate
+
+def integrate_position(t, v):
+    """Vertical displacement from the start of the repetition."""
+    dt = np.diff(t)
+    return np.concatenate([[0.0], np.cumsum(0.5*(v[1:]+v[:-1])*dt)])
+
 
 def apply_constraints(t, v, constrain="both"):
     """The boundary conditions the geometry earns, applied to a velocity already formed.
@@ -237,12 +254,13 @@ def run_session(session: Path, args):
     t, a, g = load_imu(session)
     sync = load_sync(session)
     cam_v = camera_velocity(session)
+    cam_pos = camera_position(session)
     fs = 1.0/float(np.median(np.diff(t)))
 
     bias, scale, n_still = calibrate(a, g)
     a = a * scale                                   # the scale the still windows measured
 
-    world, lever_up = orientation_vqf(t, a, g, bias, lever=getattr(args, "lever", True))
+    world, lever_v, lever_p = orientation_vqf(t, a, g, bias, lever=getattr(args, "lever", True))
     up = bandlimit(world[:, 2], fs, lp=args.lp, hp=args.hp)
 
     out = []
@@ -256,7 +274,7 @@ def run_session(session: Path, args):
         # round.
         v = integrate_rep(t[sa:sb+1], up[sa:sb+1], "none")
         if v is None: continue
-        v = v + lever_up[sa:sb+1]
+        v = v + lever_v[sa:sb+1]
         v = apply_constraints(t[sa:sb+1], v, args.constrain)
         i0, i1 = sc-sa, se-sa
         if i1 <= i0 or i1 >= len(v): continue
@@ -264,9 +282,27 @@ def run_session(session: Path, args):
         imu_mean = float(np.mean(v[i0:i1+1]))
         cv = cam_v[r["cs"]:r["ce"]+1]
         if len(cv) < 2: continue
+
+        # POSITION. Integrating the same velocity gives displacement from the start of
+        # the repetition. The absolute height is not observable from an inertial sensor,
+        # so everything is referred to where the repetition set off -- which is also how
+        # a range of motion is defined.
+        p = integrate_position(t[sa:sb+1], v) + (lever_p[sa:sb+1] - lever_p[sa])
+        # the camera on the same frames, same reference
+        fr = np.arange(r["a"], r["b"]+1)
+        si = np.array([sync.get(x, -1) for x in fr]) - sa
+        ok = (si >= 0) & (si < len(p))
+        if ok.sum() < 8: continue
+        cam_p = (cam_pos[r["a"]:r["b"]+1][ok] - cam_pos[r["a"]])
+        imu_p = np.interp(si[ok], np.arange(len(p)), p)
+        traj = float(np.sqrt(np.mean((imu_p - cam_p)**2)))
+        imu_rom = float(np.max(imu_p) - np.min(imu_p))
+        cam_rom = float(np.max(cam_p) - np.min(cam_p))
+
         out.append(dict(session=session.name, rep=r["rep_id"], exercise=meta["exercise"],
                         imu_peak=imu_peak, cam_peak=float(np.max(np.abs(cv))),
                         imu_mean=imu_mean, cam_mean=float(np.mean(cv)),
+                        imu_rom=imu_rom, cam_rom=cam_rom, traj_rmse=traj,
                         n_still=n_still, scale=scale))
     return out
 
@@ -274,8 +310,9 @@ def run_session(session: Path, args):
 def report(rows, title):
     if not rows:
         print("  nothing to report"); return
-    for name, ik, ck in (("peak concentric", "imu_peak", "cam_peak"),
-                         ("mean concentric", "imu_mean", "cam_mean")):
+    for name, ik, ck, unit in (("peak concentric", "imu_peak", "cam_peak", "mm/s"),
+                               ("mean concentric", "imu_mean", "cam_mean", "mm/s"),
+                               ("range of motion", "imu_rom",  "cam_rom",  "mm  ")):
         d = np.array([abs(r[ik]) - abs(r[ck]) for r in rows])
         c = np.array([abs(r[ck]) for r in rows])
         rmse = float(np.sqrt((d**2).mean()))
@@ -283,8 +320,13 @@ def report(rows, title):
         loa  = 1.96*float(d.std())
         ss = float(((c - c.mean())**2).sum())
         r2 = 1 - float((d**2).sum())/ss if ss > 0 else float("nan")
-        print(f"  {name:<16} n={len(rows):<5} RMSE {rmse*1000:6.1f} mm/s   "
+        print(f"  {name:<16} n={len(rows):<5} RMSE {rmse*1000:6.1f} {unit}   "
               f"bias {bias*1000:+7.1f}   95% LoA +/-{loa*1000:6.1f}   R2 {r2:5.2f}")
+    tj = np.array([r["traj_rmse"] for r in rows if "traj_rmse" in r])
+    if len(tj):
+        print(f"  {'height trajectory':<16} n={len(tj):<5} "
+              f"RMS error over the whole repetition: median {np.median(tj)*1000:5.1f} mm, "
+              f"90th {np.percentile(tj,90)*1000:5.1f}, worst {tj.max()*1000:5.1f}")
 
 
 def main():
