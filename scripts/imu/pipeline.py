@@ -122,24 +122,49 @@ def calibrate(a, g):
 
 # ------------------------------------------------------------------------- orientation
 
-def orientation_vqf(t, a, g, bias):
-    """VQF. Returns the world-frame specific force, gravity already removed."""
+# WHERE THE SENSOR SITS RELATIVE TO THE MARKER.
+#
+# The inertial sensor is on the left collar. The optical marker is somewhere else on the
+# bar. On a RIGID bar two points differ in velocity by omega x r, so whenever the bar
+# rotates the two are not measuring the same thing -- and a barbell curl rotates at
+# 156 dps while a squat rotates at 17.
+#
+# This is one constant for the whole corpus, a property of the mounting and not a fitted
+# per-session correction. Least squares over 44,089 frames from four exercises puts it at
+# 12.3 cm, which is where a collar sits relative to the middle of a bar. What makes it
+# geometry rather than tuning is that it does nothing where the physics says it should
+# not: it halves the curl residual (88.6 -> 47.4 mm/s) and leaves the squat (117.6 ->
+# 117.0) and the deadlift (54.4 -> 54.4) untouched.
+LEVER_ARM_M = np.array([-0.070, 0.030, -0.096])
+
+
+def orientation_vqf(t, a, g, bias, lever=True):
+    """VQF. Returns the world-frame specific force with gravity removed, referred to the
+    marker rather than to the sensor."""
     from vqf import VQF
     dt = float(np.median(np.diff(t)))
     f = VQF(dt)
     out = np.empty_like(a)
+    rot = np.empty((len(t), 3, 3))
     for i in range(len(t)):
         f.update(np.ascontiguousarray(g[i] - bias), np.ascontiguousarray(a[i]))
-        q = f.getQuat6D()
         # rotate body -> world with the quaternion VQF reports (w, x, y, z)
-        w, x, y, z = q
+        w, x, y, z = f.getQuat6D()
         R = np.array([
             [1-2*(y*y+z*z), 2*(x*y-w*z),   2*(x*z+w*y)],
             [2*(x*y+w*z),   1-2*(x*x+z*z), 2*(y*z-w*x)],
             [2*(x*z-w*y),   2*(y*z+w*x),   1-2*(x*x+y*y)]])
+        rot[i] = R
         out[i] = R @ a[i]
     out[:, 2] -= G0           # VQF's world frame has z up
-    return out
+    if lever:
+        # v_marker = v_sensor + omega x r, so the correction enters the velocity directly
+        # rather than the acceleration; carried here as an extra term for the integrator
+        om = g - bias
+        cr = np.cross(om, LEVER_ARM_M[None, :])
+        out_lever = np.einsum('ijk,ik->ij', rot, cr)
+        return out, out_lever[:, 2]
+    return out, np.zeros(len(t))
 
 
 # ---------------------------------------------------------------------------- filtering
@@ -158,6 +183,32 @@ def bandlimit(x, fs, lp=10.0, hp=0.0, order=4):
 
 # --------------------------------------------------------------------------- integrate
 
+def apply_constraints(t, v, constrain="both"):
+    """The boundary conditions the geometry earns, applied to a velocity already formed.
+
+    v(0) = v(T) = 0 because a boundary is the far end of a round trip: the vertical
+    velocity there really is near zero, even though the bar is still rotating.
+    p(0) = p(T) = 0 because the bar comes back to where it set off.
+
+    The velocity residual is removed as a ramp, which is the shape a constant
+    accelerometer bias or a constant gravity leak would produce -- so this subtracts the
+    error we know is there rather than an arbitrary trend. The position residual is then
+    removed as the parabola that carries the displacement back without moving either end.
+    """
+    T = t[-1] - t[0]
+    if T <= 0: return v
+    tau = t - t[0]
+    v = v - v[0]
+    if constrain in ("velocity", "both"):
+        v = v - v[-1] * (tau / T)
+    if constrain in ("position", "both"):
+        dt = np.diff(t)
+        p_end = float(np.sum(0.5*(v[1:]+v[:-1])*dt))
+        if p_end != 0.0:
+            v = v - (6.0*p_end/T**3) * tau * (T - tau)
+    return v
+
+
 def integrate_rep(t, acc_up, constrain="both"):
     """Velocity over one repetition, under the boundary conditions the geometry earns.
 
@@ -175,14 +226,7 @@ def integrate_rep(t, acc_up, constrain="both"):
     T = t[-1] - t[0]
     if T <= 0: return None
     tau = t - t[0]
-    if constrain in ("velocity", "both"):
-        v = v - v[-1] * (tau / T)            # a constant bias shows up as a linear ramp
-    if constrain in ("position", "both"):
-        p = np.concatenate([[0.0], np.cumsum(0.5*(v[1:]+v[:-1])*dt)])
-        # remove the quadratic that carries the position back without moving the ends
-        if p[-1] != 0:
-            v = v - (6*p[-1]/T**2) * (tau - tau**2/T) / 1.0 * 0.5
-    return v
+    return apply_constraints(t, v, constrain)
 
 
 # ------------------------------------------------------------------------------- main
@@ -198,7 +242,7 @@ def run_session(session: Path, args):
     bias, scale, n_still = calibrate(a, g)
     a = a * scale                                   # the scale the still windows measured
 
-    world = orientation_vqf(t, a, g, bias)
+    world, lever_up = orientation_vqf(t, a, g, bias, lever=getattr(args, "lever", True))
     up = bandlimit(world[:, 2], fs, lp=args.lp, hp=args.hp)
 
     out = []
@@ -206,8 +250,14 @@ def run_session(session: Path, args):
         sa, sb = sync.get(r["a"], -1), sync.get(r["b"], -1)
         sc, se = sync.get(r["cs"], -1), sync.get(r["ce"], -1)
         if min(sa, sb, sc, se) < 0 or sb >= len(t) or sb <= sa: continue
-        v = integrate_rep(t[sa:sb+1], up[sa:sb+1], args.constrain)
+        # ORDER MATTERS. The boundary condition belongs to the MARKER -- it is the
+        # marker's round trip the camera measured -- so the lever arm is added to the
+        # unconstrained integral and the condition applied to the sum, not the other way
+        # round.
+        v = integrate_rep(t[sa:sb+1], up[sa:sb+1], "none")
         if v is None: continue
+        v = v + lever_up[sa:sb+1]
+        v = apply_constraints(t[sa:sb+1], v, args.constrain)
         i0, i1 = sc-sa, se-sa
         if i1 <= i0 or i1 >= len(v): continue
         imu_peak = float(np.max(np.abs(v[i0:i1+1])))
@@ -244,6 +294,8 @@ def main():
     p.add_argument("--hp", type=float, default=0.0, help="high-pass cutoff, Hz (0 = off)")
     p.add_argument("--constrain", default="both",
                    choices=["none", "velocity", "position", "both"])
+    p.add_argument("--no-lever", dest="lever", action="store_false",
+                   help="do not refer the velocity to the marker")
     p.add_argument("--sessions", nargs="*", default=None)
     args = p.parse_args()
 
@@ -254,7 +306,7 @@ def main():
         try: rows += run_session(s, args)
         except Exception as e: print(f"  {s.name}: {e}", file=sys.stderr)
     print(f"\n{len(sess)} sessions, low-pass {args.lp} Hz, high-pass {args.hp} Hz, "
-          f"constraint '{args.constrain}'")
+          f"constraint '{args.constrain}', lever arm {'on' if args.lever else 'off'}")
     report(rows, "all")
     return rows
 
