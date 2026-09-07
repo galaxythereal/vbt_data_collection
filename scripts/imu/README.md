@@ -60,13 +60,23 @@ says nothing about heading, so one yaw angle per session is fitted against the c
 reported as borrowed. Heading-free: height 20.1 mm, stray-from-vertical RMSE 67.2 mm, path
 length RMSE 140.4 mm. After borrowing the heading: horizontal 36.5 mm, full 3-D 45.9 mm.
 
-**The horizontal error is attitude.** One degree of tilt is 0.171 m/s², which over a
-repetition of length T integrates to about ½aT² — 86 mm at one second, 342 mm at two. The
-measured error tracks duration at +0.44 and rotation rate at +0.35, and by duration band
-runs 29, 32, 38, 99 mm. The height does not: across a 40-fold sweep of how much the
-accelerometer is trusted it moves 17.7 → 18.2 mm while the horizontal moves 43 → 30.
+**The horizontal error is attitude — RETRACTED.** This used to read: one degree of tilt is
+0.171 m/s², which over a repetition of length T integrates to about ½aT² — 86 mm at one
+second, 342 mm at two; the measured error tracks duration at +0.44 and rotation rate at
++0.35, and by duration band runs 29, 32, 38, 99 mm. Those correlations are real and they
+are not causal. `what_limits_the_path.py` tests the claim the only way that settles it, by
+breaking attitude on purpose: **adding a gyro bias of a whole degree per second on a
+horizontal axis leaves the horizontal path error where it was** (36.3 → 35.8 mm).
 
-That separation is what makes the attitude comparison a test with a prediction attached.
+The boundary conditions were already eating it. A constant bias tilts the frame at a
+constant rate, so the gravity leak grows linearly, so the velocity error is a ramp and the
+position error a parabola — which is exactly what `apply_constraints` removes. Attitude
+error survives only in the part that is not a steady drift: injected as a random walk it
+does bite (0.5 °/s → 42.2 mm, 2 °/s → 73.5 mm), while the same amplitude as a 0.5 Hz
+oscillation costs 1 mm, because the low-pass in the almost-inertial frame rejects it.
+
+So the attitude comparison below is a test whose prediction failed, and the failure is the
+finding: the estimator is not where this is won.
 
 ## VQF against ESKF against IESKF
 
@@ -149,3 +159,80 @@ reporting per-repetition velocity would still have to count repetitions on its o
 counting problem, not an integration one, and the two should never be one number.
 
 Written up for the paper in `paper/10_inertial_baseline.tex`.
+
+
+## Orientation engines: what the literature says and what it bought
+
+    .venv/bin/python scripts/imu/tune_orientation.py --n 84
+    .venv/bin/python scripts/imu/what_limits_the_path.py --n 30
+    .venv/bin/python scripts/imu/lever_arm.py --n 84
+
+Reading Laidig & Seel (Information Fusion 91, 2023) turned up the mechanism behind VQF's
+edge, and it is not the accelerometer weighting this project swept and refuted:
+
+> the accelerometer information is low-pass filtered in an **almost-inertial frame**
+
+Gravity is a constant in the world, so in a frame that only drifts slowly it is a DC term
+and the bar's own acceleration averages away — a push up and the matching pull down cancel.
+In the *sensor* frame gravity rotates with the sensor and the same low-pass destroys it.
+The earlier negative test (raw 37.7 mm, 2 Hz 37.6, everything else worse) was run in the
+sensor frame, so it refuted the wrong thing. Two further points from the paper: the offline
+variant runs the filter forwards then backwards, published as 20% better (6D inclination
+0.88° against 1.12°, the best of nine methods, with Madgwick at 6.34° and Mahony 4.99°);
+and the time constant maps as `fc = √2/(2πτ)`, default `τ_acc = 3 s`.
+
+`orientation.py` implements it in the right frame, with `filtfilt` so the low-pass is
+genuinely zero-phase rather than run twice, and a closed-form inclination correction (the
+shortest rotation carrying the reference onto up, no z component, so heading is untouched).
+`attitude.rotations` now also accepts `zvqf` (ours) and `ovqf` (the published acausal one).
+
+**Tuned on a training half, confirmed on a held-out half.** 84 sessions split by session and
+stratified by exercise. Both halves independently chose `τ_acc = 2 s`, and the surface is
+flat: every value from 1 s to 12 s lies within 0.5 mm of the minimum, so this is a plateau
+rather than a tuned number. Only 0.5 s is clearly worse (+8 mm), which confirms the
+mechanism is real. Cost of not cheating: 0.0 mm.
+
+| all 1400 reps | peak | mean | ROM | height |
+|---|---|---|---|---|
+| VQF, causal | 50.5 mm/s | 36.0 mm/s | 55.7 mm | 20.1 mm |
+| VQF, offline (published) | 50.5 | 35.9 | 55.8 | 20.1 |
+| **zvqf, τ = 2 s (ours)** | **49.9** | **35.1** | **54.9** | 20.2 |
+
+That is the whole prize from the orientation engine: about 1 mm/s. The published acausal
+variant is indistinguishable from the causal one here. Two years of orientation-estimation
+literature is worth 1% on this problem, because the round-trip conditions were already
+doing the job an attitude filter would have done.
+
+## What actually limits the path: the lever arm
+
+Removing the lever arm costs 14 mm of horizontal path error; breaking attitude costs
+nothing. So the path is limited by not knowing where the sensor sits on the bar. The path
+is *linear* in the lever arm (velocity differs by ω×r, position by Rr, and the constraints,
+integration and heading rotation are all linear), so `lever_arm.py` solves it exactly from
+four basis evaluations and a 3×3 normal equation, alternating with the heading.
+
+| lever arm | horizontal constraint | horiz | height | 3-D |
+|---|---|---|---|---|
+| one global, 12.3 cm | velocity + position | 36.7 mm | 18.9 mm | 46.3 mm |
+| one global, 12.3 cm | position only | 37.0 | 18.9 | 45.4 |
+| per session, ≤ 15 cm | position only | 30.3 | 15.6 | 36.6 |
+| per session, unbounded | position only | 30.7 | 16.7 | 37.3 |
+| **fitted on half the reps, scored on the rest** | position only | **32.0** | **17.7** | **39.8** |
+
+Three things to read off it. **The bound helps**: capping |r| at a barbell-sized 15 cm beats
+the unbounded solve, so this is geometry and not an error sponge — an unbounded fit reaching
+85 cm was hurting. **It survives being held out**: fitting on half a session's repetitions
+and scoring on the other half keeps most of the gain (37.0 → 32.0 mm, −14%), with in-sample
+fitting overstating it by about a third. **The horizontal round trip should be position
+only**: `v(0)=v(T)=0` is earned on the vertical, where a boundary is the far end of a round
+trip in height, but not on the horizontal, where the bar need not be horizontally still.
+With the wrong lever arm that unearned condition was compensating; with the right one it
+costs 1.7 mm.
+
+**This is not a proposal, it is a measurement of a prize.** Fitting r per session adds three
+camera-derived numbers per session, which is the opposite of what `independence.py` argues
+for. But r is a physical distance a tape measure supplies at mount time. The finding is
+that recording where the sensor was clamped — thirty seconds per session — is worth 14% on
+the horizontal path and 12% on the 3-D path, and that no orientation filter comes close to
+buying that. For this corpus it cannot be recovered retrospectively, so it is a
+recommendation for the next collection and a stated limitation of the present one.

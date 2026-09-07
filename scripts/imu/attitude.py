@@ -1,12 +1,26 @@
 #!/usr/bin/env python
 """Attitude from the gyroscope and the accelerometer: VQF, ESKF, IESKF.
 
-WHY IT MATTERS HERE. The height needs almost nothing from the attitude, because gravity
-defines the vertical and the boundary conditions absorb what is left. The bar's PATH does:
-a one degree tilt error puts 0.171 m/s2 into the horizontal, which over a two-second
-repetition integrates to 342 mm. Measured on this corpus the horizontal path error tracks
-repetition duration at +0.44 and rotation rate at +0.35, which is the signature of exactly
-that. So attitude is where the path is won or lost, and the height should barely notice.
+WHAT WE THOUGHT, AND WHAT THE TEST SAID. The claim used to stand here that the horizontal
+path error IS attitude error: one degree of tilt puts 0.171 m/s2 into the horizontal, which
+over a two-second repetition integrates to 342 mm, and the measured horizontal error tracks
+repetition duration at +0.44 and rotation rate at +0.35. The correlation is real. The
+causal claim is wrong, and scripts/imu/what_limits_the_path.py refutes it directly: adding
+a gyroscope bias of a whole degree per second on a horizontal axis leaves the horizontal
+path error where it was, 36.3 mm against 35.8 mm.
+
+The reason is that the boundary conditions were already eating it. A constant bias tilts
+the frame at a constant rate, so the gravity leak grows linearly, so the velocity error is
+a ramp and the position error a parabola -- and apply_constraints removes exactly a ramp
+from the velocity and exactly a parabola from the position. Attitude error therefore only
+survives in the part that is NOT a steady drift: injected as a random walk it does bite
+(0.5 deg/s of walk costs 6 mm, 2 deg/s costs 37), while the same size injected as a 0.5 Hz
+oscillation costs 1 mm, because the low-pass in the almost-inertial frame rejects it.
+
+The practical consequence is that swapping orientation engines buys almost nothing here --
+measured across VQF, its published acausal variant, a hand-rolled zero-phase version and an
+ESKF, the horizontal path error moves by less than a millimetre. What the path is actually
+limited by is the lever arm, which is a mounting measurement rather than an estimator.
 
 WHAT THE ACCELEROMETER CAN AND CANNOT SAY. At rest it reads specific force, which is the
 up direction times g, so it fixes two of the three angles. It says nothing about heading
@@ -182,11 +196,26 @@ def vqf_rotations(t, a, g, bias):
     return R_out, np.tile(bias, (n, 1))
 
 
-# Low-passing the accelerometer before using it as a gravity reference sounded like
-# the obvious explanation for VQF's edge on the path, and it is not: raw gives 37.7 mm
-# of horizontal error, 2 Hz gives 37.6, and 1 Hz, 0.5 Hz and 5 Hz are all worse
-# (0.5 Hz much worse -- it removes gravity along with the motion). Left off.
+# Low-passing the accelerometer before using it as a gravity reference sounded like the
+# obvious explanation for VQF's edge on the path, and in the SENSOR frame it is not: raw
+# gives 37.7 mm of horizontal error, 2 Hz gives 37.6, and 1 Hz, 0.5 Hz and 5 Hz are all
+# worse (0.5 Hz much worse -- it removes gravity along with the motion). Left off here.
+#
+# That test was asking the wrong question. VQF low-passes the accelerometer in the
+# ALMOST-INERTIAL frame, where gravity is a DC term and the bar's own acceleration averages
+# away, not in the sensor frame, where gravity rotates with the sensor and a slow low-pass
+# destroys it. See orientation.py, which implements it in the right frame -- and note that
+# even done correctly it is worth less than a millimetre here, because the boundary
+# conditions were already absorbing the attitude error.
 ESKF_ACC_LP = 0.0
+
+
+# The accelerometer time constant for the zero-phase engine, in seconds. Chosen on a
+# training half of the corpus and confirmed on the held-out half, which independently
+# chose the same value; the surface is flat from 1 s to 12 s (0.5 mm of horizontal path
+# error across that whole range), so this is not a tuned number so much as a plateau. The
+# published default is 3.0 s and sits 0.1 mm away.
+ZVQF_TAU_ACC = 2.0
 
 
 def rotations(name, t, a, g, bias):
@@ -194,4 +223,8 @@ def rotations(name, t, a, g, bias):
     if name == "vqf":   return vqf_rotations(t, a, g, bias)
     if name == "eskf":  return eskf(t, a, g, iterations=1, acc_lp=ESKF_ACC_LP)
     if name == "ieskf": return eskf(t, a, g, iterations=3, acc_lp=ESKF_ACC_LP)
+    if name in ("zvqf", "ovqf"):
+        import orientation as O
+        if name == "ovqf": return O.offline_vqf(t, a, g, bias)
+        return O.zvqf(t, a, g, bias, ZVQF_TAU_ACC)
     raise ValueError(f"unknown attitude filter '{name}'")
