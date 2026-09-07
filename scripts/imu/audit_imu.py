@@ -19,17 +19,48 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.patches import Patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import attitude
 import pipeline as P
 import bar_path as B
 
-# One colour per source, used the same way in every panel of every session.
-C_CAM  = "#f2f2ef"   # the reference
-C_VQF  = "#4da3ff"   # VQF
-C_ESKF = "#ff8c42"   # ESKF
-C_REP  = "#2e9e4f"   # the repetitions, shaded
+# ONE COLOUR PER SOURCE, the same in every panel of every session. Taken from the
+# Okabe-Ito set, which stays distinguishable to a colour-blind reader and in print; the
+# line styles differ as well, so the figure survives being reproduced in greyscale.
+C_CAM  = "#000000"   # the reference
+C_VQF  = "#0072B2"   # VQF, blue
+C_ESKF = "#D55E00"   # ESKF, vermillion
+C_AX   = "#444444"   # axes and text
+C_GRID = "#DDDDDD"
+
+# ONE COLOUR PER PHASE. The concentric is the phase velocity-based training is about, so
+# it carries the colour; the eccentric carries the second. Both are laid down as pale
+# washes -- a fifth of the strength of a line -- so they separate the phases without
+# competing with the traces drawn over them, and both differ in lightness as well as in
+# hue so the figure still reads in greyscale.
+C_CON  = "#009E73"   # concentric, bluish green
+C_ECC  = "#E69F00"   # eccentric, orange
+A_CON, A_ECC = 0.16, 0.15
+
+plt.rcParams.update({
+    "font.size": 9,
+    "font.family": "sans-serif",
+    "axes.labelsize": 9,
+    "axes.titlesize": 9.5,
+    "xtick.labelsize": 8,
+    "ytick.labelsize": 8,
+    "legend.fontsize": 8,
+    "axes.linewidth": 0.7,
+    "xtick.major.width": 0.7,
+    "ytick.major.width": 0.7,
+    "xtick.direction": "out",
+    "ytick.direction": "out",
+    "figure.facecolor": "white",
+    "axes.facecolor": "white",
+    "savefig.facecolor": "white",
+})
 
 
 def estimate(t, a, g, bias, sync, reps, filt):
@@ -78,50 +109,6 @@ def one_session(session: Path, out_name: str):
 
     est = {f: estimate(t, a, g, bias, sync, reps, f) for f in ("vqf", "eskf")}
 
-    fig, ax = plt.subplots(3, 1, figsize=(19, 10.5), sharex=True,
-                           gridspec_kw={"height_ratios": [3, 2, 1.6]})
-    fig.patch.set_facecolor("#16130f")
-    for x in ax:
-        x.set_facecolor("#16130f")
-        for sp in x.spines.values(): sp.set_color("#3a342f")
-        x.tick_params(colors="#8a837c", labelsize=8)
-        x.grid(alpha=0.18, color="#3a342f")
-
-    # alternate the shading so one repetition can be told from the next
-    for i, r in enumerate(reps):
-        aa = min(r["cs"], r["a"]); bb = max(r["ce"], r["b"])
-        for x in ax:
-            x.axvspan(aa*period, bb*period, color=C_REP,
-                      alpha=0.13 if i % 2 == 0 else 0.05, lw=0)
-
-    ax[0].plot(tt, cam_p, color=C_CAM, lw=2.2, label="camera (ground truth)")
-    ax[1].plot(tt, cam_v, color=C_CAM, lw=1.6)
-    # VQF SOLID AND WIDE, ESKF DASHED ON TOP. The two agree closely enough that one drawn
-    # over the other simply hides it, which would make this audit useless for the very
-    # comparison it exists for.
-    style = (("vqf", C_VQF, "VQF", 2.6, (0, ())),
-             ("eskf", C_ESKF, "ESKF", 1.3, (0, (4, 2.5))))
-    for filt, col, lab, lw, dash in style:
-        first = True
-        for seg in est[filt]:
-            f0 = seg["frames"][0]
-            ax[0].plot(seg["frames"]*period, seg["p"] + cam_p[f0], color=col, lw=lw,
-                       linestyle=dash, label=(lab if first else None))
-            ax[1].plot(seg["frames"]*period, seg["v"], color=col, lw=lw*0.8, linestyle=dash)
-            first = False
-
-    # THE PANEL WHERE THE TWO ACTUALLY DIFFER: each filter's height error against the
-    # camera. On the traces above they overlap; here they do not.
-    for filt, col, lab, lw, dash in style:
-        first = True
-        for seg in est[filt]:
-            f0 = seg["frames"][0]; fr = seg["frames"]
-            ax[2].plot(fr*period, (seg["p"] - (cam_p[fr]-cam_p[f0]))*1000,
-                       color=col, lw=lw*0.7, linestyle=dash,
-                       label=(f"{lab} height error" if first else None))
-            first = False
-    ax[2].axhline(0, color="#3a342f", lw=0.8)
-
     err = {}
     for filt in ("vqf", "eskf"):
         pe, ve = [], []
@@ -132,30 +119,107 @@ def one_session(session: Path, out_name: str):
         err[filt] = (np.median(pe)*1000 if pe else float("nan"),
                      np.median(ve)*1000 if ve else float("nan"))
 
-    ax[0].set_ylabel("height (m)", color="#8a837c", fontsize=9)
-    ax[1].set_ylabel("velocity (m/s)", color="#8a837c", fontsize=9)
-    ax[2].set_ylabel("height error (mm)", color="#8a837c", fontsize=9)
-    ax[2].set_xlabel("time (s)", color="#8a837c", fontsize=9)
-    leg2 = ax[2].legend(fontsize=8, ncol=2, loc="upper right", facecolor="#16130f",
-                        edgecolor="#3a342f")
-    for txt in leg2.get_texts(): txt.set_color("#c9c3bc")
-    ax[0].set_title(
-        f"{session.name}   [{meta['exercise']}]   {len(reps)} repetitions   |   "
-        f"median error inside a repetition:   "
-        f"VQF {err['vqf'][0]:.0f} mm / {err['vqf'][1]:.0f} mm·s⁻¹    "
-        f"ESKF {err['eskf'][0]:.0f} mm / {err['eskf'][1]:.0f} mm·s⁻¹",
-        color="#e8e4df", fontsize=11)
-    leg = ax[0].legend(fontsize=9, ncol=3, loc="upper right", facecolor="#16130f",
-                       edgecolor="#3a342f")
-    for txt in leg.get_texts(): txt.set_color("#c9c3bc")
-    ax[1].axhline(0, color="#3a342f", lw=0.8)
-    fig.text(0.011, 0.015,
-             "The inertial estimate exists only inside a repetition, where the round-trip "
-             "conditions apply, and each segment starts from the camera's height there: "
-             "absolute height is not observable from an inertial sensor.",
-             color="#6f6a64", fontsize=8)
-    fig.tight_layout(rect=[0, 0.03, 1, 1])
-    fig.savefig(session/out_name, dpi=100, facecolor=fig.get_facecolor())
+    # Crop to the working part of the session. The long still stretches before and after
+    # the set carry no information and squeeze everything that does.
+    f_lo = max(0, min(min(r["cs"], r["a"]) for r in reps) - int(1.5/period))
+    f_hi = min(len(cam_p)-1, max(max(r["ce"], r["b"]) for r in reps) + int(1.5/period))
+    t_lo, t_hi = f_lo*period, f_hi*period
+
+    fig, ax = plt.subplots(3, 1, figsize=(7.4, 5.9), sharex=True,
+                           gridspec_kw={"height_ratios": [2.4, 1.8, 1.2], "hspace": 0.16})
+    for x in ax:
+        x.spines["top"].set_visible(False)
+        x.spines["right"].set_visible(False)
+        x.spines["left"].set_color(C_AX)
+        x.spines["bottom"].set_color(C_AX)
+        x.tick_params(colors=C_AX)
+        x.yaxis.grid(True, color=C_GRID, lw=0.6, ls="-")
+        x.set_axisbelow(True)
+
+    # PHASE SHADING. Within a repetition [a, b] the concentric is [cs, ce]; whatever is
+    # left of the repetition is the eccentric. That covers both orders without a special
+    # case: for a curl or a row the eccentric is the tail, for a bench or a squat it is
+    # the head, and for either the arithmetic is the same. A hairline at every repetition
+    # start keeps one repetition from merging into the next now that the washes are
+    # continuous rather than alternating.
+    for r in reps:
+        for x in ax:
+            x.axvspan(r["cs"]*period, r["ce"]*period, color=C_CON, alpha=A_CON, lw=0, zorder=0)
+            if r["cs"] > r["a"]:
+                x.axvspan(r["a"]*period, r["cs"]*period, color=C_ECC, alpha=A_ECC, lw=0, zorder=0)
+            if r["b"] > r["ce"]:
+                x.axvspan(r["ce"]*period, r["b"]*period, color=C_ECC, alpha=A_ECC, lw=0, zorder=0)
+            x.axvline(r["a"]*period, color="#FFFFFF", lw=1.1, zorder=1)
+            x.axvline(r["a"]*period, color=C_AX, lw=0.45, alpha=0.45, zorder=1)
+
+    # The two filters agree to within a millimetre or two over most of a repetition, so
+    # ESKF is drawn with a long dash and a long gap: the blue beneath shows through
+    # everywhere, and the eye can still follow the orange.
+    style = (("vqf", C_VQF, "VQF", 1.5, (0, ())),
+             ("eskf", C_ESKF, "ESKF", 1.1, (0, (5.0, 4.0))))
+
+    ax[0].plot(tt, cam_p, color=C_CAM, lw=1.3, label="Camera reference", zorder=3)
+    ax[1].plot(tt, cam_v, color=C_CAM, lw=1.0, zorder=3)
+    for filt, col, lab, lw, dash in style:
+        first = True
+        for seg in est[filt]:
+            f0 = seg["frames"][0]
+            ax[0].plot(seg["frames"]*period, seg["p"] + cam_p[f0], color=col, lw=lw,
+                       linestyle=dash, label=(lab if first else None), zorder=4)
+            ax[1].plot(seg["frames"]*period, seg["v"], color=col, lw=lw, linestyle=dash,
+                       zorder=4)
+            first = False
+
+    # the panel where the two filters part company
+    for filt, col, lab, lw, dash in style:
+        for seg in est[filt]:
+            f0 = seg["frames"][0]; fr = seg["frames"]
+            ax[2].plot(fr*period, (seg["p"] - (cam_p[fr]-cam_p[f0]))*1000,
+                       color=col, lw=lw*0.9, linestyle=dash, zorder=4)
+    ax[2].axhline(0, color=C_AX, lw=0.6, zorder=2)
+
+    ax[0].set_ylabel("Height (m)")
+    ax[1].set_ylabel(r"Velocity (m s$^{-1}$)")
+    ax[2].set_ylabel("Error (mm)")
+    ax[2].set_xlabel("Time (s)")
+    ax[0].set_xlim(t_lo, t_hi)
+    ax[1].axhline(0, color=C_AX, lw=0.6, zorder=2)
+
+    # Panel labels sit above each axes on the left, clear of the y-label rather than
+    # written over it.
+    for x, tag in zip(ax, ("(a)", "(b)", "(c)")):
+        x.set_title(tag, loc="left", fontsize=8.5, color=C_AX, pad=3)
+
+    # The legend goes above the figure. Inside panel (a) it covered the very curves it
+    # was labelling.
+    handles, labels = ax[0].get_legend_handles_labels()
+    handles += [Patch(facecolor=C_CON, alpha=A_CON, lw=0),
+                Patch(facecolor=C_ECC, alpha=A_ECC, lw=0)]
+    labels += ["Concentric", "Eccentric"]
+    leg = fig.legend(handles, labels, loc="upper center", ncol=5, frameon=False,
+                     handlelength=2.2, columnspacing=1.5, handletextpad=0.6,
+                     bbox_to_anchor=(0.5, 0.972))
+    for txt in leg.get_texts(): txt.set_color(C_AX)
+
+    # Give the error panel room so the traces are not clipped by the annotation that
+    # used to sit on them; the numbers now live in the header.
+    fig.suptitle(f"{session.name.replace('session_','')}  ·  "
+                 f"{meta['exercise'].replace('_',' ')}  ·  {len(reps)} repetitions",
+                 fontsize=9.5, color="#111111", y=0.995)
+    fig.text(0.5, 0.925,
+             f"median RMS within a repetition:   "
+             f"VQF {err['vqf'][0]:.0f} mm, {err['vqf'][1]:.0f} mm s$^{{-1}}$"
+             f"      ESKF {err['eskf'][0]:.0f} mm, {err['eskf'][1]:.0f} mm s$^{{-1}}$",
+             ha="center", va="top", fontsize=7.5, color=C_AX)
+    fig.text(0.5, 0.018,
+             "Shading marks the phase within each repetition and the hairlines mark "
+             "repetition starts. The inertial estimate is formed one\nrepetition at a time, "
+             "where the round-trip boundary conditions apply, and each segment is referred "
+             "to the camera height at\nthat repetition: absolute height is not observable from "
+             "an inertial sensor.",
+             ha="center", va="bottom", fontsize=6.8, color="#666666", linespacing=1.55)
+    fig.subplots_adjust(left=0.095, right=0.985, top=0.885, bottom=0.172)
+    fig.savefig(session/out_name, dpi=300)
     plt.close(fig)
     return dict(session=session.name, exercise=meta["exercise"], reps=len(reps),
                 vqf_p=err["vqf"][0], vqf_v=err["vqf"][1],
