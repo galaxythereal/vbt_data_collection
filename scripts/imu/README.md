@@ -67,3 +67,34 @@ runs 29, 32, 38, 99 mm. The height does not: across a 40-fold sweep of how much 
 accelerometer is trusted it moves 17.7 → 18.2 mm while the horizontal moves 43 → 30.
 
 That separation is what makes the attitude comparison a test with a prediction attached.
+
+## VQF against ESKF against IESKF
+
+294 repetitions, 20 sessions, everything except the attitude filter held identical.
+
+| attitude filter | peak vel | mean vel | height | horiz | 3-D |
+|---|---|---|---|---|---|
+| | mm/s | mm/s | mm | mm | mm |
+| VQF (published) | 50.9 | 40.3 | **21.8** | **32.5** | **44.3** |
+| ESKF | 51.1 | 39.7 | 25.9 | 37.0 | 49.9 |
+| IESKF ×2 | 51.1 | 39.7 | 25.9 | 37.0 | 49.9 |
+| IESKF ×3 | 51.1 | 39.7 | 25.9 | 37.0 | 49.9 |
+| IESKF ×5 | 51.1 | 39.7 | 25.9 | 37.0 | 49.9 |
+
+**Velocity does not care which filter it is.** Peak 50.9 to 51.1, mean 39.7 to 40.3. The
+prediction holds: the round-trip conditions decide the velocity and the attitude filter
+decides the path.
+
+**Iterating is worth exactly nothing.** All four iteration counts are identical to the
+last digit, because at 1 kHz the per-sample attitude correction is far too small for the
+nonlinearity of a direction observation to bite. Iteration is for large corrections and
+there are none. (An earlier version appeared to make iterating steadily *worse* — 37.0,
+37.5, 39.0, 45.0 mm. That was a missing `+ H d` term in the Gauss-Newton update, which
+made each pass apply a fresh full correction from the prior instead of re-referencing to
+it. Fixed; the null result is the real one.)
+
+**VQF keeps a small edge on the path** — 32.5 against 37.0 mm horizontal. Two guesses at
+why were tested and refuted: it is not the accelerometer trust (swept, optimum found) and
+it is not low-passing the accelerometer before the gravity update (raw 37.7, 2 Hz 37.6,
+everything else worse). What remains unexplained is about 4 mm of horizontal path error,
+against a bar that strays 114 mm from vertical.

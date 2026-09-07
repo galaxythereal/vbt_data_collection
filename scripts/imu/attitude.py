@@ -86,7 +86,7 @@ def _meas_weight(a_norm, sigma_a, g_tol=0.35):
 # same 40-fold range the HEIGHT error moves from 17.7 to 18.2 mm, which is the point:
 # attitude decides the path and the boundary conditions decide the height.
 def eskf(t, a, g, sigma_g=np.deg2rad(0.05), sigma_b=np.deg2rad(0.002),
-         sigma_a=2.0, iterations=1):
+         sigma_a=2.0, iterations=1, acc_lp=0.0):
     """Error-state Kalman filter on [tilt error, gyro bias].
 
     `iterations` = 1 is the ESKF. More than one re-linearises the gravity observation
@@ -105,6 +105,19 @@ def eskf(t, a, g, sigma_g=np.deg2rad(0.05), sigma_b=np.deg2rad(0.002),
     R_out = np.empty((n, 3, 3)); b_out = np.empty((n, 3))
     up = np.array([0.0, 0.0, 1.0])
 
+    # WHAT THE ACCELEROMETER SHOULD BE ASKED. Gravity is constant, so the part of the
+    # accelerometer that carries it is the part that does not change. Low-passing before
+    # using it as a gravity reference keeps that and discards the bar's own acceleration,
+    # instead of asking the filter to average the two through its covariance. This is what
+    # the published VQF does internally, and it is the difference between the two here.
+    a_ref = a
+    if acc_lp and acc_lp > 0:
+        from scipy.signal import butter, filtfilt
+        fs = 1.0/float(np.median(np.diff(t)))
+        if acc_lp < fs/2:
+            bb, aa = butter(2, acc_lp/(fs/2), btype="low")
+            a_ref = np.column_stack([filtfilt(bb, aa, a[:, k]) for k in range(3)])
+
     for i in range(n):
         dt = (t[i]-t[i-1]) if i else (t[1]-t[0])
         if not (0 < dt < 0.05): dt = 1e-3
@@ -122,25 +135,31 @@ def eskf(t, a, g, sigma_g=np.deg2rad(0.05), sigma_b=np.deg2rad(0.002),
         P = F @ P @ F.T + Q
 
         # ---- update against the gravity direction ------------------------------------
-        an = float(np.linalg.norm(a[i]))
+        an = float(np.linalg.norm(a_ref[i]))
         if an > 1e-6:
-            sig = _meas_weight(an, sigma_a)
+            sig = _meas_weight(float(np.linalg.norm(a[i])), sigma_a)
             Rm = np.eye(3)*sig**2
-            z = a[i]/an*G0                       # measured up direction, scaled to g
-            qi = q.copy()
+            z = a_ref[i]/an*G0                   # measured up direction, scaled to g
+            # ITERATED UPDATE, Gauss-Newton form. The correction `d` is always measured
+            # from the PROPAGATED estimate, never from the last iterate; the `+ H d` term
+            # is what re-references the residual to the prior. Leaving it out -- which is
+            # the easy mistake -- makes every pass apply a fresh full correction, so the
+            # filter overshoots and iterating monotonically hurts: measured 37.0, 37.5,
+            # 39.0, 45.0 mm of horizontal error for one to five passes.
+            d = np.zeros(6)
+            K = None; H = None
             for _ in range(max(1, iterations)):
-                Rq = _quat_to_R(qi)
-                h = Rq.T @ (up*G0)               # predicted up direction in body axes
+                qi = _quat_mul(q, _quat_from_rotvec(d[:3]))
+                qi /= np.linalg.norm(qi)
+                h = _quat_to_R(qi).T @ (up*G0)   # predicted up direction in body axes
                 H = np.zeros((3, 6))
                 H[:, :3] = _skew(h)
                 S = H @ P @ H.T + Rm
                 K = P @ H.T @ np.linalg.inv(S)
-                dx = K @ (z - h)
-                qi = _quat_mul(qi, _quat_from_rotvec(dx[:3]))
-                qi /= np.linalg.norm(qi)
-            # the bias correction comes from the final pass
-            b = b + dx[3:]
-            q = qi
+                d = K @ ((z - h) + H @ d)
+            q = _quat_mul(q, _quat_from_rotvec(d[:3]))
+            q /= np.linalg.norm(q)
+            b = b + d[3:]
             P = (np.eye(6) - K @ H) @ P
             P = 0.5*(P + P.T)
 
@@ -163,9 +182,16 @@ def vqf_rotations(t, a, g, bias):
     return R_out, np.tile(bias, (n, 1))
 
 
+# Low-passing the accelerometer before using it as a gravity reference sounded like
+# the obvious explanation for VQF's edge on the path, and it is not: raw gives 37.7 mm
+# of horizontal error, 2 Hz gives 37.6, and 1 Hz, 0.5 Hz and 5 Hz are all worse
+# (0.5 Hz much worse -- it removes gravity along with the motion). Left off.
+ESKF_ACC_LP = 0.0
+
+
 def rotations(name, t, a, g, bias):
     """One entry point, so the rest of the pipeline does not know which filter it has."""
     if name == "vqf":   return vqf_rotations(t, a, g, bias)
-    if name == "eskf":  return eskf(t, a, g, iterations=1)
-    if name == "ieskf": return eskf(t, a, g, iterations=3)
+    if name == "eskf":  return eskf(t, a, g, iterations=1, acc_lp=ESKF_ACC_LP)
+    if name == "ieskf": return eskf(t, a, g, iterations=3, acc_lp=ESKF_ACC_LP)
     raise ValueError(f"unknown attitude filter '{name}'")
