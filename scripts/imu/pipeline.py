@@ -42,6 +42,8 @@ STAGES
 import argparse, csv, json, math, sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 import numpy as np
 from scipy.signal import butter, filtfilt
 
@@ -146,25 +148,16 @@ def calibrate(a, g):
 LEVER_ARM_M = np.array([-0.070, 0.030, -0.096])
 
 
-def orientation_vqf(t, a, g, bias, lever=True):
-    """VQF. Returns the world-frame specific force with gravity removed, referred to the
-    marker rather than to the sensor."""
-    from vqf import VQF
-    dt = float(np.median(np.diff(t)))
-    f = VQF(dt)
-    out = np.empty_like(a)
-    rot = np.empty((len(t), 3, 3))
-    for i in range(len(t)):
-        f.update(np.ascontiguousarray(g[i] - bias), np.ascontiguousarray(a[i]))
-        # rotate body -> world with the quaternion VQF reports (w, x, y, z)
-        w, x, y, z = f.getQuat6D()
-        R = np.array([
-            [1-2*(y*y+z*z), 2*(x*y-w*z),   2*(x*z+w*y)],
-            [2*(x*y+w*z),   1-2*(x*x+z*z), 2*(y*z-w*x)],
-            [2*(x*z-w*y),   2*(y*z+w*x),   1-2*(x*x+y*y)]])
-        rot[i] = R
-        out[i] = R @ a[i]
-    out[:, 2] -= G0           # VQF's world frame has z up
+def orientation(t, a, g, bias, lever=True, filt="vqf"):
+    """World-frame specific force with gravity removed, referred to the marker rather than
+    to the sensor. `filt` selects the attitude filter and nothing else changes with it, so
+    a difference in the result is a difference between the filters."""
+    from attitude import rotations
+    rot, b_est = rotations(filt, t, a, g, bias)
+    out = np.einsum('ijk,ik->ij', rot, a)
+    out[:, 2] -= G0           # every filter here puts the vertical on axis 2
+    # ESKF and IESKF estimate the bias as they go; VQF is given it up front
+    g = g - (b_est - bias) if filt != "vqf" else g
     if lever:
         # The offset is fixed in the BODY, so in the world frame it turns with the bar.
         #   position: p_marker(t) - p_marker(0) = dp_sensor + (R(t) - R(0)) r
@@ -260,7 +253,9 @@ def run_session(session: Path, args):
     bias, scale, n_still = calibrate(a, g)
     a = a * scale                                   # the scale the still windows measured
 
-    world, lever_v, lever_p = orientation_vqf(t, a, g, bias, lever=getattr(args, "lever", True))
+    world, lever_v, lever_p = orientation(t, a, g, bias,
+                                          lever=getattr(args, "lever", True),
+                                          filt=getattr(args, "filter", "vqf"))
     up = bandlimit(world[:, 2], fs, lp=args.lp, hp=args.hp)
 
     out = []
@@ -338,6 +333,8 @@ def main():
                    choices=["none", "velocity", "position", "both"])
     p.add_argument("--no-lever", dest="lever", action="store_false",
                    help="do not refer the velocity to the marker")
+    p.add_argument("--filter", default="vqf", choices=["vqf", "eskf", "ieskf"],
+                   help="which attitude filter")
     p.add_argument("--sessions", nargs="*", default=None)
     args = p.parse_args()
 
@@ -348,7 +345,8 @@ def main():
         try: rows += run_session(s, args)
         except Exception as e: print(f"  {s.name}: {e}", file=sys.stderr)
     print(f"\n{len(sess)} sessions, low-pass {args.lp} Hz, high-pass {args.hp} Hz, "
-          f"constraint '{args.constrain}', lever arm {'on' if args.lever else 'off'}")
+          f"constraint '{args.constrain}', lever arm {'on' if args.lever else 'off'}, "
+          f"attitude {args.filter.upper()}")
     report(rows, "all")
     return rows
 

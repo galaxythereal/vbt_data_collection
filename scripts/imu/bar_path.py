@@ -42,22 +42,14 @@ def camera_path(session: Path):
     return np.column_stack([x, y, z])
 
 
-def imu_world(t, a, g, bias, lp):
+def imu_world(t, a, g, bias, lp, filt="vqf"):
     """World-frame specific force with gravity removed, plus the lever-arm terms, on all
     three axes. The vertical is axis 2; the other two share an unknown heading."""
-    from vqf import VQF
-    dt = float(np.median(np.diff(t)))
-    f = VQF(dt)
-    acc = np.empty_like(a); rot = np.empty((len(t), 3, 3))
-    for i in range(len(t)):
-        f.update(np.ascontiguousarray(g[i] - bias), np.ascontiguousarray(a[i]))
-        w, x, y, z = f.getQuat6D()
-        R = np.array([[1-2*(y*y+z*z), 2*(x*y-w*z),   2*(x*z+w*y)],
-                      [2*(x*y+w*z),   1-2*(x*x+z*z), 2*(y*z-w*x)],
-                      [2*(x*z-w*y),   2*(y*z+w*x),   1-2*(x*x+y*y)]])
-        rot[i] = R; acc[i] = R @ a[i]
+    from attitude import rotations
+    rot, _ = rotations(filt, t, a, g, bias)
+    acc = np.einsum('ijk,ik->ij', rot, a)
     acc[:, 2] -= G0
-    fs = 1.0/dt
+    fs = 1.0/float(np.median(np.diff(t)))
     for k in range(3):
         acc[:, k] = bandlimit(acc[:, k], fs, lp=lp)
     om = g - bias
@@ -89,13 +81,13 @@ def fit_yaw(imu_h, cam_h):
     return np.arctan2(b, a)
 
 
-def run(session: Path, lp=10.0):
+def run(session: Path, lp=10.0, filt="vqf"):
     meta, reps = load_reps(session)
     if not reps: return None
     t, a, g = load_imu(session)
     sync = load_sync(session); cam = camera_path(session)
     bias, scale, _ = calibrate(a, g); a = a*scale
-    acc, vl, pl = imu_world(t, a, g, bias, lp)
+    acc, vl, pl = imu_world(t, a, g, bias, lp, filt)
 
     paths = []
     for r in reps:
@@ -213,12 +205,13 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--n", type=int, default=30)
     p.add_argument("--lp", type=float, default=10.0)
+    p.add_argument("--filter", default="vqf", choices=["vqf", "eskf", "ieskf"])
     p.add_argument("--figure", default=None)
     args = p.parse_args()
     sessions = []
     for s in sorted(DS.glob("session_*"))[:args.n]:
         try:
-            r = run(s, args.lp)
+            r = run(s, args.lp, args.filter)
             if r: sessions.append(r)
         except Exception as e:
             print(f"  {s.name}: {e}", file=sys.stderr)
