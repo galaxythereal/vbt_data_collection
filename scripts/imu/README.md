@@ -98,3 +98,54 @@ why were tested and refuted: it is not the accelerometer trust (swept, optimum f
 it is not low-passing the accelerometer before the gravity update (raw 37.7, 2 Hz 37.6,
 everything else worse). What remains unexplained is about 4 mm of horizontal path error,
 against a bar that strays 114 mm from vertical.
+
+## What all of this owes the camera
+
+    .venv/bin/python scripts/imu/independence.py --n 84
+
+Every figure above is obtained inside a repetition whose start and end came from the
+camera. That is fine as an isolation of the integration from the detection, and it is not
+what a bar-mounted device can do. Three things enter the estimator from the camera side —
+the repetition boundaries, the 12.3 cm lever arm, and (for the path only) one heading per
+session. Nothing else does: there is **no ZUPT** anywhere, the gyro bias and accelerometer
+scale come from still windows found in the sensor's own gyro signal, the timebase comes
+from the hardware pulse train, and the turnaround is never used at all.
+
+`independence.py` takes the camera away a piece at a time, over all 84 sessions and 1400
+repetitions, scoring displaced boundaries rather than discarding them — dropping the reps
+a mis-placed boundary ruined is how a fragile method comes to look robust.
+
+| what the camera supplies | peak | mean |
+|---|---|---|
+| boundaries, exact | 50.5 mm/s | 36.0 mm/s |
+| boundaries, off by ±2 frames | 57.5 | 43.6 |
+| boundaries, off by ±5 | 79.0 | 66.5 |
+| boundaries, off by ±10 | 116.6 | 117.1 |
+| boundaries, off by ±20 | 263.2 | 237.4 |
+| the start only, no round trip | 92.4 | 91.3 |
+| **nothing, high-pass 0.1 Hz** | **56.9** | **51.0** |
+| nothing, no high-pass | 1406.4 | 1388.4 |
+| no lever arm | 70.1 | 42.9 |
+| lever arm at half | 53.2 | 36.4 |
+| lever arm at double | 87.4 | 52.0 |
+
+**Precise boundaries buy the accuracy, not boundaries.** Removing them entirely costs
+6 mm/s (50.5 → 56.9). Keeping them and placing them ten frames off costs 66 (50.5 →
+116.6). A boundary condition at the wrong instant is not a weak constraint but a wrong
+one — it injects a ramp that was never there. So a detector that cannot land within about
+two frames is worse than no detector, and one that can gains ~6 mm/s over high-passing.
+
+**The lever arm must be there and need not be right.** Dropping it costs 20 mm/s, but half
+or double costs 3–37, and half is within 3 mm/s of the fitted value. The 12.3 cm fitted
+against the camera can be a tape measure against the bracket instead. It was a
+convenience, not a dependency.
+
+**Two limits on the boundary-free row.** The high-pass is `filtfilt`, zero-phase and
+non-causal — legitimate for an offline reference, unavailable to a real-time device, which
+would do worse. And the interval the score runs over is still the camera's in every row:
+something has to say where the concentric was. That is the camera as a ruler, not as an
+input. The estimator can be made camera-free; the *evaluation* cannot, and a device
+reporting per-repetition velocity would still have to count repetitions on its own — a
+counting problem, not an integration one, and the two should never be one number.
+
+Written up for the paper in `paper/10_inertial_baseline.tex`.
