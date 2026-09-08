@@ -137,10 +137,25 @@ def vertical_reference(t, a, w, tau_acc=2.0):
     return body/np.maximum(n, 1e-12)*G0
 
 
+# MEASURED, not guessed. scripts/imu/noise_characterisation.py computes the overlapping
+# Allan deviation from 507 s of stillness found across the 84 sessions:
+#
+#   gyroscope     white noise   1.93 mdeg/s/sqrt(Hz)   bias instability 12.2 deg/h
+#                 rate random walk 7.67 mdeg/s/s/sqrt(Hz)
+#   accelerometer white noise   50.1 ug/sqrt(Hz)       bias instability 100 ug
+#
+# The values this filter had been using were set by hand and are wrong in both directions:
+# sigma_g was 26 times too large, so the filter distrusted the gyroscope and leaned on an
+# accelerometer being shaken by the lift, and sigma_b was about 4 times too small, so it
+# under-modelled the bias drift it was supposed to be tracking.
+SIGMA_G_MEAS = 3.366e-05       # rad/s/sqrt(s), the gyro white-noise density N
+SIGMA_B_MEAS = 1.339e-04       # rad/s/s/sqrt(s), the gyro rate random walk K
+
+
 def eskf(t, a, g, *, bias=None, decim=1, iterations=1, smooth=False,
          frame="body", meas="raw", tau_acc=2.0,
-         sigma_g=np.deg2rad(0.05), sigma_b=np.deg2rad(0.002), sigma_a=2.0,
-         rest=False, g_tol=0.35):
+         sigma_g=SIGMA_G_MEAS, sigma_b=SIGMA_B_MEAS, sigma_a=2.0,
+         rest=False, g_tol=0.35, huber=0.0, nis=None):
     """Error-state Kalman filter on [tilt error, gyroscope bias], optionally iterated and
     optionally smoothed. Returns (R per sample, bias per sample)."""
     n = len(t)
@@ -205,6 +220,25 @@ def eskf(t, a, g, *, bias=None, decim=1, iterations=1, smooth=False,
             Rm = np.eye(3)*sig**2
             z = zv/an*G0
             d = np.zeros(6); K = None; H = None
+            # ROBUST UPDATE, if asked for. Gemini's recipe and the EURASIP robust-ESKF
+            # line: inflate the measurement covariance by the Huber weight of the
+            # normalised innovation. The same literature is explicit that this is
+            # SUBOPTIMAL under Gaussian conditions, so it is only worth switching on if
+            # the innovations actually have heavy tails -- which is what `nis` measures.
+            if huber > 0.0:
+                h0 = _qR(q).T @ (up*G0)
+                y0 = z - h0
+                H0 = np.zeros((3, 6)); H0[:, :3] = _skew(h0)
+                S0 = H0 @ P @ H0.T + Rm
+                dd = float(np.sqrt(max(y0 @ np.linalg.solve(S0, y0), 0.0)))
+                if dd > huber:
+                    Rm = Rm * (dd/huber)
+            if nis is not None:
+                h0 = _qR(q).T @ (up*G0)
+                y0 = z - h0
+                H0 = np.zeros((3, 6)); H0[:, :3] = _skew(h0)
+                S0 = H0 @ P @ H0.T + Rm
+                nis.append(float(y0 @ np.linalg.solve(S0, y0)))
             for _ in range(max(1, iterations)):
                 qi = _qmul(q, _qexp(d[:3])) if frame == "body" else _qmul(_qexp(d[:3]), q)
                 qi /= np.linalg.norm(qi)

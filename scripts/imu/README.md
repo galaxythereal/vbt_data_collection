@@ -336,7 +336,7 @@ the rest test, and on a barbell between sets that is not the same as the sensor 
 | VQF | 50.5 | 36.0 | 55.7 | 20.1 |
 | VQF, offline (published) | 50.5 | 35.9 | 55.8 | 20.1 |
 | zvqf | 49.9 | 35.1 | 54.9 | 20.2 |
-| **eskf2 (RTS + low-passed reference)** | **49.8** | **35.1** | **54.9** | 20.2 |
+| **eskf2 (RTS + low-passed reference)** | **49.9** | **35.1** | **54.9** | 20.2 |
 
 So the ESKF did have more to give — 51.6 to 49.8 mm/s, and from last place to first. But
 what it converged on is the same number every other engine reaches, and the change that got
@@ -364,3 +364,79 @@ consistent sign** (mean +3.5 mm, sd 109.6, 54.6% positive), the concentric peak 
 0.28 T rather than the 0.75 T two reports assumed, and the bias is exercise-specific and
 **changes sign** — deadlift −25.2 mm/s with the parabola *adding* +31.3, biceps curl
 **+6.0**. See `bias_mechanism.py`.
+
+## Why every engine converged: the filter has nothing to update
+
+    .venv/bin/python scripts/imu/noise_characterisation.py --n 84
+    .venv/bin/python scripts/imu/eskf_consistency.py --n 84
+
+Two of the research reports named the same deciding test for whether a robust ESKF is worth
+building — look at the innovation statistics first — and it had never been done here. It
+turns out to explain every null result above in one number.
+
+**The filter's consistency.** The normalised innovation squared should average 3 for a
+three-component measurement. Measured over 2.26 million updates on the training half:
+
+| measurement | σ_a | mean NIS | median | > 99% gate | excess kurtosis |
+|---|---|---|---|---|---|
+| low-passed gravity reference | 0.1 | **0.01** | 0.00 | 0.0% | 11.7 |
+| low-passed gravity reference | 2.0 | 0.00 | 0.00 | 0.0% | 27.5 |
+| raw accelerometer | 0.1 | 5.90 | 0.07 | 6.4% | **876** |
+| raw accelerometer | 2.0 | 0.02 | 0.00 | 0.0% | 825 |
+
+With the low-passed reference the mean NIS is **0.01 against an expected 3**, and it barely
+moves when σ_a is changed by a factor of a hundred — so it is not a covariance that is too
+wide, the innovation itself is essentially zero. A 3 s low-pass sampled at 1 kHz is so
+smooth that the prediction is already right. **A filter whose innovations carry no
+information cannot be improved by a better update rule**, which is why VQF, OfflineVQF,
+zvqf, the ESKF and the IESKF all land within a millimetre per second of each other, and why
+iterating does nothing. Once the gravity/motion separation is done *outside* the filter,
+where a zero-phase low-pass can use the whole record, the filter is decoration.
+
+**Process noise, measured instead of guessed.** The paper has carried an Allan-variance
+section marked "planned" since it was written. From 507 s of stillness found across the 84
+sessions (72 stretches):
+
+| | measured |
+|---|---|
+| gyro white noise (ARW) | 1.93 mdeg/s/√Hz |
+| gyro bias instability | 12.2 °/h |
+| gyro rate random walk | 7.67 mdeg/s/s/√Hz |
+| accelerometer white noise (VRW) | 50.1 µg/√Hz |
+| accelerometer bias instability | 100 µg |
+
+The hand-set values were wrong in both directions: **σ_g was 26× too large**, so the filter
+distrusted the gyroscope and leaned on an accelerometer being shaken by the lift, and
+**σ_b was about 4× too small**, so it under-modelled the very bias drift it was tracking.
+Both are now taken from the measurement (`SIGMA_G_MEAS`, `SIGMA_B_MEAS` in `eskf.py`). It
+changes the corpus figure by 0.1 mm/s — because of the paragraph above — but a filter whose
+process noise is wrong by 26× was not tuned, it happened to work, and the numbers now
+belong in the paper's Allan section.
+
+**The robust update: justified by the tails, and worth nothing.** The raw measurement has
+excess kurtosis ~850 with a mean NIS 84× its median — mostly tiny innovations punctuated by
+huge ones, which is the textbook condition for an M-estimator. Implemented as the standard
+Huber inflation `R ← R·(d/c)` for `d > c`, and tested on the held-out half:
+
+| held out, 682 reps | peak | mean | height | horiz | 3-D |
+|---|---|---|---|---|---|
+| raw accelerometer, σ_a = 2 | 51.8 | 33.5 | 20.7 | 38.4 | 47.5 |
+| raw + Huber c = 3 | 51.7 | 33.5 | 20.8 | 39.0 | 47.5 |
+| raw + IESKF ×3 | 51.8 | 33.5 | 20.7 | 38.4 | 47.5 |
+| **low-passed reference (eskf2)** | **51.3** | 33.5 | **19.2** | **36.4** | **44.6** |
+
+Nothing, at c = 5 or c = 3, and worse at the canonical c = 1.345. The reason is worth
+stating: **the outliers here are not measurement failures, they are the bar being driven.**
+They recur identically in every repetition. A robust loss rejects contamination; it has no
+mechanism for structured signal that is phase-locked to the motion. The existing |a| − g
+weighting with a large σ_a has already done the only useful part, which is why sweeping σ_a
+upward keeps helping (0.5 → 49.3, 2 → 48.8, 8 → 48.6 mm/s) and converges on what the
+low-pass does properly.
+
+**And iteration was tested on the right axis this time.** Iteration matters where the tilt
+error is large, which is at start-up, not in the steady state — sweeping the update interval
+tested the wrong thing. On the raw measurement, where innovations exist, IESKF ×3 reproduces
+the ESKF to the last digit on held-out data.
+
+The ESKF/IESKF line is exhausted, and now for a measured reason rather than an empirical
+one.
