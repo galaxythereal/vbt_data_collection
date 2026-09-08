@@ -13,7 +13,9 @@ WHAT THE DATA SAYS, AND WHAT FOLLOWS FROM IT
   20-25 mm/s, dominated by gravity leaking in through orientation error.
 
   There is no zero-velocity update. At a repetition boundary the bar still rotates at
-  10 dps (median). A human holding a loaded barbell never stops moving it, so anything
+  14.2 deg/s (median, measured by lever_observability.py over 1400 repetitions; an earlier
+  rough figure of 10 was carried here for a while). A human holding a loaded barbell never
+  stops moving it, so anything
   anchored on detected stillness is ruled out.
 
   But the VERTICAL velocity at a boundary is near zero even while the bar rotates -- the

@@ -600,11 +600,22 @@ condition was compensating for it; with the right one, dropping it is worth 1.7 
 [`scripts/imu/pipeline.py --n 84`](../scripts/imu/pipeline.py),
 [`scripts/imu/bar_path.py --n 84`](../scripts/imu/bar_path.py). All 1400 repetitions.
 
+**Both engines, because the numbers differ and every table must say which.** The existing
+draft [`10_inertial_baseline.tex`](10_inertial_baseline.tex) quotes the VQF row and says so
+in its prose; this table gives both so the two documents cannot drift apart again.
+
 | | RMSE | bias | 95% LoA | R² |
 |---|---|---|---|---|
+| **attitude: ESKF** (`eskf2`) | | | | |
 | peak concentric velocity | **49.9 mm/s** | −11.7 | ±95.0 | 0.96 |
 | mean concentric velocity | **35.1 mm/s** | −7.5 | ±67.1 | 0.95 |
 | range of motion | 54.9 mm | −18.4 | ±101.5 | 0.79 |
+| height over the repetition, median | 20.2 mm | | 90th 56.6 | |
+| **attitude: VQF** | | | | |
+| peak concentric velocity | 50.5 mm/s | −10.9 | ±96.7 | 0.96 |
+| mean concentric velocity | 36.0 mm/s | −6.6 | ±69.3 | 0.95 |
+| range of motion | 55.7 mm | −17.5 | ±103.7 | 0.79 |
+| height over the repetition, median | 20.1 mm | | 90th 57.5 | |
 
 Path, as the median RMS error within a repetition:
 
@@ -909,7 +920,16 @@ throughout; VQF in brackets.
 | range of motion | 39.1 (40.4) | **37.1** (37.6) | +2.5 (+3.4) | −74.0 … +79.0 | .9464 | .896 | .945 | 5.39% |
 
 Height over the repetition, RMS within each repetition: **median 12.0 mm**, 90th 51.2, RMS
-43.9. That median is better than the §5.6 camera-boundary figure of 20.1 mm.
+43.9. That median is better than the §5.6 camera-boundary figure (20.2 mm for the same
+engine, 20.1 for VQF).
+
+**A naming collision the paper must not make.** "Height over the repetition" appears in both
+§5.6 and here and means the same *kind* of measurement — the RMS difference over a
+repetition, each track referred to its own value at the repetition start — but under two
+different pipelines: §5.6 integrates one repetition at a time under camera boundaries,
+whereas this figure comes from one continuous integration with no boundaries at all. Give
+them distinct names in the paper (for instance "height error, reference boundaries" and
+"height error, camera-free") rather than one row that silently changes meaning.
 
 **Decision: report SEE alongside RMSE.** SEE is the scatter surviving a best-fit line, so it
 excludes both the fixed and the proportional bias; the velocity-based-training literature

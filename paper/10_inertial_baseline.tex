@@ -54,7 +54,7 @@ the departure from vertical need no heading and are reported separately.
 
 \paragraph{What is not taken.} There is no zero-velocity update anywhere in the pipeline,
 and none is possible: at a repetition boundary the bar is still rotating at
-\SI{10}{\degree\per\second} (median over the corpus), because a person holding a loaded
+\SI{14.2}{\degree\per\second} (median over the corpus), because a person holding a loaded
 barbell never stops moving it. Anything anchored on detected stillness is ruled out, which
 is precisely why the round-trip conditions above are used instead. Gyroscope bias and
 accelerometer scale come from windows \emph{found} to be still in the sensor's own angular
@@ -83,10 +83,15 @@ Section~\ref{sec:imu_given}.
     \toprule
     & RMSE & bias & 95\% LoA & $R^2$ \\
     \midrule
-    \multicolumn{5}{l}{\emph{Per repetition, against the camera}} \\
+    \multicolumn{5}{l}{\emph{Per repetition, against the camera --- attitude from VQF}} \\
     Peak concentric velocity (\si{\milli\metre\per\second})  & 50.5 & $-10.9$ & $\pm 96.7$  & 0.96 \\
     Mean concentric velocity (\si{\milli\metre\per\second})  & 36.0 & $-6.6$  & $\pm 69.3$  & 0.95 \\
     Range of motion (\si{\milli\metre})                      & 55.7 & $-17.5$ & $\pm 103.7$ & 0.79 \\
+    \midrule
+    \multicolumn{5}{l}{\emph{The same, with attitude from the error-state filter of Sec.~\ref{sec:imu_accuracy}}} \\
+    Peak concentric velocity (\si{\milli\metre\per\second})  & 49.9 & $-11.7$ & $\pm 95.0$  & 0.96 \\
+    Mean concentric velocity (\si{\milli\metre\per\second})  & 35.1 & $-7.5$  & $\pm 67.1$  & 0.95 \\
+    Range of motion (\si{\milli\metre})                      & 54.9 & $-18.4$ & $\pm 101.5$ & 0.79 \\
     \midrule
     & median & 90th & & \\
     \midrule
