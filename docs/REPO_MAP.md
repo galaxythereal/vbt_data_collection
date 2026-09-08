@@ -576,3 +576,4 @@ This pulls together the open questions that affect the next steps. Per-area list
 - Studio internals: `MarkerQualityPanel`/`MetadataPanel` appear unmounted; `render_validation_tab_()` mount point and several docstring hotkeys not located.
 - `RepSegConfig` / `PlausibilityConfig` consumers in `app/Config.h` not exhaustively traced before pruning.
 - `build*/` and `golden_model/` not searched for stale copies of the removal-target classes.
+
