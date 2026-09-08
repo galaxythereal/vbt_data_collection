@@ -90,7 +90,32 @@ version of what is and is not in this repository:
 | `../paper/07_dataset_format.tex`, `../paper/08_validation.tex` | not `\input` by `main.tex`; `08_dataset_format` and `09_validation` are the live ones. |
 | `../paper/09_validation.tex` | still contains a "Golden Model Pipeline" subsection for a model that was removed, and an Allan-variance section marked *planned* that `PAPER_SOURCE.md` §5.1 now measures. |
 
-## Branch
+## Branches, and why they cannot simply be merged
 
-Work is on **`dataset-cleanup`**. It is well ahead of `main`, which has diverged and has not
-been reconciled; treat this branch as current.
+Work is on **`dataset-cleanup`**. Treat it as current.
+
+**`main` has an unrelated history.** `git merge-base` between the two returns nothing: there
+is no common ancestor, so this is not a branch that has drifted, it is a second history. A
+merge needs `--allow-unrelated-histories`, produces **40 conflicts**, and would add 462
+files — 299 of them a committed `.claude/worktrees/` including vendored ESP32 library
+dependencies, and 14 of them `golden_model/`, which was removed on instruction. So `main` is
+to be **replaced**, not merged.
+
+Nothing valuable is lost by that: `thesis/` and seven design-record documents have been
+carried across (the latter into [`historical/`](historical/), marked as not current), and
+[`historical/README.md`](historical/README.md) lists exactly what was left behind and why.
+Everything on `main` stays retrievable from `origin/main` regardless.
+
+## ⚠ Before making this repository public
+
+**The history of both branches contains raw data.** 67 objects match `ir_video`, `raw_imu`,
+`whatsapp`, `presidential_briefing` or `golden_model` — participant infrared video and
+inertial streams from early sessions, under paths like `datasets/sessions/`, `ds/` and
+`test_annotation/`. Deleting a file from the working tree does not remove it from history; a
+public clone carries all of it.
+
+The corpus was deliberately published *without* raw data (see the root `README.md`), so
+making this repository public as it stands would defeat that decision rather than implement
+it. Publish a **fresh repository with a single commit built from the working tree** instead,
+and keep this one private as the working repository. `../paper/PAPER_SOURCE.md` §12 lists
+exactly what belongs in such a release.
