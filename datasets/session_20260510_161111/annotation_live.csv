@@ -1,0 +1,21 @@
+# real-time (causal) annotation produced during acquisition
+# exercise=biceps_curl rom_prior_m=0.5 down_first=0
+# gap_frames counts the frames of the rep on which the marker was NOT seen. A missing measurement is never interpolated or extrapolated: no boundary, rest or statistic in this file is derived from an unseen frame.
+# confirmed=1 means the rep's cycle CLOSED (the bar returned to the level it started from). Provisional reps (confirmed=0) completed a concentric but never returned - typically an unrack/rack/pickup.
+# down_first=1 means a rep of this exercise STARTS with the eccentric (bench, squat), so the phases run eccentric -> bottom_rest -> concentric. down_first=0 runs concentric -> top_rest -> eccentric. The bit moves only where the rep boundary is drawn.
+rep_id,concentric_start_frame,concentric_end_frame,eccentric_start_frame,eccentric_end_frame,top_rest_start_frame,top_rest_end_frame,bottom_rest_start_frame,bottom_rest_end_frame,rom_m,peak_velocity,mean_velocity,confirmed,dropped_eccentric,tracking_gap,gap_frames
+1,1056,1169,1169,1291,-1,-1,-1,-1,0.676507,1.76593,0.910513,1,0,0,0
+2,1291,1358,1358,1529,-1,-1,-1,-1,0.71375,1.92648,1.06178,1,0,0,0
+3,1529,1634,1634,1767,-1,-1,1770,1772,0.67318,1.84055,0.966706,1,0,0,0
+4,1772,1868,1868,2003,-1,-1,-1,-1,0.757985,1.87695,0.980178,1,0,0,0
+5,2003,2066,2066,2205,-1,-1,-1,-1,0.688308,1.8463,1.05152,1,0,0,0
+6,2226,2338,2338,2479,-1,-1,-1,-1,0.677772,1.52923,0.832849,1,0,0,0
+7,2479,2555,2555,2710,-1,-1,-1,-1,0.710517,1.87427,0.949785,1,0,0,0
+8,2724,2794,2794,2938,-1,-1,-1,-1,0.718445,1.8908,1.04417,1,0,0,0
+9,2938,3108,3108,3212,-1,-1,3212,3214,0.735391,1.69894,0.876068,1,1,0,0
+10,3214,3280,3280,3417,-1,-1,-1,-1,0.760743,2.00542,1.09172,1,0,0,0
+11,3443,3586,3586,3678,-1,-1,3679,3684,0.719034,1.68616,0.839667,1,0,0,0
+12,3684,3767,3767,3929,-1,-1,-1,-1,0.701104,1.31219,0.789039,1,0,0,0
+13,3929,4072,4072,4165,-1,-1,-1,-1,0.699004,1.67685,0.79691,1,0,0,0
+14,4177,4251,4251,4388,-1,-1,-1,-1,0.739089,1.76536,0.95067,1,0,0,0
+15,4417,4496,4496,4854,-1,-1,-1,-1,0.753308,1.82161,0.952851,0,0,0,0

@@ -1,0 +1,44 @@
+{
+  "created_at": "2026-05-11T12:58:13",
+  "events_sha256": "435495f608c90e105b2be09c9f150f2c099377ed12a2c2d5f2af7e35c28a4952",
+  "files": [
+    {
+      "bytes": 942480,
+      "path": "imu/raw_imu.bin"
+    },
+    {
+      "bytes": 5664555,
+      "path": "imu/raw_imu.csv"
+    },
+    {
+      "bytes": 635664,
+      "path": "imu/camera_imu.csv"
+    },
+    {
+      "bytes": 397073,
+      "path": "camera/marker_positions.csv"
+    },
+    {
+      "bytes": 190744,
+      "path": "camera/depth_at_marker.csv"
+    },
+    {
+      "bytes": 224696,
+      "path": "camera/video_frames.csv"
+    },
+    {
+      "bytes": 73441833,
+      "path": "camera/ir_video.mp4"
+    },
+    {
+      "bytes": 3449,
+      "path": "events.jsonl"
+    },
+    {
+      "bytes": 6905,
+      "path": "metadata.json"
+    }
+  ],
+  "schema_version": 1,
+  "session_id": "session_20260511_125813"
+}

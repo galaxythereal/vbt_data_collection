@@ -1,0 +1,4 @@
+rep_id,concentric_start_frame,concentric_end_frame,eccentric_start_frame,eccentric_end_frame,rom_m,peak_velocity,gap_frames,confirmed
+1,557,677,677,772,0.378032,0.715244,0,1
+2,776,872,872,996,0.492861,0.775828,0,1
+3,996,1095,1095,1331,0.475907,0.782855,0,0

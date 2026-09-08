@@ -1,0 +1,21 @@
+# real-time (causal) annotation produced during acquisition
+# exercise=bench_press rom_prior_m=0.45 down_first=1
+# gap_frames counts the frames of the rep on which the marker was NOT seen. A missing measurement is never interpolated or extrapolated: no boundary, rest or statistic in this file is derived from an unseen frame.
+# confirmed=1 means the rep's cycle CLOSED (the bar returned to the level it started from). Provisional reps (confirmed=0) completed a concentric but never returned - typically an unrack/rack/pickup.
+# down_first=1 means a rep of this exercise STARTS with the eccentric (bench, squat), so the phases run eccentric -> bottom_rest -> concentric. down_first=0 runs concentric -> top_rest -> eccentric. The bit moves only where the rep boundary is drawn.
+rep_id,concentric_start_frame,concentric_end_frame,eccentric_start_frame,eccentric_end_frame,top_rest_start_frame,top_rest_end_frame,bottom_rest_start_frame,bottom_rest_end_frame,rom_m,peak_velocity,mean_velocity,confirmed,dropped_eccentric,tracking_gap,gap_frames
+1,1068,1126,962,1068,-1,-1,-1,-1,0.384156,1.06085,0.660293,1,0,0,0
+2,1219,1278,1126,1219,-1,-1,-1,-1,0.454314,1.19814,0.725376,1,0,0,0
+3,1365,1425,1278,1365,-1,-1,-1,-1,0.52827,1.43064,0.844695,1,0,0,0
+4,1508,1573,1425,1508,-1,-1,-1,-1,0.539476,1.35176,0.75765,1,0,0,0
+5,1668,1730,1573,1668,-1,-1,-1,-1,0.518153,1.5798,0.763089,1,0,0,0
+6,1806,1871,1730,1806,-1,-1,-1,-1,0.488875,1.1735,0.722697,1,0,0,0
+7,1965,2027,1871,1961,-1,-1,1961,1965,0.465101,1.047,0.693382,1,0,0,0
+8,2125,2185,2027,2125,-1,-1,-1,-1,0.512837,1.39196,0.839671,1,0,0,0
+9,2292,2351,2185,2292,-1,-1,-1,-1,0.50812,1.40897,0.816128,1,0,0,0
+10,2446,2507,2351,2446,-1,-1,-1,-1,0.54751,1.52095,0.863461,1,0,0,0
+11,2587,2652,2507,2587,-1,-1,-1,-1,0.524897,1.24537,0.81077,1,0,0,0
+12,2718,2785,2652,2718,-1,-1,-1,-1,0.552026,1.20491,0.793006,1,0,0,0
+13,2885,2949,2785,2885,-1,-1,-1,-1,0.494412,1.13548,0.730903,1,0,0,0
+14,3028,3092,2949,3028,-1,-1,-1,-1,0.51144,1.27017,0.759082,1,0,0,0
+15,-1,-1,3119,3436,-1,-1,-1,-1,0,0,0,0,0,0,0

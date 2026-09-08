@@ -1,6 +1,8 @@
 # REPO_MAP — vbt_data_collection (Step 0 orientation)
 
-> **MOSTLY SUPERSEDED (2026-09-05). Read the banner before trusting anything below.**
+> **MOSTLY SUPERSEDED (2026-09-05). Read the banner before trusting anything below,
+> and read [WHAT_IS_HERE.md](WHAT_IS_HERE.md) instead — it is the current orientation
+> to this repository.**
 >
 > This document was the orientation deliverable for a design that was **never built**: a
 > Python package `vbt_gt`, milestones M0-M5, PCA projection, an HSMM decoder, ZUPT states,

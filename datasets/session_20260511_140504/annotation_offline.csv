@@ -1,0 +1,9 @@
+# {"down_first":0,"dropped_frames":11,"exercise":"deadlift","frame_period_s":0.011127667685076384,"frame_rate_hz":89.86609128713711,"line_high_m":-0.016505627388359048,"line_low_m":-0.6031702885571041,"line_mid_m":-0.30983795797273156,"lost_frames":0,"n_reps":7,"produced_by":"app: OfflinePipeline","session_id":"session_20260511_140504","smoother_nis":[3.7215763565730575,0.5024809762221712,0.5563127835489539]}
+rep_id,eccentric_start_frame,eccentric_end_frame,concentric_start_frame,concentric_end_frame,rom_m,peak_velocity,gap_frames,started_below,started_above,rejected
+1,1026,1200,849,1026,0.586995,0.92101,1,1,0,0
+2,1416,1594,1238,1416,0.591097,1.26388,0,1,0,0
+3,1776,1909,1597,1776,0.576177,1.27165,0,0,0,0
+4,2120,2269,1931,2120,0.586987,1.18169,1,1,0,0
+5,2461,2621,2279,2461,0.596904,1.21634,1,0,0,0
+6,2765,2917,2627,2765,0.584437,1.15898,1,0,0,0
+7,3092,3265,2950,3092,0.552964,1.01637,1,0,0,0

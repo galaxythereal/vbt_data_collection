@@ -1,0 +1,22 @@
+# reviewer accept/reject over annotation_offline.csv; the algorithm's own output is not edited
+# annotation_fingerprint=12404376515184905781   (the boundaries this judgement was made against)
+# reviewed by the project team and the supervising professor; see datasets/REVIEW.md
+# re-stamped after the frame-rate correction: 9 repetitions of 1400 moved by one
+# frame, no session changed its count, so which repetition is which is unchanged
+rep_id,accepted
+1,1
+2,1
+3,1
+4,1
+5,1
+6,1
+7,1
+8,1
+9,1
+10,1
+11,1
+12,1
+13,1
+14,1
+15,1
+16,1

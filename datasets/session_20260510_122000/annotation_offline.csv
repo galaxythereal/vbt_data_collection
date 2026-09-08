@@ -1,0 +1,10 @@
+# {"down_first":0,"dropped_frames":10,"exercise":"biceps_curl","frame_period_s":0.011127617637271214,"frame_rate_hz":89.86649547074359,"line_high_m":0.6852258967087782,"line_low_m":0.02446495915886168,"line_mid_m":0.35484542793381996,"lost_frames":0,"n_reps":8,"produced_by":"app: OfflinePipeline","session_id":"session_20260510_122000","smoother_nis":[0.6376821892779967,2.3123855536929643,0.8665184392902746]}
+rep_id,eccentric_start_frame,eccentric_end_frame,concentric_start_frame,concentric_end_frame,rom_m,peak_velocity,gap_frames,started_below,started_above,rejected
+1,583,665,514,583,0.632435,1.2596,0,1,0,0
+2,790,865,705,790,0.576416,0.937427,0,0,0,0
+3,998,1080,914,998,0.635744,1.10969,0,0,0,0
+4,1218,1295,1125,1218,0.669884,1.08426,0,0,0,0
+5,1430,1518,1331,1430,0.686821,1.08952,0,1,0,0
+6,1668,1763,1561,1668,0.697681,1.06786,0,1,0,0
+7,1925,2016,1810,1925,0.678922,0.969349,0,0,0,0
+8,2171,2284,2055,2171,0.749329,1.20211,0,0,0,0

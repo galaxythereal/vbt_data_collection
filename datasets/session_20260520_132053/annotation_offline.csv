@@ -1,0 +1,10 @@
+# {"down_first":1,"dropped_frames":0,"exercise":"bench_press","frame_period_s":0.011127879160151868,"frame_rate_hz":89.86438346499375,"line_high_m":0.44596662960916134,"line_low_m":-0.03740585661828438,"line_mid_m":0.20428038649543848,"lost_frames":0,"n_reps":8,"produced_by":"app: OfflinePipeline","session_id":"session_20260520_132053","smoother_nis":[0.92421904676539,0.3702386787194172,0.2728617550642086]}
+rep_id,eccentric_start_frame,eccentric_end_frame,concentric_start_frame,concentric_end_frame,rom_m,peak_velocity,gap_frames,started_below,started_above,rejected
+1,1782,1903,1903,2033,0.559162,1.15757,0,0,0,0
+2,2074,2178,2178,2284,0.503429,0.925533,0,0,1,0
+3,2327,2470,2470,2547,0.481641,0.943546,0,0,1,0
+4,2549,2730,2730,2804,0.486757,1.0754,0,0,1,0
+5,2847,2984,2984,3051,0.48806,1.1443,0,0,1,0
+6,3096,3216,3216,3318,0.522618,0.828353,0,0,0,0
+7,3361,3494,3494,3584,0.48787,0.779113,0,0,0,0
+8,3590,3727,3727,3818,0.443035,0.879215,0,0,0,0

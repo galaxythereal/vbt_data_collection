@@ -1,0 +1,31 @@
+{
+ "accel_magnitude": 9.233453937181553,
+ "accel_magnitude_note": "direction only is used; normalising cancels this part's scale error exactly",
+ "accel_mean_camera_frame": [
+  0.4398545768025081,
+  -9.150403272727274,
+  1.1546945517241378
+ ],
+ "rotation_rows_are_new_axes_in_camera_frame": [
+  [
+   0.9988466637865362,
+   0.0480139796570383,
+   1.318335352147398e-19
+  ],
+  [
+   -0.04763705757292928,
+   0.9910054606846689,
+   -0.1250555382178687
+  ],
+  [
+   -0.006004414067992723,
+   0.12491130713694781,
+   0.9921497429123485
+  ]
+ ],
+ "samples_used": 319,
+ "session_id": "session_20260510_123032",
+ "source": "<session>/imu/camera_imu.csv, accel rows",
+ "tilt_deg": 7.690474807201258,
+ "yaw_note": "yaw is not observable from gravity; the optical axis is 'forward' by convention"
+}

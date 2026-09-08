@@ -1,0 +1,22 @@
+# real-time (causal) annotation produced during acquisition
+# exercise=deadlift rom_prior_m=0.6 down_first=0
+# gap_frames counts the frames of the rep on which the marker was NOT seen. A missing measurement is never interpolated or extrapolated: no boundary, rest or statistic in this file is derived from an unseen frame.
+# confirmed=1 means the rep's cycle CLOSED (the bar returned to the level it started from). Provisional reps (confirmed=0) completed a concentric but never returned - typically an unrack/rack/pickup.
+# down_first=1 means a rep of this exercise STARTS with the eccentric (bench, squat), so the phases run eccentric -> bottom_rest -> concentric. down_first=0 runs concentric -> top_rest -> eccentric. The bit moves only where the rep boundary is drawn.
+rep_id,concentric_start_frame,concentric_end_frame,eccentric_start_frame,eccentric_end_frame,top_rest_start_frame,top_rest_end_frame,bottom_rest_start_frame,bottom_rest_end_frame,rom_m,peak_velocity,mean_velocity,confirmed,dropped_eccentric,tracking_gap,gap_frames
+1,10,471,471,582,-1,-1,-1,-1,0.54871,1.17427,0.536637,1,0,0,0
+2,594,687,687,791,-1,-1,-1,-1,0.537974,1.13854,0.523784,1,0,0,0
+3,817,891,891,1061,-1,-1,-1,-1,0.578597,1.35038,0.767114,1,0,0,0
+4,1061,1173,1173,1290,-1,-1,-1,-1,0.530132,1.17777,0.731331,1,0,0,0
+5,1290,1369,1369,1528,-1,-1,-1,-1,0.520998,1.20422,0.630277,1,0,0,0
+6,1537,1612,1612,1770,-1,-1,-1,-1,0.565286,1.26585,0.692522,1,0,0,0
+7,1785,1859,1859,2012,-1,-1,-1,-1,0.549218,1.1885,0.68779,1,0,0,0
+8,2027,2117,2117,2290,-1,-1,-1,-1,0.520224,1.26572,0.684246,1,0,0,0
+9,2345,2414,2414,2592,-1,-1,-1,-1,0.548837,1.12771,0.747229,1,0,0,0
+10,2592,2667,2667,2810,-1,-1,-1,-1,0.535622,1.61286,0.683202,1,0,0,0
+11,2810,2887,2887,3037,-1,-1,3040,3043,0.549771,1.31434,0.659968,1,0,0,0
+12,3043,3114,3114,3327,-1,-1,-1,-1,0.525231,1.40673,0.675031,1,0,0,0
+13,3350,3491,3491,3628,-1,-1,-1,-1,0.552282,1.26784,0.788629,1,0,0,0
+14,3628,3695,3695,3869,-1,-1,-1,-1,0.559162,1.39354,0.815822,1,0,0,0
+15,3869,3939,3939,4103,-1,-1,-1,-1,0.543268,1.46618,0.751537,1,0,0,0
+16,4103,4164,4164,4315,-1,-1,-1,-1,0.586748,1.76129,0.924797,1,0,0,0

@@ -1,0 +1,8 @@
+{"code":"create","host_s":1778404451.2744484,"level":"info","msg":"Session created: session_20260510_121411","source":"session","wallclock":"2026-05-10T09:14:11.274442Z"}
+{"code":"build_provenance","host_s":1778404451.2744925,"level":"info","msg":"build info","payload":{"build_timestamp":"2026-05-10T08:56:31Z","build_type":"Release","git_branch":"main","git_dirty":"true","git_sha":"d225757","version":"1.1.0"},"source":"session","wallclock":"2026-05-10T09:14:11.274490Z"}
+{"code":"override","host_s":1778404454.6752496,"level":"warning","msg":"Operator overrode pre-flight failure: operator overrode failed pre-flight","source":"preflight","wallclock":"2026-05-10T09:14:14.675237Z"}
+{"code":"recording_start","host_s":1778404454.6758251,"level":"info","msg":"Recording started","source":"session","wallclock":"2026-05-10T09:14:14.675821Z"}
+{"code":"imu.gap","host_s":1778404454.6916883,"level":"warning","msg":"Polling-loop gap (no FIFO) — sample missed","payload":{"dt_s":41.627371072769165,"expected_dt_s":0.0010121457489878543},"source":"imu","unified_s":1778404496.3231838,"wallclock":"2026-05-10T09:14:14.691675Z"}
+{"code":"recording_stop","host_s":1778404520.2560446,"level":"info","msg":"Recording stopped","source":"session","wallclock":"2026-05-10T09:15:20.256032Z"}
+{"code":"time_sync_check","host_s":1778404523.947086,"level":"info","msg":"Capture-time sync check passed","payload":{"n_frames":5890,"offset_median_ms":1778397487600.6172,"offset_std_ms":3.1769488136470767},"source":"session","wallclock":"2026-05-10T09:15:23.947076Z"}
+{"code":"save","host_s":1778404523.948204,"level":"info","msg":"Session finalised; renaming .partial → final","source":"session","wallclock":"2026-05-10T09:15:23.948200Z"}

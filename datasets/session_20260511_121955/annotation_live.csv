@@ -1,0 +1,12 @@
+# real-time (causal) annotation produced during acquisition
+# exercise=biceps_curl rom_prior_m=0.5 down_first=0
+# gap_frames counts the frames of the rep on which the marker was NOT seen. A missing measurement is never interpolated or extrapolated: no boundary, rest or statistic in this file is derived from an unseen frame.
+# confirmed=1 means the rep's cycle CLOSED (the bar returned to the level it started from). Provisional reps (confirmed=0) completed a concentric but never returned - typically an unrack/rack/pickup.
+# down_first=1 means a rep of this exercise STARTS with the eccentric (bench, squat), so the phases run eccentric -> bottom_rest -> concentric. down_first=0 runs concentric -> top_rest -> eccentric. The bit moves only where the rep boundary is drawn.
+rep_id,concentric_start_frame,concentric_end_frame,eccentric_start_frame,eccentric_end_frame,top_rest_start_frame,top_rest_end_frame,bottom_rest_start_frame,bottom_rest_end_frame,rom_m,peak_velocity,mean_velocity,confirmed,dropped_eccentric,tracking_gap,gap_frames
+1,3,323,323,454,-1,-1,-1,-1,1.38448,1.20567,0.615603,0,0,0,0
+2,454,565,565,684,-1,-1,-1,-1,0.466944,0.749629,0.403699,1,0,0,0
+3,684,779,779,914,-1,-1,914,918,0.482028,0.739818,0.471238,1,0,0,0
+4,918,1057,1057,1231,-1,-1,-1,-1,0.563382,0.608821,0.375094,1,0,0,0
+5,1231,1362,1362,1552,-1,-1,-1,-1,0.516638,0.517699,0.372293,1,0,0,0
+6,1552,1680,1680,1814,-1,-1,-1,-1,0.474596,0.535369,0.336511,1,0,0,0

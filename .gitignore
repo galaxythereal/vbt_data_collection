@@ -1,28 +1,49 @@
+# ── Build artefacts ───────────────────────────────────────────────────────────
 build/
 build-*/
 .cache/
-*.log
-datasets/*
-vbt_config.json
 __pycache__/
-!./ds/**
-!./ds/*
-!./ds/**/*
-# Editor / IDE
+*.log
+.superseded/
+
+# ── Editor and OS ─────────────────────────────────────────────────────────────
 .vscode/
 .idea/
 .DS_Store
-datasets/*
-datasets/
-./datasets/*
-./datasets/
-# Tooling
-# .claude/
 .codex/
+imgui.ini
 diagnostics/
 
-# Runtime
-imgui.ini
-
-.superseded/
+# ── Local configuration and reviewer packs ───────────────────────────────────
+vbt_config.json
 blind_review/
+
+# ── The corpus ───────────────────────────────────────────────────────────────
+# RAW DATA IS NOT PUBLISHED. The camera streams (marker positions, the infrared
+# video) and the inertial streams are ~7.6 GB and are held outside the
+# repository. What IS published is everything derived from them: the annotation,
+# the ground truth, and the per-session files needed to read those.
+#
+# Excluded on size rather than on principle: smoothed.csv is the per-frame
+# reference track (118 MB over the corpus) and the per-session audit images are
+# a further 165 MB. Two sample sessions carry both, so the pipeline can be run
+# end to end from the repository alone; see datasets/README.md.
+datasets/*
+!datasets/*.csv
+!datasets/*.md
+!datasets/*.png
+!datasets/session_*/
+datasets/session_*/*
+!datasets/session_*/annotation_*.csv
+!datasets/session_*/metadata.json
+!datasets/session_*/rotation.json
+!datasets/session_*/sync_map.csv
+!datasets/session_*/manifest.json
+!datasets/session_*/CHECKSUMS.sha256
+!datasets/session_*/events.jsonl
+
+# The two sample sessions, complete enough to run the pipeline on
+!datasets/session_20260510_121411/smoothed.csv
+!datasets/session_20260510_121411/audit_*.png
+!datasets/session_20260520_142117/smoothed.csv
+!datasets/session_20260520_142117/audit_*.png

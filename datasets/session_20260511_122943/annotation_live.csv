@@ -1,0 +1,32 @@
+# real-time (causal) annotation produced during acquisition
+# exercise=barbell_row rom_prior_m=0.5 down_first=0
+# gap_frames counts the frames of the rep on which the marker was NOT seen. A missing measurement is never interpolated or extrapolated: no boundary, rest or statistic in this file is derived from an unseen frame.
+# confirmed=1 means the rep's cycle CLOSED (the bar returned to the level it started from). Provisional reps (confirmed=0) completed a concentric but never returned - typically an unrack/rack/pickup.
+# down_first=1 means a rep of this exercise STARTS with the eccentric (bench, squat), so the phases run eccentric -> bottom_rest -> concentric. down_first=0 runs concentric -> top_rest -> eccentric. The bit moves only where the rep boundary is drawn.
+rep_id,concentric_start_frame,concentric_end_frame,eccentric_start_frame,eccentric_end_frame,top_rest_start_frame,top_rest_end_frame,bottom_rest_start_frame,bottom_rest_end_frame,rom_m,peak_velocity,mean_velocity,confirmed,dropped_eccentric,tracking_gap,gap_frames
+1,159,334,334,424,-1,-1,-1,-1,0.417848,0.948051,0.506103,0,0,0,0
+2,424,479,479,556,-1,-1,-1,-1,0.444432,1.44687,0.799584,1,0,0,0
+3,556,603,603,665,-1,-1,-1,-1,0.440917,1.45657,0.91008,1,1,0,0
+4,665,723,723,786,-1,-1,-1,-1,0.377278,1.30263,0.689437,1,0,0,0
+5,786,838,838,889,-1,-1,-1,-1,0.36208,1.36101,0.668383,1,0,0,0
+6,889,950,950,1011,-1,-1,-1,-1,0.416467,1.3969,0.728676,1,1,0,0
+7,1011,1059,1059,1114,-1,-1,-1,-1,0.359236,1.19099,0.726697,1,1,0,0
+8,1114,1167,1167,1216,-1,-1,-1,-1,0.385057,1.20339,0.706932,1,0,0,0
+9,1216,1270,1270,1329,-1,-1,-1,-1,0.402814,1.33521,0.714493,1,1,0,0
+10,1329,1377,1377,1432,-1,-1,-1,-1,0.409127,1.32363,0.822363,1,1,0,0
+11,1432,1483,1483,1539,-1,-1,-1,-1,0.356289,1.19424,0.681719,1,0,0,0
+12,1539,1585,1585,1639,-1,-1,-1,-1,0.399827,1.32844,0.818137,1,1,0,0
+13,1639,1685,1685,1740,-1,-1,-1,-1,0.375715,1.34482,0.795241,1,1,0,0
+14,1740,1788,1788,1839,-1,-1,-1,-1,0.405812,1.3091,0.816076,1,0,0,0
+15,1839,1888,1888,1939,-1,-1,-1,-1,0.396695,1.40386,0.795484,1,0,0,0
+16,1939,1988,1988,2040,-1,-1,-1,-1,0.387202,1.32664,0.773448,1,0,0,0
+17,2040,2089,2089,2140,-1,-1,-1,-1,0.388003,1.34932,0.792703,1,0,0,0
+18,2140,2192,2192,2248,-1,-1,-1,-1,0.408751,1.39682,0.784987,1,1,0,0
+19,2248,2294,2294,2348,-1,-1,-1,-1,0.409681,1.42401,0.84368,1,1,0,0
+20,2348,2397,2397,2451,-1,-1,-1,-1,0.424083,1.41389,0.821953,1,0,0,0
+21,2451,2500,2500,2556,-1,-1,-1,-1,0.415545,1.4597,0.840301,1,0,0,0
+22,2556,2605,2605,2660,-1,-1,-1,-1,0.435688,1.46257,0.857675,1,1,0,0
+23,2660,2713,2713,2767,-1,-1,-1,-1,0.417919,1.35266,0.780014,1,0,0,0
+24,2767,2823,2823,2883,-1,-1,-1,-1,0.427965,1.4082,0.771908,1,0,0,0
+25,2883,2936,2936,2997,-1,-1,-1,-1,0.422068,1.51532,0.822494,1,0,0,0
+26,2997,3051,3051,3169,-1,-1,-1,-1,0.429154,1.4663,0.776983,0,0,0,0
