@@ -346,6 +346,24 @@ Boundary timing, on the matched repetitions, in frames of 11.1 ms:
 | turnaround | −0.28 | **1.0** | 79.2 % | 90.1 % |
 | repetition end | +0.42 | **1.0** | 84.4 % | 92.6 % |
 
+#### The per-session audits
+
+`scripts/imu/audit_pipeline.py --n 84` writes two images per session,
+`audit_pipeline_vqf.png` and `audit_pipeline_eskf.png`. Each compares one attitude engine
+against the camera on three panels: **(a)** height, with both tracks and BOTH sets of three
+lines -- the camera's solid, the inertial pass's dashed over them, so where they agree the
+grey shows through the gaps; **(b)** velocity, both tracks, no shift needed; **(c)** a
+two-row phase ribbon putting the camera's segmentation directly above the inertial pass's on
+the same time axis, so a moved boundary reads as an edge that does not line up and a
+repetition found by one pass and not the other reads as a block with nothing opposite it.
+
+Two choices worth knowing when reading them. The inertial track in (a) is shifted by **one
+constant** so its own middle line sits on the camera's -- that constant is precisely the
+unobservable quantity (absolute height), so conceding it compares what is actually being
+claimed and every other difference on the panel is real. And each track is scaled over
+**its own** annotated span rather than the union, because a repetition whose end one pass
+places well past the other's would otherwise drag the panel over the put-down.
+
 #### Four things follow
 
 **The boundary specification of §8.4 is met, from the IMU alone.** Median absolute error
