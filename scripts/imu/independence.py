@@ -174,10 +174,28 @@ def main():
             return s0, v
 
         add("exact", *score(lambda r, i: windowed(r), reps, sync, cam_v), len(reps))
+        # BOTH ENDS DRAWN INDEPENDENTLY. This is what the original table did, and it mixes
+        # two effects that a detector experiences very differently.
         for k in (2, 5, 10, 20):
             j = rng.integers(-k, k+1, size=(len(reps), 2))
             add(f"jitter +-{k}",
                 *score(lambda r, i, j=j: windowed(r, int(j[i, 0]), int(j[i, 1])),
+                       reps, sync, cam_v), len(reps))
+        # COMMON: both boundaries displaced the SAME way, which is what a detector with a
+        # systematic offset but low jitter produces -- it locks onto some repeatable
+        # feature of the signal that is not quite the true boundary.
+        for k in (2, 5, 10, 20):
+            j = rng.integers(-k, k+1, size=len(reps))
+            add(f"common +-{k}",
+                *score(lambda r, i, j=j: windowed(r, int(j[i]), int(j[i])),
+                       reps, sync, cam_v), len(reps))
+        # DIFFERENTIAL: the two boundaries displaced OPPOSITELY, so the repetition is
+        # stretched or squeezed. Same magnitude per boundary as the common case, so the
+        # two rows are directly comparable.
+        for k in (2, 5, 10, 20):
+            j = rng.integers(-k, k+1, size=len(reps))
+            add(f"differential +-{k}",
+                *score(lambda r, i, j=j: windowed(r, int(j[i]), -int(j[i])),
                        reps, sync, cam_v), len(reps))
         add("start only", *score(lambda r, i: windowed(r, constrain="none"),
                                  reps, sync, cam_v), len(reps))
@@ -206,7 +224,11 @@ def main():
                 *score(lambda r, i, vh=vh: (0, vh), reps, sync, cam_v), len(reps))
 
     rms = lambda v: float(np.sqrt(np.mean(np.square(v))))*1000 if v else float("nan")
-    order = ["exact", "jitter +-2", "jitter +-5", "jitter +-10", "jitter +-20",
+    order = ["exact",
+             "common +-2", "common +-5", "common +-10", "common +-20",
+             "differential +-2", "differential +-5", "differential +-10",
+             "differential +-20",
+             "jitter +-2", "jitter +-5", "jitter +-10", "jitter +-20",
              "start only", "free, hp 0.5 Hz", "free, hp 0.3 Hz", "free, hp 0.2 Hz",
              "free, hp 0.1 Hz", "free, hp 0.05 Hz",
              "free, no filter",

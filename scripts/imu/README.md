@@ -142,10 +142,31 @@ a mis-placed boundary ruined is how a fragile method comes to look robust.
 | lever arm at double | 87.4 | 52.0 |
 
 **Precise boundaries buy the accuracy, not boundaries.** Removing them entirely costs
-6 mm/s (50.5 → 56.9). Keeping them and placing them ten frames off costs 66 (50.5 →
-116.6). A boundary condition at the wrong instant is not a weak constraint but a wrong
-one — it injects a ramp that was never there. So a detector that cannot land within about
-two frames is worse than no detector, and one that can gains ~6 mm/s over high-passing.
+6 mm/s (50.5 → 56.9). A boundary condition at the wrong instant is not a weak constraint
+but a wrong one — it injects a ramp that was never there.
+
+**But it matters enormously *how* the boundary is wrong**, and the ±k rows above conflate
+two effects because they draw both ends independently. Separated (`independence.py` now
+reports all three):
+
+| offset, same magnitude per boundary | peak | mean |
+|---|---|---|
+| common ±2 frames (both ends, same way) | 52.6 | 37.9 |
+| common ±5 | 61.1 | 46.7 |
+| common ±10 | 88.4 | 80.1 |
+| differential ±2 (ends move oppositely) | 60.5 | 48.0 |
+| differential ±5 | 90.3 | 78.4 |
+| differential ±10 | 140.4 | 145.1 |
+
+About 3.8 mm/s per frame common against 9.0 differential — the velocity-closure ramp
+cancels a common error exactly, and cannot touch a stretch. So there are two tolerances,
+not one: a **systematic** offset is affordable to ±3–4 frames (35–45 ms), while
+**inconsistency between the two ends** must stay inside ~±1.5 frames (17 ms). A detector
+should lock onto a repeatable signal feature rather than estimate the true turnaround —
+low jitter with a known offset beats an unbiased estimate with scatter.
+
+(A research report predicted this split at 8×; measured it is 2.4×, and the two cross over
+at ±20 frames. The ±k rows are single random draws worth 1–4 mm/s of noise.)
 
 **The lever arm must be there and need not be right.** Dropping it costs 20 mm/s, but half
 or double costs 3–37, and half is within 3 mm/s of the fitted value. The 12.3 cm fitted
@@ -321,3 +342,25 @@ So the ESKF did have more to give — 51.6 to 49.8 mm/s, and from last place to 
 what it converged on is the same number every other engine reaches, and the change that got
 it there was the measurement, not the filter. Registered as `eskf2` and `ieskf2` in
 `attitude.rotations`.
+
+## The five research reports, checked
+
+`docs/RESEARCH_FINDINGS_CHECKED.md` records what five external research reports claimed
+against `docs/RESEARCH_QUESTIONS.md` and what measuring them said. Four "do not build"
+conclusions came out of it, three of which a majority of the reports recommended:
+
+- **covariance-weighted closure redistribution** — the ramp-and-parabola *is* that solution
+  under a white acceleration-noise prior, verified to 75 µm/s on a 15 mm/s correction;
+- **lever arm from the IMU alone** — 0.14 mg of signal against a 1.4 mg floor, measured on
+  real gyro data over 1400 reps;
+- **barbell flex compensation** — the load slope is 20× steeper than beam theory in the curl
+  and flat in the squat and deadlift, where the load is highest;
+- **correcting the criterion's peak-picking noise** — the camera velocity residual above
+  6 Hz is 0.08 mm/s, fifty times too small to matter.
+
+And one refuted mechanism worth recording: four of the five reports blamed the round-trip
+parabola for the −11.7 mm/s peak bias. It is about a third of it. `p_end` has **no
+consistent sign** (mean +3.5 mm, sd 109.6, 54.6% positive), the concentric peak sits at
+0.28 T rather than the 0.75 T two reports assumed, and the bias is exercise-specific and
+**changes sign** — deadlift −25.2 mm/s with the parabola *adding* +31.3, biceps curl
+**+6.0**. See `bias_mechanism.py`.

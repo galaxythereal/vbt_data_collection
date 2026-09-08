@@ -145,10 +145,21 @@ the drift is created by the integration and is only there to be removed afterwar
     What the camera supplies & Peak (\si{\milli\metre\per\second}) & Mean (\si{\milli\metre\per\second}) \\
     \midrule
     Boundaries, exact                        & 50.5   & 36.0 \\
-    Boundaries, displaced by $\pm 2$ frames  & 57.5   & 43.6 \\
-    Boundaries, displaced by $\pm 5$ frames  & 79.0   & 66.5 \\
-    Boundaries, displaced by $\pm 10$ frames & 116.6  & 117.1 \\
-    Boundaries, displaced by $\pm 20$ frames & 263.2  & 237.4 \\
+    \midrule
+    \multicolumn{3}{l}{\emph{Both boundaries displaced the same way (a systematic offset)}} \\
+    \quad by $\pm 2$ frames                 & 52.6   & 37.9 \\
+    \quad by $\pm 5$ frames                 & 61.1   & 46.7 \\
+    \quad by $\pm 10$ frames                & 88.4   & 80.1 \\
+    \quad by $\pm 20$ frames                & 255.9  & 207.5 \\
+    \multicolumn{3}{l}{\emph{Displaced oppositely (the repetition stretched or squeezed)}} \\
+    \quad by $\pm 2$ frames                 & 60.5   & 48.0 \\
+    \quad by $\pm 5$ frames                 & 90.3   & 78.4 \\
+    \quad by $\pm 10$ frames                & 140.4  & 145.1 \\
+    \quad by $\pm 20$ frames                & 232.2  & 274.0 \\
+    \multicolumn{3}{l}{\emph{Each boundary drawn independently}} \\
+    \quad by $\pm 2$ frames                 & 58.5   & 45.2 \\
+    \quad by $\pm 10$ frames                & 114.7  & 113.0 \\
+    \midrule
     The start only, no round trip            & 92.4   & 91.3 \\
     \midrule
     Nothing; high-pass at \SI{0.1}{\hertz}   & 56.9   & 51.0 \\
@@ -162,18 +173,35 @@ the drift is created by the integration and is only there to be removed afterwar
   \end{tabular}
 \end{table}
 
-Three things follow, and the first is not what we expected.
+The displaced-boundary rows are single random draws; re-drawing moves them by one to four
+\si{\milli\metre\per\second}, so differences of that size between adjacent rows are draw
+noise rather than signal.
+
+Four things follow, and the first is not what we expected.
+
 
 \paragraph{The boundaries are not what buys the accuracy; precise boundaries are.}
 Removing them entirely and high-passing instead costs
 \SI{6}{\milli\metre\per\second} on peak velocity (\num{50.5} to
-\SI{56.9}{\milli\metre\per\second}). Keeping them but placing them ten frames off costs
-\SI{66}{\milli\metre\per\second} (\num{50.5} to \num{116.6}). A boundary condition
-imposed at the wrong instant is not a weak constraint but a wrong one: it injects a ramp
-into the velocity that was not there. The practical consequence is a specification rather
-than a caveat. A repetition detector that cannot place a boundary within roughly two frames
-is worse than no detector at all, and one that can gains about
-\SI{6}{\milli\metre\per\second} over simply high-passing.
+\num{56.9}). Keeping them but placing them ten frames off costs between \num{38} and
+\SI{90}{\milli\metre\per\second} more, depending on how that error is distributed
+between the two ends. A boundary condition imposed at the wrong instant is not a weak
+constraint but a wrong one: it injects into the velocity a ramp that was never there.
+
+\paragraph{Consistency matters more than accuracy, by a factor of two and a half.}
+Displacing both boundaries the same way is partly cancelled by the velocity-closure ramp,
+which removes a common error exactly; the residual costs about
+\SI{3.8}{\milli\metre\per\second} per camera frame. Displacing them oppositely stretches
+the repetition, which the ramp cannot cancel, and costs about
+\SI{9.0}{\milli\metre\per\second} per frame. Measured against the boundary-free figure
+this gives two tolerances rather than one: a purely systematic offset is affordable out to
+three or four frames (\SI{35}{} to \SI{45}{\milli\second}), while inconsistency between
+the two ends of the same repetition must stay inside roughly one and a half frames
+(\SI{17}{\milli\second}). A detector should therefore be built to lock onto a repeatable
+feature of the signal rather than to estimate the true turnaround: low jitter with a known
+systematic offset is worth more here than an unbiased estimate with scatter. We are not
+aware of this split being reported elsewhere, and it changes the design goal from accuracy
+to repeatability.
 
 \paragraph{The lever arm has to be present and does not have to be right.} Omitting it
 costs \SI{20}{\milli\metre\per\second} on peak velocity, so the rigid-body term between
