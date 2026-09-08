@@ -21,7 +21,7 @@ evaluation, not a tuning target.
 
 | § | | for |
 |---|---|---|
-| [1](#1-what-the-sensor-is-measured) | What the sensor is | chip, paper |
+| [1](#1-what-the-sensor-is) | What the sensor is | chip, paper |
 | [2](#2-the-estimator-that-won-and-why-each-piece-is-there) | The estimator, and why each piece is there | chip |
 | [3](#3-accuracy-1400-repetitions) | Accuracy | paper |
 | [4](#4-what-the-camera-supplies-and-what-removing-it-costs) | What the camera supplies | chip, paper |
@@ -34,7 +34,7 @@ evaluation, not a tuning target.
 
 ---
 
-## 1. What the sensor is [M]
+## 1. What the sensor is
 
 `scripts/imu/noise_characterisation.py` — overlapping Allan deviation from 507 s of
 stillness in 72 stretches, found in the sensor's own angular rate across all 84 sessions.
@@ -68,11 +68,11 @@ Stage by stage, with the measurement that justifies each. Implementation:
 `scripts/imu/orientation.py` (attitude), `pipeline.py` (integration), `eskf.py` (the filtered
 equivalent).
 
-### 2.1 Calibration, from detected stillness [M]
+### 2.1 Calibration, from detected stillness
 Gyro bias is the mean over still windows; accelerometer scale is 9.80665 divided by the
 gravity they read. Stillness is **found**, never assumed from a position in the session.
 
-### 2.2 Attitude: strapdown, then a vertical reference built outside the filter [M] [L]
+### 2.2 Attitude: strapdown, then a vertical reference built outside the filter [M]
 The step that matters, and the one this project originally got wrong:
 
 > **The accelerometer is low-passed in the almost-inertial frame, not the sensor frame.** [L]
@@ -100,7 +100,7 @@ cheating: **0.0 mm**. Only 0.5 s is clearly worse (+8 mm), which confirms the me
 real. The published default is 3.0 s and sits 0.1 mm away. **This is a plateau, not a tuned
 constant** — which is the useful property for a product.
 
-### 2.3 Why there is no Kalman filter in the recommended path [M]
+### 2.3 Why there is no Kalman filter in the recommended path
 `scripts/imu/eskf_consistency.py`. The normalised innovation squared should average **3** for
 a three-component measurement. Over 2.26 million updates on the training half:
 
@@ -125,17 +125,17 @@ gravity/motion separation is done *outside* the filter, where a zero-phase low-p
 the whole record, the filter is decoration. **This is the most consequential result in this
 document for the chip** — see §8.2.
 
-### 2.4 Gravity removal and band-limit [M]
+### 2.4 Gravity removal and band-limit
 Remove `g` in the world frame, band-limit the vertical specific force at 10 Hz. The bar's
 motion lives below about 3 Hz; the corner is nowhere near it, and a sweep from 8 to 20 Hz
 moves the peak by under 1 mm/s.
 
-### 2.5 The lever arm [M]
+### 2.5 The lever arm
 The sensor sits on the collar and the marker elsewhere, so the two points differ by
 `ω × r`. One global `|r| = 12.3 cm`. Velocity barely notices the value (§4), the path
 notices a great deal (§6).
 
-### 2.6 Integration under the round-trip conditions [M]
+### 2.6 Integration under the round-trip conditions
 Both conditions are **earned by the geometry of a repetition**, not assumed from stillness —
 which matters, because stillness is not available (§1: the bar rotates at 14 °/s at a
 boundary):
@@ -156,7 +156,7 @@ was compensating; with the right one, dropping it is worth 1.7 mm (§6).
 
 ---
 
-## 3. Accuracy, 1400 repetitions [M]
+## 3. Accuracy, 1400 repetitions
 
 `scripts/imu/pipeline.py --n 84`, `bar_path.py --n 84`.
 
@@ -195,7 +195,7 @@ Whole corpus: eskf2 and zvqf 49.9 mm/s peak, VQF 50.5, OfflineVQF 50.5, original
 
 ---
 
-## 4. What the camera supplies, and what removing it costs [M]
+## 4. What the camera supplies, and what removing it costs
 
 `scripts/imu/independence.py --n 84`. Every row is all 1400 repetitions; displaced
 boundaries are **scored, never discarded**, because dropping the repetitions a mis-placed
@@ -263,7 +263,7 @@ with the integration problem.
 
 ---
 
-## 5. The systematic bias: what it is and is not [M]
+## 5. The systematic bias: what it is and is not
 
 `scripts/imu/bias_mechanism.py`. Peak concentric velocity is biased **−11.7 mm/s** and mean
 **−7.5**. It has a sign, so it is systematic and in principle fixable. It is 23 % of the
@@ -329,7 +329,7 @@ expected-value remaining item.
 
 ---
 
-## 6. The lever arm: an observability bound [M]
+## 6. The lever arm: an observability bound
 
 Two questions: how much is it worth, and can it be recovered without the camera.
 
@@ -356,7 +356,7 @@ the gain by about a third.
 So knowing where the sensor is clamped is worth **14 % of the horizontal path and 12 % of the
 3-D path**, more than any orientation filter on offer.
 
-### 6.2 Recoverable from the IMU alone? No, and here is the bound [M]
+### 6.2 Recoverable from the IMU alone? No, and here is the bound
 `scripts/imu/lever_observability.py --n 84`. Singular values of the lever-arm design, in mg
 of accelerometer output per cm of arm, against a **1.4 mg** floor (this project's measured
 in-field accelerometer scale error, 0.14 % of g — the right floor for a systematic term):
@@ -395,7 +395,7 @@ channel.
 Recorded so nobody rebuilds them. Three of the four were recommended by a majority of five
 external research reports.
 
-### 7.1 Covariance-weighted closure redistribution — it is already what we have [M]
+### 7.1 Covariance-weighted closure redistribution — it is already what we have
 The proposal is to replace the fixed ramp-and-parabola with an uncertainty-weighted solve.
 Checked exactly: the minimum-Mahalanobis correction under a white acceleration-noise prior
 differs from the closed-form parabola by **75 µm/s on a 15 mm/s correction**. The parabola
@@ -412,16 +412,16 @@ up-first lifts and **hurts** down-first ones.
 
 Worth ~2.9 mm/s on the up-first 56 % of the corpus, and it must be applied per lift order.
 
-### 7.2 Lever arm from the IMU alone — 0.14 mg against a 1.4 mg floor [M]
+### 7.2 Lever arm from the IMU alone — 0.14 mg against a 1.4 mg floor
 §6.2.
 
-### 7.3 Barbell flex compensation — wrong by 20×, and flat where load is highest [M]
+### 7.3 Barbell flex compensation — wrong by 20×, and flat where load is highest
 Euler–Bernoulli predicts a load slope of −0.05 to −0.08 mm/s per kg. Measured: curl
 **−1.639**, row −0.820, bench −0.200, squat **+0.024**, deadlift **+0.013**. A 28 mm steel
 shaft does not deflect twenty times more under a curl than a squat, and the two flat lifts
 carry the most load. Not beam deflection.
 
-### 7.4 Correcting the criterion's peak-picking noise — 50× too small [M]
+### 7.4 Correcting the criterion's peak-picking noise — 50× too small
 A `max` over a noisy signal is biased high, so a noisy reference peak would make the inertial
 estimate look biased low. The mechanism needs 4–5 mm/s of residual velocity noise in the RTS
 smoother output. Measured: camera velocity residual above 6 Hz is **0.08 mm/s**, and the peak
@@ -429,7 +429,7 @@ is identical whether picked from the raw smoother or a further-smoothed version 
 **The criterion contributes nothing measurable to the peak bias** — which also closes "is our
 reference the floor" for velocity, not just for position.
 
-### 7.5 Robust / M-estimator ESKF — justified by the tails, worth nothing [M]
+### 7.5 Robust / M-estimator ESKF — justified by the tails, worth nothing
 The raw measurement has excess kurtosis **~850** with mean NIS 84× its median: mostly tiny
 innovations punctuated by huge ones, which is the textbook condition for an M-estimator [L].
 Implemented as the standard Huber inflation `R ← R·(d/c)` for `d > c`, held out:
@@ -447,7 +447,7 @@ weighting with a large σ_a already does the only useful part — which is why s
 upward keeps helping (0.5 → 49.3, 2 → 48.8, 8 → 48.6 mm/s) and converges on what the
 low-pass does properly.
 
-### 7.6 IESKF — nothing, now tested on the right axis [M]
+### 7.6 IESKF — nothing, now tested on the right axis
 Iteration matters where the tilt error is **large**, i.e. at start-up, not in the steady
 state. An earlier attempt swept the *update interval* instead, which is the wrong axis: at
 1 kHz the per-sample correction is minute, so re-linearising about it re-linearises about
@@ -459,11 +459,11 @@ An earlier bug is worth recording: a missing `+ H·d` term in the Gauss-Newton u
 iterating appear monotonically *worse* (37.0 → 45.0 mm). That term re-references the residual
 to the prior; without it every pass applies a fresh full correction and the filter overshoots.
 
-### 7.7 Low-pass cutoff and order sweep — ~1 mm/s available [M]
+### 7.7 Low-pass cutoff and order sweep — ~1 mm/s available
 The corner is at 10 Hz and the bar's motion is below ~3 Hz. Sweeping 8–20 Hz moves the peak
 by under 1 mm/s.
 
-### 7.8 IMU preintegration — buys compute, not accuracy [L] [I]
+### 7.8 IMU preintegration — buys compute, not accuracy [L]
 Its purpose is to avoid re-integrating high-rate measurements across optimiser iterations.
 Over a single 2-second window, offline, re-integration is free. The extra machinery (bias
 Jacobians, tangent-space bookkeeping) is a source of bugs with no payoff at this problem
@@ -484,7 +484,7 @@ inclination correction with `τ_acc` anywhere in **1–12 s** (§2.2 — a plate
 a calibration parameter that can drift out of tune). **Cost of causality on attitude:
 ≈ 0.6 mm/s.**
 
-### 8.2 Do not put a Kalman filter on the chip for attitude [M]
+### 8.2 Do not put a Kalman filter on the chip for attitude
 Mean NIS **0.01 against an expected 3** (§2.3). The innovations carry no information once the
 vertical reference is low-passed, so the covariance propagation, the 6×6 state, the matrix
 inverse and the iteration are all buying nothing measurable. What is needed is:
@@ -497,7 +497,7 @@ inverse and the iteration are all buying nothing measurable. What is needed is:
 measured justification rather than a guess, and it is fixed-point friendly. Keep the ESKF in
 the offline reference implementation, where it also serves as a cross-check.
 
-### 8.3 The three architectures for drift, and what each costs [M]
+### 8.3 The three architectures for drift, and what each costs
 
 | architecture | peak mm/s | latency | chip cost |
 |---|---|---|---|
@@ -515,7 +515,7 @@ high-pass is algebraically a **leaky integrator**, `v̇ = −ω_c v + a`, i.e. o
 per sample [L]. That is the cheapest possible drift control. Its cost against the zero-phase
 version has **not been measured here** (§10).
 
-### 8.4 Boundary detection: the specification [M]
+### 8.4 Boundary detection: the specification
 From §4, and this is the number to design against:
 
 > **systematic offset ≤ ±3–4 frames (35–45 ms); end-to-end inconsistency ≤ ±1.5 frames
@@ -527,13 +527,13 @@ and accept a systematic offset. A detector that cannot meet the inconsistency fi
 not be used to drive boundary conditions at all: the boundary-free path at 56.9 mm/s is
 better than boundaries placed at ±5 frames (61.1 common, 90.3 differential).
 
-### 8.5 Record the mounting geometry at setup [M]
+### 8.5 Record the mounting geometry at setup
 §6. Worth 14 % of the horizontal path and 12 % of the 3-D path, and **not recoverable from
 the IMU afterwards** (0.14 mg against a 1.4 mg floor). A tape measure, or a fixed mounting
 jig, or co-locating the reference. This is a product-design requirement, not an algorithm
 task.
 
-### 8.6 Handle the bias per lift [M]
+### 8.6 Handle the bias per lift
 The −11.7 mm/s peak bias is exercise-specific and **changes sign** (§5: deadlift −25.2, curl
 +6.0). A device knows which lift is selected, so a per-lift offset or closure weight is both
 the right shape of correction and trivially deployable. Do not apply a single global
@@ -580,7 +580,7 @@ In rough order of how defensible and how unusual they are:
 6. **The bias decomposition** (§5) — including that it changes sign between lifts, which
    argues against every single-mechanism explanation in the literature we were pointed at.
 
-### 9.2 Statistics conventions — follow the field, and do not convert [L]
+### 9.2 Statistics conventions — follow the field, and do not convert
 Sports science judges validity on **bias with 95 % limits of agreement**, **SEE**, **CV %**,
 and **r** or **ICC**, and it judges them **per relative load**, not pooled. Report those
 alongside RMSE for an engineering audience.
