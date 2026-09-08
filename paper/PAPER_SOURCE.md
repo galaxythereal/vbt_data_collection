@@ -102,6 +102,66 @@ actual paper before it enters the manuscript. Do not carry a volume, issue or pa
 from this document into a submission unverified. The *claims* above are safe; the
 *bibliographic details* are not.
 
+### 1.2 What this corpus is, and what it is not — state this early and plainly [M]
+
+**It is not a velocity-based-training dataset and the paper must not call it one.** The
+acquisition was done in a college gym with students, not with competitive lifters, at
+absolute loads of 10–90 kg, and **no one-repetition maximum was tested**, so load cannot be
+expressed as a percentage of it anywhere. Those are facts about the collection and they bound
+what may be claimed. Measured coverage, in the quantity velocity-based training actually
+prescribes on (mean concentric velocity, all 1400 repetitions, 30 subjects):
+
+| approximate zone [L] | share of the corpus | n |
+|---|---|---|
+| < 0.30 m/s — maximal strength, near 1RM | **1.5 %** | 21 |
+| 0.30–0.50 — strength | 20.4 % | 286 |
+| 0.50–0.75 — hypertrophy | **59.9 %** | 838 |
+| 0.75–1.00 — power | 16.9 % | 237 |
+| ≥ 1.00 — speed | **1.3 %** | 18 |
+
+Mean concentric velocity spans 0.142 to 1.134 m/s overall, 0.363–0.877 between the 5th and
+95th percentiles; peak concentric velocity spans 0.51–1.67 m/s over the same range. Per lift:
+squat 0.39–0.80 (loads 20–50 kg), row 0.35–0.95 (20–50), bench 0.36–0.95 (10–50), curl
+0.41–0.83 (10–30), deadlift 0.33–0.84 (20–90).
+
+**So the corpus covers the middle of the velocity spectrum well and neither extreme.** The
+near-1RM band — which is where velocity prescription matters most for strength work — is
+essentially absent at 21 repetitions, and the speed end is equally thin at 18. The zone
+boundaries above are approximate and lift-dependent (a bench-press 1RM sits nearer 0.15 m/s
+than 0.30), so they are an orientation and not a claim.
+
+**Why the paper's contributions survive this, and which one does not.** C1 to C3 and C5 to C7
+are *metrological*: the reference uncertainty is a property of the camera and the smoother,
+the annotation rules are kinematic statements about a round trip, the time-transfer figures
+are hardware, the camera-dependence ablation is a property of the estimator's structure, and
+the common-versus-differential decomposition is algebra about what the closure ramp cancels.
+**None of them depends on who lifted or how heavy the bar was.** A repetition is a round trip
+whether a student or a national-level lifter performs it.
+
+The one thing that *is* population- and load-bound is **the velocity range over which the
+estimator is validated**, and two consequences follow that the paper must state rather than
+leave to a reader:
+
+1. **The accuracy figures in §8 hold over 0.36–0.88 m/s of mean concentric velocity and are
+   not evidence about near-1RM repetitions.** They must not be extrapolated there.
+2. **The proportional bias in §8.3 is measured over the covered range only.** Its slope of
+   +0.0384 per mm/s was fitted between roughly 0.36 and 0.88 m/s; whether it continues, flattens
+   or reverses below 0.30 m/s is unmeasured. Since that is precisely the band a strength
+   practitioner works in, this is the single most important thing the next collection should
+   fix, and it is a concrete requirement: heavy sets at 85–100 % of a *tested* one-repetition
+   maximum.
+
+**One thing that is a strength rather than a limitation**, and worth one sentence: 30 subjects
+and 84 sessions is a larger and more heterogeneous base than the device-validation literature
+typically uses, which is commonly 10 to 20 participants and one or two lifts. [L] This corpus
+carries five lifts.
+
+**How to frame it in the title and abstract.** Call it a reference corpus for **barbell
+kinematics**, motivated by velocity-based training, and let velocity-based training be the
+motivation rather than the claim. A title containing "velocity-based training" would promise
+a training-science contribution the data cannot support; a title about barbell kinematics
+measurement promises exactly what §1.3 lists.
+
 **The gap this paper addresses.** Every validation above compares a device either to
 laboratory motion capture or to another device, on tens of subjects and typically one or two
 lifts, and reports pooled statistics. To our knowledge none releases per-frame reference
@@ -112,7 +172,7 @@ output — and, as §6 shows, an inertial result quoted inside repetition bounda
 from a reference is not a result a bar-mounted device can reproduce. Claims C1 to C4 below
 are what closes that gap.
 
-### 1.2 What the paper claims
+### 1.3 What the paper claims
 
 Ranked by how defensible each claim is, which is also the order they should appear in.
 
@@ -286,7 +346,7 @@ Eight steps, each with the decision behind it:
 1. **One signal: height.** No ensembles, no voting, no whole-set statistics.
 2. **A causal constant-jerk filter** (`CausalTracker`) gives height, velocity, acceleration
    and their standard deviations. A dropout is predict-without-update.
-3. **Direction is a statistical test, never a velocity threshold**: UP if `v > k σ_v`, DOWN
+11. **Direction is a statistical test, never a velocity threshold**: UP if `v > k σ_v`, DOWN
    if `v < −k σ_v`, STILL otherwise, with `k = 3`. **Decision: this makes STILL fall out for
    free** — the hold between repetitions needs no stillness detector and no zero-velocity
    update.
@@ -1139,36 +1199,46 @@ sets that is not the sensor being still.
 
 **Decision: state these in the paper rather than let a reviewer find them.**
 
-1. **The per-repetition figures in §7 and §8 are on 94.9% of the released repetitions.** A
+1. **The corpus is not a velocity-based-training dataset and the accuracy figures are bound
+   to the velocity range it covers.** College gym, students rather than competitive lifters,
+   absolute loads of 10–90 kg, no one-repetition maximum tested, so no figure can be expressed
+   as a percentage of it. Coverage in mean concentric velocity is 0.36–0.88 m/s between the
+   5th and 95th percentiles, which is 60% hypertrophy band, 20% strength, 17% power, and
+   **only 1.5% below 0.30 m/s** — the near-1RM band where velocity prescription matters most
+   for strength work. §8's figures are not evidence about that band, and §8.3's proportional
+   bias was fitted over the covered range only: whether its slope continues, flattens or
+   reverses below 0.30 m/s is unmeasured. §1.2 states the scope and the next-collection
+   requirement.
+2. **The per-repetition figures in §7 and §8 are on 94.9% of the released repetitions.** A
    repetition the pipeline never found contributes to no error figure. The §5.6 baseline is on
    all 1400 and is therefore scored on a harder set.
-2. **Counting undercounts by 3–4%** and only 34/84 sessions are exact. Detection is the gap.
-3. **The 0.1 Hz high-pass is `filtfilt`, zero-phase and non-causal.** Legitimate for an
+3. **Counting undercounts by 3–4%** and only 34/84 sessions are exact. Detection is the gap.
+4. **The 0.1 Hz high-pass is `filtfilt`, zero-phase and non-causal.** Legitimate for an
    offline reference; a causal device cannot have it and would do worse. The cost has **not
    been measured here**. An ideal integrator followed by a causal first-order high-pass is
    algebraically a leaky integrator [L], which is one multiply-add per sample, but its
    accuracy cost on this corpus is unmeasured. [I]
-4. **The lever arm is a camera-derived constant.** §5.4 shows it cannot be recovered from the
+5. **The lever arm is a camera-derived constant.** §5.4 shows it cannot be recovered from the
    IMU and should be recorded at mount time. Velocity is insensitive to it; the path is not.
-5. **Heading is not observable** from a 6-axis IMU. The horizontal and 3-D path figures borrow
+6. **Heading is not observable** from a 6-axis IMU. The horizontal and 3-D path figures borrow
    one angle per session and are labelled accordingly; the heading-free figures are reported
    separately.
-6. **Absolute height is not observable.** Every inertial height figure is relative to a
+7. **Absolute height is not observable.** Every inertial height figure is relative to a
    repetition start, and the audit figures state the one constant they concede.
-7. **The accelerometer scale error of −0.14% may be a gravity-model error, not a sensor
+8. **The accelerometer scale error of −0.14% may be a gravity-model error, not a sensor
    property.** WGS84 sea-level gravity against the standard 9.80665 gives an apparent scale
    error of −0.137% at 30° latitude, −0.174% at 25°, −0.095% at 35°. If those coincide we are
    compensating a constant as if it were sensor scale and injecting a real −0.14% gain error.
    **Not yet checked.** [I]
-8. **The sync figure is unreconciled.** 1.17 ms median against an earlier unpublished 0.92 ms
+9. **The sync figure is unreconciled.** 1.17 ms median against an earlier unpublished 0.92 ms
    at lower pair retention. A stricter matcher improves the residual by discarding hard pairs,
    so the two are not comparable. **Decision: report a triple** — median residual, retention
    fraction, and the matching rule — and name the trade-off, rather than quoting a single
    figure.
-9. **Ethics.** The work is part of a graduation project confirmed by the college and the
+10. **Ethics.** The work is part of a graduation project confirmed by the college and the
    supervising professors, without a protocol number. All participants agreed to the use of
    the video and other recorded data.
-10. **A clock *rate* error would appear as proportional rather than fixed bias** and has not
+11. **A clock *rate* error would appear as proportional rather than fixed bias** and has not
     been separated from the gain error in §8.3. It is a free by-product of the Bland–Altman
     regression already run. [I]
 

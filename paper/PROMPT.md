@@ -65,6 +65,18 @@ SOURCE OF TRUTH
 
   4. KEEP THE CAVEATS. These are load-bearing and a persuasive draft will want
      to drop them. All must survive into the paper:
+       - THE CORPUS IS NOT A VELOCITY-BASED-TRAINING DATASET, and the paper must
+         not call it one. College gym, students rather than competitive lifters,
+         absolute loads of 10-90 kg, NO one-repetition maximum tested so nothing
+         can be expressed as a percentage of it. Coverage in mean concentric
+         velocity is 0.36-0.88 m/s at the 5th-95th percentiles: 60% hypertrophy
+         band, 20% strength, 17% power, and only 1.5% below 0.30 m/s -- the
+         near-1RM band where velocity prescription matters most. The accuracy
+         figures are not evidence about that band, and the proportional bias of
+         §8.3 was fitted over the covered range only. State this in §I as scope,
+         not only in §X. PAPER_SOURCE.md §1.2 has the numbers and the argument
+         for why C1-C3 and C5-C7 survive it (they are metrological and
+         population-independent) and which single thing does not.
        - the per-repetition camera-free figures are on 94.9% of the released
          repetitions, and the reference-boundary baseline is on all 1400, so
          the latter is scored on a harder set;
@@ -102,9 +114,22 @@ STRUCTURE AND BUDGET
   analysis matter — why a fixed offset and random scatter are NOT
   interchangeable, because an offset shifts an athlete's whole load-velocity
   profile and every intensity estimate drawn from it, while scatter averages
-  out. Then the gap: no released corpus pairs per-frame reference kinematics
-  carrying a measured uncertainty with a repetition annotation whose rules are
-  written down and whose boundaries are individually reviewed.
+  out.
+
+  Then, IN THE INTRODUCTION and not deferred to the limitations, the scope from
+  PAPER_SOURCE.md §1.2: velocity-based training is the MOTIVATION, not the
+  claim. Give the velocity-zone coverage table there. Then the gap: no released
+  corpus pairs per-frame reference kinematics carrying a measured uncertainty
+  with a repetition annotation whose rules are written down and whose
+  boundaries are individually reviewed.
+
+  TITLE AND FRAMING. Call it a reference corpus for BARBELL KINEMATICS,
+  motivated by velocity-based training. A title containing "velocity-based
+  training" promises a training-science contribution the data cannot support --
+  no 1RM was tested and the near-1RM band is 1.5% of the corpus. A title about
+  barbell kinematics measurement promises exactly what the contribution list
+  delivers. Leave the byline as a placeholder; the author list and affiliation
+  are not in the source and must not be guessed.
 
   Lead the contributions with C1-C7 from PAPER_SOURCE.md §1.2, in that order —
   they are already ranked by defensibility, and C1 (the corpus) leads because
@@ -167,7 +192,11 @@ BEFORE YOU FINISH
   3. List every [I]-tagged item from the source and state where each appears in
      the paper — it must be future work or a stated assumption, never a result.
   4. Confirm each of the six caveats in rule 4 appears in the paper, and where.
-  5. Report the page estimate against the 8-page budget.
+  5. Confirm the scope statement of PAPER_SOURCE.md §1.2 appears in the
+     INTRODUCTION and not only in the limitations, and that no sentence anywhere
+     claims a training-science result (1RM prediction, velocity-loss thresholds,
+     or anything about trained athletes).
+  6. Report the page estimate against the budget.
 ```
 
 ---
