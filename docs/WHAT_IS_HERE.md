@@ -86,15 +86,25 @@ The Annotation Studio (`src/annotation/`, 23 files) is **gone**, not merely unbu
 `<session>/annotations/rep_segments*.json`, of which no session ever had one, and `camera/`
 is read-only so it could not write them either. `../src/gui/PostSessionPanel.cpp` replaces
 it. Also gone: `test_fsync` (a committed 600 kB binary), `test_imureader_fsync.cpp`, two
-orphan `.tex` files, `.superseded/`, two stale build trees, `blind_review/` (regenerable from
-`scripts/tools/make_blind_review.py`) and `vbt_groundtruth/out/`. See `CHANGELOG.md` v1.3.0.
+orphan `.tex` files, `.superseded/`, two stale build trees, and `blind_review/` (regenerable
+from `scripts/tools/make_blind_review.py`).
+
+`vbt_groundtruth/` is gone too, and it is worth knowing what it was, because the name invites
+the wrong assumption. It was the **first attempt at this ground truth** — a Python package
+`vbt_gt` doing the job `src/offline/` now does, staged `s0_sets` → `s1_condition` →
+`s2_kinematics` → `s4_traverse` → `s8_kinematics_vbt`. It reached about four of five stages
+and stopped, and every specification it deferred to (`00_FOUNDATION.md`, `AGENT_RUNBOOK.md`,
+`M0`–`M5`) has been deleted. Its only external consumer was
+`scripts/tools/validate_orientation.py`, which nothing called, and which guarded the
+*`vbt_gt`* vertical rather than the current one — a guard whose job is already done, and more
+strongly, by the measured `corr(y_m, pixel_v) = +0.9998` on 84 of 84 sessions. Both are
+deleted. See `CHANGELOG.md` v1.3.0.
 
 ## Superseded, so you do not read it as current
 
 | path | status |
 |---|---|
 | [`REPO_MAP.md`](REPO_MAP.md) | trimmed to its acquisition audit, which is still true. The four sections documenting the deleted studio and the removed segmenter are gone. Read the layout and frame-rate corrections in its banner. |
-| `../vbt_groundtruth/` | an earlier standalone attempt. Its 462 MB `out/` is deleted; `src/vbt_gt/` stays because `scripts/tools/validate_orientation.py` imports it. |
 
 ## Branch
 

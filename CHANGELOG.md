@@ -67,8 +67,16 @@
   `vbt_config.json` carrying them still loads.
 - `test_fsync` (a 600 kB compiled binary that was committed), `test_imureader_fsync.cpp`,
   two orphan `.tex` files `main.tex` no longer included, and `imgui.ini` from tracking.
-- `.superseded/`, `build-codex/`, `build-stale-annotation-studio/`, `blind_review/` and
-  `vbt_groundtruth/out/` from disk — about 1.3 GB, all untracked or regenerable.
+- `.superseded/`, `build-codex/`, `build-stale-annotation-studio/` and `blind_review/` from
+  disk — about 860 MB, all untracked or regenerable.
+- **`vbt_groundtruth/`** (33 tracked files, 463 MB on disk) and its only external consumer
+  `scripts/tools/validate_orientation.py`. That package, `vbt_gt`, was the **first attempt at
+  this ground truth** — the same job `src/offline/` now does, staged `s0_sets` through
+  `s8_kinematics_vbt`. It reached roughly four of five stages, and every specification it
+  deferred to had already been deleted. Nothing outside it imported it except that one
+  script, nothing called that script, and the script validated the `vbt_gt` vertical rather
+  than the current one — a check already made, more strongly, by the measured
+  `corr(y_m, pixel_v) = +0.9998` on 84 of 84 sessions.
 - `docs/REPO_MAP.md` trimmed from 579 lines to its acquisition audit; the four sections
   documenting the deleted studio and the removed segmenter are gone rather than left to be
   read as current.
