@@ -1,5 +1,9 @@
 # Velocity and the bar's path, from the inertial sensor alone
 
+> **The consolidated design record is [`docs/INERTIAL_ENGINE.md`](../../docs/INERTIAL_ENGINE.md)** — what was measured, why each stage is
+> there, what it means for the chip, and what goes in the papers. This file is
+> the working log that fed it, kept for the reasoning behind each step.
+
 The camera is the reference; the product will ship an inertial sensor. These scripts ask
 how well the sensor can do, and every number here is measured against the released ground
 truth in `datasets/ground_truth.csv` with the repetition boundaries taken from the camera.

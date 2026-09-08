@@ -1,5 +1,10 @@
 # What to search for, and what each answer would change
 
+> **Answered.** Five reports came back; `RESEARCH_FINDINGS_CHECKED.md` records
+> what survived measurement, and `INERTIAL_ENGINE.md` is the consolidated
+> design record that resulted. This brief is kept as the statement of the
+> questions, with the open ones now listed in `INERTIAL_ENGINE.md` §10.
+
 A brief for someone with better search than I have. Ordered by what it is worth here, not
 by how interesting it is. Each entry says the question, why it matters *with our numbers*,
 and what I would do with the answer — so a result can be judged useful or not without
