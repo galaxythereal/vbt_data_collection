@@ -25,6 +25,7 @@ evaluation, not a tuning target.
 | [2](#2-the-estimator-that-won-and-why-each-piece-is-there) | The estimator, and why each piece is there | chip |
 | [3](#3-accuracy-1400-repetitions) | Accuracy | paper |
 | [4](#4-what-the-camera-supplies-and-what-removing-it-costs) | What the camera supplies | chip, paper |
+| [4.4](#44-the-whole-pipeline-with-no-ground-truth-in-it-at-all) | **The whole pipeline, camera-free** | both |
 | [5](#5-the-systematic-bias-what-it-is-and-is-not) | The systematic bias | both |
 | [6](#6-the-lever-arm-an-observability-bound) | The lever arm | chip, paper |
 | [7](#7-dead-ends-with-the-measurement-that-closed-each-one) | Dead ends | both |
@@ -260,6 +261,122 @@ something has to say where the concentric was. That is the camera as a ruler, no
 input, and the distinction is the point: a device reporting per-repetition velocity still has
 to *detect* repetitions, which is a counting problem and must not be reported as one number
 with the integration problem.
+
+### 4.4 The whole pipeline with no ground truth in it at all
+
+`scripts/imu/imu_full_pipeline.py`. The rows above take the boundaries away from the
+*estimator* but still score against the camera's repetitions. This runs the entire
+ground-truth pipeline on the inertial sensor: its own repetition detection, its own
+boundaries, its own phases, its own velocities, with the camera entering only at the final
+comparison.
+
+**Both annotators are the app's own algorithms, ported and verified against it**, so a
+difference in the output is a difference between the sensors and not between two pieces of
+code:
+
+| port | verified against | agreement |
+|---|---|---|
+| `rts.py` | `src/offline/RtsSmoother.cpp` | `vel_sd` 8.095 and `acc_sd` 148.313 mm/s² to the digit; position RMS 0.01 mm on a 540 mm signal |
+| `rt_annotate.py` | `src/rt_annotator/RtAnnotator.cpp` | **20/20 sessions, 270/270 repetitions, 100 % of concentric-end frames on the identical frame** |
+
+The offline rules come from `scripts/reference/annotate_v2.py` unchanged. Getting the
+online port exact required one non-obvious thing: **the live annotator does not use the
+smoother's filter.** `CausalTracker` sets `jerk_psd = 50` and `meas_noise_m = 0.001`
+against the smoother's 1000 and 2.66 mm — twenty times less process noise and two and a
+half times less measurement noise, so it is much stiffer, σ_v is smaller, the direction
+test fires more readily and a run ends sooner. Feeding it the smoother's parameters loses
+about one repetition per session: the last one, whose closing turnaround is never reached.
+
+**Nothing enters from the camera side except two stated things**: the frame grid, from the
+hardware trigger pulses recorded in the IMU's own stream, which is a clock alignment and
+exists only so the comparison can be frame for frame; and the global 12.3 cm lever arm,
+which §6 shows is not recoverable from the IMU and should be recorded at mount time. The
+exercise name and the `down_first` bit are declarations, which is what they are for the
+camera pipeline and for a device too.
+
+#### One forced departure, and its measured cost
+
+Rules 2 and 3 presume a track with a stable level. Rule 3 — *a rep that starts outside the
+band crosses two lines instead of one* — is what keeps the pickup and the put-down from
+being counted on the camera track: the bar on the floor really is below the bottom line,
+because the camera's height is absolute. An inertial track has no absolute height, and the
+drift control leaves it centred on zero, so the pickup region wanders across the middle
+line. Measured over 84 sessions:
+
+| middle-line crossings | IMU | camera | excess |
+|---|---|---|---|
+| **inside** the repetitions | 2710 | 2736 | **−26** |
+| **outside** the repetitions | 453 | 105 | **+348** |
+
+**Inside the set the IMU track finds the same crossings as the camera to one percent.**
+Every spurious repetition comes from outside it. So the information rule 3 takes from an
+absolute level has to come from somewhere else, and the only camera-free source is the one
+rule 1 already draws on: the online pass, whose round-trip test rejects transport by
+construction. Bounding the crossing search by the online repetitions substitutes an
+equivalent source for information the IMU cannot supply — no threshold, no new test. Its
+cost is measurable with `--no-span`: without it the offline pass counts 1552 against 1400
+and peak velocity is 54.6 mm/s instead of 47.9.
+
+#### The comparison
+
+All 84 sessions. Counting is against all 1400 released repetitions; the per-repetition
+figures are on the 1329 the pipeline found and matched within half a second, which is
+**94.9 %** — the ~71 excluded are presumably the hard ones, and the camera-boundary
+baseline in §3 is on all 1400, so that row is scored on a harder set.
+
+| | VQF | ESKF | camera-boundary baseline (§3) |
+|---|---|---|---|
+| camera repetitions | 1400 | 1400 | 1400 |
+| live annotator on the IMU | 1344 (−56) | 1345 (−55) | — |
+| post-session annotator | 1361 (−39) | 1362 (−38) | — |
+| sessions counted exactly | 34/84 | 34/84 | — |
+| peak concentric velocity | 49.0 mm/s | **47.9** | 49.9 |
+| — its bias | +4.5 | **+3.7** | **−11.7** |
+| — its 95 % LoA | ±95.7 | ±93.7 | ±95.0 |
+| mean concentric velocity | 38.0 | 37.6 | 35.1 |
+| — its bias | +5.3 | +4.7 | −7.5 |
+| range of motion | 40.4 mm | **39.1** | 54.9 |
+| — its bias | +3.4 | **+2.5** | −18.4 |
+
+Boundary timing, on the matched repetitions, in frames of 11.1 ms:
+
+| boundary | bias | median \|error\| | within 2 frames | within 5 |
+|---|---|---|---|---|
+| concentric start | −0.10 | **1.0** | 86.2 % | 93.2 % |
+| turnaround | −0.28 | **1.0** | 79.2 % | 90.1 % |
+| repetition end | +0.42 | **1.0** | 84.4 % | 92.6 % |
+
+#### Four things follow
+
+**The boundary specification of §8.4 is met, from the IMU alone.** Median absolute error
+of **one frame, 11 ms**, with 86 % inside two frames and the bias under half a frame on
+every boundary. That was the number §4 said a detector had to reach — a systematic offset
+inside 3–4 frames and end-to-end inconsistency inside 1.5 — and the external research
+reports variously called it unachieved in the literature or physically infeasible, citing
+±40–120 ms as the state of the art. It is met here on 84 sessions and 1329 repetitions.
+
+**Removing the hard closure constraint removes the bias, exactly as §10 predicted.** Peak
+velocity bias goes from **−11.7 mm/s to +3.7**, mean from −7.5 to +4.7, range of motion
+from −18.4 mm to +2.5. This pipeline integrates continuously with a high-pass and applies
+no round-trip conditions, so it carries none of the §5 parabola bias — and the §5
+measurement said that parabola was worth −3.9 mm/s of the peak, which is the right order.
+
+**On the repetitions it finds, the camera-free pipeline is not worse — it is better.** Peak
+velocity 47.9 mm/s against 49.9, and range of motion 39.1 mm against 54.9. The range of
+motion improvement is the largest and has a clear cause: the closure constraint forces
+`p(T) = p(0)`, which distorts the range of motion whenever the bar genuinely does not
+return, and §5 measured the deadlift's residual at −69 mm. Two caveats keep this honest —
+the 94.9 % matched fraction above, and that a repetition the pipeline never found
+contributes to neither number.
+
+**Counting is the weak part, and it is the honest one.** Both annotators undercount by
+3–4 %, and only 34 of 84 sessions come out exactly right. Detection, not integration, is
+what stands between this and a device — which is what §4's third conclusion said, and it
+is now quantified end to end rather than argued.
+
+**VQF against ESKF, once more.** 49.0 against 47.9 mm/s on peak, one repetition apart on
+the count. The engines remain equivalent to about a millimetre per second, for the reason
+in §2.3.
 
 ---
 

@@ -288,4 +288,8 @@ def main(argv):
     (OUT/"summary.json").write_text(json.dumps(allm,indent=1)+"\n")
     print(f"\n{sum(m['n_reps'] for m in allm)} reps over {len(allm)} sessions -> {OUT}")
 
-main(sys.argv)
+# Guarded so the rule functions above can be imported by the inertial pipeline
+# (scripts/imu/imu_full_pipeline.py) without running the camera pass as a side
+# effect. No rule, number or line of logic is changed by this.
+if __name__ == "__main__":
+    main(sys.argv)
