@@ -46,8 +46,15 @@ SOURCE OF TRUTH
      claim needs support that does not exist, write
      [CITATION NEEDED: the claim]
      Do not reconstruct authors, journals, years, volumes or page numbers from
-     memory — a wrong journal is a retraction risk, and one of the external
-     reports on this project got exactly that wrong.
+     memory — a wrong journal is a retraction risk.
+     PROVENANCE IS SPLIT, and PAPER_SOURCE.md §1.1 says so: the orientation-
+     estimation citations were read directly, but the velocity-based-training
+     device citations reached this project through commissioned literature
+     reports, and one of those reports placed Fritschi et al. 2021 in the wrong
+     journal. Treat every VBT bibliographic detail as unverified. The CLAIMS in
+     §1.1 and §8.4 are safe to make; the volume, issue and page numbers are
+     not. Mark each as [CITATION TO VERIFY: ...] unless it is already in
+     references.bib.
 
   3. RESPECT THE TAGS. The source marks every claim:
        [M] measured on this corpus  -> may be stated as a result
@@ -78,29 +85,32 @@ SOURCE OF TRUTH
 
 STRUCTURE AND BUDGET
 
-  Target 8 pages, IEEE two-column conference format. Suggested allocation:
+  THIS IS A DATASET, INSTRUMENTATION AND VALIDATION PAPER. The setup, the time
+  transfer, the ground-truth annotation, the validation, and the inertial
+  pipeline evaluated against them carry ROUGHLY EQUAL WEIGHT. The inertial work
+  is one pillar of five, not the centrepiece. Use the allocation in
+  PAPER_SOURCE.md §11.1 and do not let §VIII grow at the expense of §V and §VI
+  — the annotation and its validation are what make the corpus worth releasing,
+  and they are the two things no comparable dataset provides.
 
-    I.    Introduction and contributions          0.75 page
-    II.   Related work                            0.5   (comparators WITH their
-                                                         criterion; distinguish
-                                                         device generation, not
-                                                         only sensor class)
-    III.  Instrument and time transfer            0.75
-    IV.   The optical reference pipeline          1.5   (real-time annotation,
-                                                         then rules 1-6, then the
-                                                         review)
-    V.    Reference uncertainty                   0.4
-    VI.   The inertial estimator                  1.25
-    VII.  What the estimate owes the reference    1.0   <- contribution C2, C3
-    VIII. The camera-free pipeline                1.25  <- contribution C4
-    IX.   Results                                 1.0
-    X.    Negative results                        0.5
-    XI.   Limitations and conclusion              0.4
+  Target 10 pages, IEEE two-column. If the venue caps at 8, cut in the order
+  §11.1 gives, which does not touch §V or §VI.
 
-  Lead the contributions with C1-C7 from PAPER_SOURCE.md §1, in that order —
-  they are already ranked by defensibility. State plainly which two are new as
-  far as we know (C2, C3), and keep the "to our knowledge" hedge; do not
-  upgrade it to "the first".
+  The introduction must open with velocity-based training itself, from
+  PAPER_SOURCE.md §1.1: what the practice is, why per-repetition bar velocity
+  is the measurand, and — this is the argument that makes the paper's error
+  analysis matter — why a fixed offset and random scatter are NOT
+  interchangeable, because an offset shifts an athlete's whole load-velocity
+  profile and every intensity estimate drawn from it, while scatter averages
+  out. Then the gap: no released corpus pairs per-frame reference kinematics
+  carrying a measured uncertainty with a repetition annotation whose rules are
+  written down and whose boundaries are individually reviewed.
+
+  Lead the contributions with C1-C7 from PAPER_SOURCE.md §1.2, in that order —
+  they are already ranked by defensibility, and C1 (the corpus) leads because
+  this is a corpus paper. State plainly which two are new as far as we know
+  (C2, C3), and keep the "to our knowledge" hedge; do not upgrade it to
+  "the first".
 
 STYLE
 

@@ -26,7 +26,7 @@ retro-reflective marker at 89.8654 Hz, one ICM-42688-P inertial sensor on the le
 
 | § | | audience |
 |---|---|---|
-| [1](#1-what-the-paper-claims) | What the paper claims | framing |
+| [1](#1-why-bar-velocity-and-what-the-paper-claims) | Velocity-based training, and what the paper claims | framing |
 | [2](#2-the-instrument) | The instrument | methods |
 | [3](#3-the-reference-pipeline-camera) | The reference pipeline | methods |
 | [4](#4-the-review-and-what-the-reference-is-worth) | The review, and what the reference is worth | methods |
@@ -42,7 +42,77 @@ retro-reflective marker at 89.8654 Hz, one ICM-42688-P inertial sensor on the le
 
 ---
 
-## 1. What the paper claims
+## 1. Why bar velocity, and what the paper claims
+
+### 1.1 Velocity-based training, briefly
+
+**This is a dataset, instrumentation and validation paper.** Five things carry roughly equal
+weight — the setup, the time transfer, the ground-truth annotation, the validation, and the
+inertial pipeline evaluated against them — and the introduction needs enough
+velocity-based-training context that a sensing audience understands why any of it is worth
+measuring. What follows is that context. Provenance is marked, because it matters here.
+
+**What the practice is.** In resistance training, the velocity of the barbell during the
+concentric phase is used to prescribe and monitor load. For a given lift and individual the
+relationship between load and concentric velocity is close to linear over the working range,
+so the velocity observed at a given load estimates relative intensity as a fraction of the
+one-repetition maximum without having to test that maximum. Within a set, the fall in
+velocity from the first repetition is used as a fatigue signal and as a stopping rule. Both
+uses require per-repetition bar velocity, measured in a gym, cheaply, without a laboratory.
+
+**Why measurement error matters in a specific way, and why bias and scatter are not
+interchangeable.** A *fixed* offset in reported velocity shifts an athlete's whole
+load–velocity profile, and therefore every intensity and one-repetition-maximum estimate
+derived from it, in the same direction. Random scatter averages out across repetitions and
+sets; a bias does not. This is why the validity literature in the field reports systematic
+bias *and* limits of agreement separately rather than a single error figure, and it is the
+reason §8.3 of this document decomposes the error into a fixed part, a per-session part and a
+proportional part instead of quoting an RMSE alone. It is also why the §7 result — that
+removing the hard closure constraint takes the bias from −11.7 mm/s to +3.7 while the
+scatter barely moves — is a practically meaningful result and not only a numerical one.
+
+**What is already measured against what.** [L] Device validations in this field fall into
+three groups by criterion, and they do not give the same answer:
+
+- against **three-dimensional optical motion capture** (Vicon, Qualisys) — the strongest
+  criterion;
+- against a **linear position transducer** treated as the gold standard, which is a
+  device-to-device comparison rather than a criterion validation;
+- against a **camera or optoelectronic** system.
+
+The sensor classes evaluated are tethered linear position transducers (GymAware, Vitruve,
+Speed4Lift, T-Force, Chronojump), optoelectronic and camera systems (Velowin,
+Trio-OptiTrack), smartphone applications (MyLift, PowerLift), and inertial units (PUSH,
+Beast, Bar Sensei, Enode / Vmaxpro, Output, Flex). §8.4 gives the specific figures with the
+criterion attached to each.
+
+**One framing point that must be got right.** [L] "Inertial devices are inaccurate" was a
+fair summary of the 2017–2019 generation and is not a safe claim now: measured against
+Qualisys, Ruiz-Alias et al. (2024) found the inertial Enode free of systematic bias and
+heteroscedasticity across all loads with a smaller absolute percentage difference (≤ 4.43 %)
+than GymAware (≤ 6.01 %). A comparison table must therefore distinguish device *generation*
+as well as sensor class, or a reviewer who knows this literature will object.
+
+**⚠ Provenance caution on the velocity-based-training citations.** The VQF and
+orientation-estimation citations in this document were read directly. The
+velocity-based-training device citations in §8.4 and the summary above came to this project
+through commissioned external literature reports, and **one of those reports placed Fritschi
+et al. 2021 in the wrong journal.** Every VBT citation must therefore be checked against the
+actual paper before it enters the manuscript. Do not carry a volume, issue or page number
+from this document into a submission unverified. The *claims* above are safe; the
+*bibliographic details* are not.
+
+**The gap this paper addresses.** Every validation above compares a device either to
+laboratory motion capture or to another device, on tens of subjects and typically one or two
+lifts, and reports pooled statistics. To our knowledge none releases per-frame reference
+kinematics with a stated, measured uncertainty, together with a repetition annotation whose
+rules are written down and whose boundaries are individually reviewed. Without that, an
+inertial algorithm can be developed and judged only against a commercial device's opaque
+output — and, as §6 shows, an inertial result quoted inside repetition boundaries that came
+from a reference is not a result a bar-mounted device can reproduce. Claims C1 to C4 below
+are what closes that gap.
+
+### 1.2 What the paper claims
 
 Ranked by how defensible each claim is, which is also the order they should appear in.
 
@@ -1108,27 +1178,40 @@ sets that is not the sensor being still.
 
 ### 11.1 Suggested structure
 
-| paper section | source here | existing draft |
-|---|---|---|
-| Introduction, contributions | §1 | [`01_introduction.tex`](01_introduction.tex) |
-| System and hardware | §2 | [`02_`](02_system_architecture.tex), [`03_`](03_hardware_design.tex) |
-| Synchronisation | §2.3, §2.4 | [`04_`](04_synchronization.tex), [`04b_`](04b_sync_measurement.tex) |
-| The reference pipeline | §3 | [`07_data_processing_pipeline.tex`](07_data_processing_pipeline.tex) |
-| Review and reference uncertainty | §4 | [`09_validation.tex`](09_validation.tex) |
-| Dataset format | §4.3 | [`08_dataset_format.tex`](08_dataset_format.tex) |
-| Inertial estimator | §5 | [`10_inertial_baseline.tex`](10_inertial_baseline.tex) |
-| **What the estimate owes the reference** | §6 | [`10_`](10_inertial_baseline.tex) §ablation |
-| **The camera-free pipeline** | §7 | **to write** |
-| Results | §8 | **to write** |
-| Negative results | §9 | **to write** |
-| Limitations, conclusion | §10 | **to write** |
+**This is a dataset, instrumentation and validation paper.** The setup, the time transfer,
+the annotation, the validation and the inertial pipeline carry roughly equal weight; the
+inertial work is one pillar of five, not the centrepiece. An earlier draft of this plan gave
+the inertial sections five and a half of eight pages, which is the wrong paper.
+
+At **10 pages** (IEEE two-column), which is what the material needs:
+
+| paper section | pages | source here | existing draft |
+|---|---|---|---|
+| I. Introduction, VBT background, contributions | 1.0 | §1.1, §1.2 | [`01_introduction.tex`](01_introduction.tex) |
+| II. Related work: devices, each with its criterion | 0.5 | §1.1, §8.4 | — |
+| III. Instrument: camera, sensor, mount, trigger | 1.25 | §2 | [`02_`](02_system_architecture.tex), [`03_`](03_hardware_design.tex), [`05_`](05_firmware_implementation.tex), [`06_`](06_host_software.tex) |
+| IV. Time transfer, frame rate, dropped frames | 1.25 | §2.3, §2.4, §3.2 | [`04_`](04_synchronization.tex), [`04b_`](04b_sync_measurement.tex) |
+| V. Ground-truth annotation: real-time, then rules 1–6 | 1.5 | §3.1, §3.3, §3.4 | [`07_data_processing_pipeline.tex`](07_data_processing_pipeline.tex) |
+| VI. Validation: review, second rater, reference uncertainty | 1.0 | §4.1, §4.2 | [`09_validation.tex`](09_validation.tex) |
+| VII. The released dataset | 0.75 | §4.3 | [`08_dataset_format.tex`](08_dataset_format.tex) |
+| VIII. The inertial pipeline and what it owes the reference | 2.0 | §5, §6, §7, §8 | [`10_inertial_baseline.tex`](10_inertial_baseline.tex) |
+| IX. Negative results | 0.25 | §9 | — |
+| X. Limitations and conclusion | 0.5 | §10 | — |
+
+**If the venue caps at 8 pages**, cut in this order: negative results to a single paragraph
+inside §VIII (0.25 → 0.1); §III and §IV to 1.0 each by leaning on the existing drafts; §VIII
+to 1.5 by moving the per-exercise and per-load breakdowns of §8.3 to a table with one
+sentence of prose. **Do not cut §V or §VI** — the annotation and its validation are what make
+the corpus worth releasing, and they are the two sections no comparable dataset provides.
 
 **Housekeeping in the existing draft**: [`paper/07_dataset_format.tex`](07_dataset_format.tex)
 and [`paper/08_validation.tex`](08_validation.tex) exist but are not `\input` by
 [`main.tex`](main.tex) — `08_dataset_format` and `09_validation` are the live ones.
 [`09_validation.tex`](09_validation.tex) still contains a "Golden Model Pipeline" subsection
 describing a model that has been removed, and its Allan-variance section is marked *planned*
-where §5.1 now measures it.
+where §5.1 now measures it. [`main.tex`](main.tex) carries a placeholder byline
+("Author Name / Department of XYZ") and a title describing the earlier
+system-description paper.
 
 ### 11.2 Figures, and which script makes each
 
