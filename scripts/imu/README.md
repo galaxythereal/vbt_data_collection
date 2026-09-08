@@ -98,7 +98,9 @@ decides the path.
 **Iterating is worth exactly nothing.** All four iteration counts are identical to the
 last digit, because at 1 kHz the per-sample attitude correction is far too small for the
 nonlinearity of a direction observation to bite. Iteration is for large corrections and
-there are none. (An earlier version appeared to make iterating steadily *worse* — 37.0,
+there are none. (That objection is answered properly further down — the literature says
+iteration needs *long update intervals*, so the update interval was made a parameter and
+swept. It still comes to nothing.) (An earlier version appeared to make iterating steadily *worse* — 37.0,
 37.5, 39.0, 45.0 mm. That was a missing `+ H d` term in the Gauss-Newton update, which
 made each pass apply a fresh full correction from the prior instead of re-referencing to
 it. Fixed; the null result is the real one.)
@@ -236,3 +238,86 @@ that recording where the sensor was clamped — thirty seconds per session — i
 the horizontal path and 12% on the 3-D path, and that no orientation filter comes close to
 buying that. For this corpus it cannot be recovered retrospectively, so it is a
 recommendation for the next collection and a stated limitation of the present one.
+
+## ESKF and IESKF, rebuilt
+
+    .venv/bin/python scripts/imu/tune_eskf.py --n 84
+
+The ESKF in `attitude.py` was a one-update-per-sample filter against the raw accelerometer
+direction, and iterating it did nothing. Three things in the literature say why, and
+`eskf.py` makes each one a switch so it can be measured instead of argued.
+
+**Update interval.** Iterated filters are reported to help "under high measurement
+nonlinearity and longer update intervals" ([ESIKF](https://www.emergentmind.com/topics/error-state-iterated-kalman-filter-eskf)).
+At 1 kHz the correction per update is minute, so re-linearising about it re-linearises
+about nothing. The quaternion is still integrated at the full rate but the covariance and
+the update now run every `decim` samples. Care was needed here: leaving mid-block samples
+at their propagated attitude would penalise every long interval for a bookkeeping reason,
+so each block is re-integrated from its corrected start and the residual is spread across
+the block rather than stepped at the boundary.
+
+**Smoothing.** Every filter above is causal and this corpus is not. The
+[RTS smoother](https://www.emergentmind.com/topics/rauch-tung-striebel-smoother) is
+reported to roughly halve the error against the forward filter. The error state here is
+multiplicative and is reset into the nominal at every update, so the textbook recursion on
+a stored error mean returns zeros; the manifold form transports the difference between the
+smoothed state ahead and what the filter predicted for it.
+
+**What the accelerometer is asked.** A single sample compared against a vertical reference
+is being asked a question it cannot answer while the bar is driven. Low-passed in the
+almost-inertial frame first, it becomes a gravity direction.
+
+Also tried: the world-frame (left-invariant) error instead of the body-frame one, and a
+hard bias update on detected rest.
+
+### Held out, 40 sessions and 682 repetitions
+
+| | peak | mean | height | horiz | 3-D |
+|---|---|---|---|---|---|
+| ESKF, as it was | 52.9 mm/s | 34.1 | 21.1 mm | 40.9 | 49.5 |
+| ESKF, rewritten (identical, as a check) | 52.9 | 34.1 | 21.1 | 40.9 | 49.5 |
+| + RTS backward pass | 51.6 | 33.5 | 20.3 | 37.6 | 46.3 |
+| + low-passed reference | 51.3 | 33.5 | 19.2 | 36.5 | 44.4 |
+| + both | 51.3 | 33.5 | 19.3 | 36.4 | 44.6 |
+| **+ both, IESKF ×3** | **51.3** | **33.5** | **19.3** | **36.4** | **44.6** |
+| VQF, for reference | 52.1 | 34.7 | 19.2 | 36.6 | 44.7 |
+
+Five things to read off it.
+
+**The RTS pass is a real gain** — the only one of the classical improvements that is: −1.3
+mm/s on peak, −3.3 mm on the horizontal path, −3.2 mm on the 3-D path. Not the halving the
+literature reports, because the round-trip conditions had already removed the part of the
+error a smoother would have found.
+
+**The low-passed reference is the larger gain**, and the two do not add: together they are
+no better than the measurement fix alone, because both are addressing the same error.
+
+**The IESKF is worth nothing, now tested under the condition it needs.** With the update
+interval swept out to 500 ms, iteration finally *does* change the answer on the training
+half — by 0.6 mm out of 38, with x10 worse than x3. On held-out data with the good
+measurement it is identical to the ESKF to the last digit. The earlier null result stands,
+and now it stands for the right reason.
+
+**Two changes looked good on the training half and did not survive.** A 25 ms update
+interval was the training half's choice (38.0 against 38.7 mm) and is *worse* on the
+held-out half (43.1 against 40.9). The world-frame error formulation moved things by 0.1 mm
+— which is what Barrau and Bonnabel's own literature predicts, the left-invariant filter
+being ["a minor variant of the conventional quaternion multiplicative extended Kalman
+filter"](https://arxiv.org/abs/1410.1465) for pure attitude. A hard bias update on detected
+rest made things clearly worse (41.6 against 37.7) and was rejected: 40% of samples pass
+the rest test, and on a barbell between sets that is not the same as the sensor being still.
+
+**The rebuilt ESKF now leads the corpus**, by a little:
+
+| all 1400 reps | peak | mean | ROM | height |
+|---|---|---|---|---|
+| ESKF, as it was | 51.6 mm/s | 36.4 mm/s | 58.3 mm | 21.8 mm |
+| VQF | 50.5 | 36.0 | 55.7 | 20.1 |
+| VQF, offline (published) | 50.5 | 35.9 | 55.8 | 20.1 |
+| zvqf | 49.9 | 35.1 | 54.9 | 20.2 |
+| **eskf2 (RTS + low-passed reference)** | **49.8** | **35.1** | **54.9** | 20.2 |
+
+So the ESKF did have more to give — 51.6 to 49.8 mm/s, and from last place to first. But
+what it converged on is the same number every other engine reaches, and the change that got
+it there was the measurement, not the filter. Registered as `eskf2` and `ieskf2` in
+`attitude.rotations`.

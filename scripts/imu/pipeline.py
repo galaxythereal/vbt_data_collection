@@ -157,7 +157,7 @@ def orientation(t, a, g, bias, lever=True, filt="vqf"):
     out = np.einsum('ijk,ik->ij', rot, a)
     out[:, 2] -= G0           # every filter here puts the vertical on axis 2
     # ESKF and IESKF estimate the bias as they go; VQF is given it up front
-    g = g - (b_est - bias) if filt not in ("vqf", "ovqf") else g
+    g = g - (b_est - bias) if filt not in ("vqf", "ovqf", "eskf2", "ieskf2") else g
     if lever:
         # The offset is fixed in the BODY, so in the world frame it turns with the bar.
         #   position: p_marker(t) - p_marker(0) = dp_sensor + (R(t) - R(0)) r
@@ -333,7 +333,7 @@ def main():
                    choices=["none", "velocity", "position", "both"])
     p.add_argument("--no-lever", dest="lever", action="store_false",
                    help="do not refer the velocity to the marker")
-    p.add_argument("--filter", default="vqf", choices=["vqf", "zvqf", "ovqf", "eskf", "ieskf"],
+    p.add_argument("--filter", default="vqf", choices=["vqf", "zvqf", "ovqf", "eskf", "ieskf", "eskf2", "ieskf2"],
                    help="which attitude filter")
     p.add_argument("--sessions", nargs="*", default=None)
     args = p.parse_args()

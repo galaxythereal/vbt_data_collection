@@ -223,6 +223,16 @@ def rotations(name, t, a, g, bias):
     if name == "vqf":   return vqf_rotations(t, a, g, bias)
     if name == "eskf":  return eskf(t, a, g, iterations=1, acc_lp=ESKF_ACC_LP)
     if name == "ieskf": return eskf(t, a, g, iterations=3, acc_lp=ESKF_ACC_LP)
+    if name in ("eskf2", "ieskf2"):
+        # The ESKF rebuilt for offline use: a Rauch-Tung-Striebel backward pass, and the
+        # accelerometer asked for a gravity DIRECTION (low-passed in the almost-inertial
+        # frame) rather than a specific force. Both changes were validated on a held-out
+        # half of the corpus. `ieskf2` iterates the update three times and returns, on this
+        # data, the same numbers to the last digit -- kept only so that claim stays
+        # reproducible.
+        import eskf as E
+        return E.eskf(t, a, g, bias=bias, decim=1, smooth=True, meas="lp",
+                      tau_acc=ZVQF_TAU_ACC, iterations=3 if name == "ieskf2" else 1)
     if name in ("zvqf", "ovqf"):
         import orientation as O
         if name == "ovqf": return O.offline_vqf(t, a, g, bias)
