@@ -6,7 +6,7 @@
  *
  * This is the on-disk schema for `annotations/rep_segments.json`. It was
  * relocated out of the (removed) realtime RepSegmenter in Step 2 so the
- * surviving annotation studio (src/annotation/*) and ReplayMode keep this
+ * ReplayMode keeps this (the annotation studio that also used it has been deleted)
  * type without dragging in the old realtime algorithm.
  */
 

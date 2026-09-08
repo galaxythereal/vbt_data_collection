@@ -85,43 +85,30 @@ The Rep Timeline Panel displays a colour-coded dot for each rep: green for passe
 Hovering over a red dot shows the specific violations (e.g., ``PCV exceeds \SI{5.00}{\metre\per\second}: likely double-counted bounce'').
 
 
-\subsection{Post-Session Validation: Golden Model Pipeline}
+\subsection{Post-Session Validation}\label{sec:post_session_validation}
 
-\subsubsection{Camera--IMU Position Agreement}
+% The "Golden Model Pipeline" that used to be described here has been removed from the
+% project; the camera--IMU agreement figures it reported are superseded by
+% Section~\ref{sec:imu_baseline}, where every number is produced by a named script.
 
-The primary validation metric is the Root Mean Square Error (RMSE) between the ESKF-derived position trajectory and the camera ground truth, computed over the active zones of each session:
-\begin{equation}
-  \text{RMSE}_p = \sqrt{\frac{1}{N_a}\sum_{k \in \text{active}} \left(p_{z,\text{ESKF}}(t_k) - p_{z,\text{cam}}(t_k)\right)^2}
-\end{equation}
-The target is \textbf{RMSE} $< \SI{50}{\milli\metre}$ (\SI{5}{\centi\metre}).
+Post-session validation has two parts, and they are separated deliberately because they
+answer different questions.
 
-\subsubsection{Velocity Agreement}
+\paragraph{Is the reference sound?} The smoother's own consistency is checked by its
+normalised innovation squared, which is driven to approximately unity by the choice of
+process noise rather than assumed --- see Section~\ref{sec:sync_measured} for the frame
+grid this runs on. The resulting per-frame uncertainties are the reference's error bars and
+are released with the corpus: \SI{0.69}{\milli\metre} of height,
+\SI{8.1}{\milli\metre\per\second} of speed. A separate check confirms the reference does
+not flatter itself: the residual in its velocity above \SI{6}{\hertz} is
+\SI{0.08}{\milli\metre\per\second}, and the peak it reports is unchanged whether picked
+from the smoother output or from a further-smoothed version, so it contributes nothing
+measurable to the peak-velocity comparison.
 
-Velocity RMSE is computed similarly:
-\begin{equation}
-  \text{RMSE}_v = \sqrt{\frac{1}{N_a}\sum_{k \in \text{active}} \left(v_{z,\text{ESKF}}(t_k) - v_{z,\text{cam}}(t_k)\right)^2}
-\end{equation}
-Per-rep peak velocity errors are compared against the Courel-Ib\'{a}\~{n}ez equivalence margin of $\pm\SI{0.07}{\metre\per\second}$.
-
-\subsubsection{Bland--Altman Analysis}
-
-For each paired measurement (camera vs.\ ESKF), the Bland--Altman method~\cite{bland1986} is applied:
-\begin{align}
-  \bar{d}  &= \frac{1}{N}\sum_{i=1}^{N}(x_{\text{ESKF},i} - x_{\text{cam},i}) \quad \text{(mean bias)} \\
-  \text{LoA} &= \bar{d} \pm 1.96 \cdot s_d \quad \text{(95\% Limits of Agreement)}
-\end{align}
-where $s_d$ is the standard deviation of the differences.
-The \class{Validator} class computes and persists these metrics in its JSON report.
-
-\subsubsection{Per-Rep ROM Accuracy}
-
-For each annotated repetition, the golden model computes:
-\begin{align}
-  \text{ROM}_\text{cam} &= \max_{t \in \text{rep}} p_\text{cam}(t) - \min_{t \in \text{rep}} p_\text{cam}(t) \\
-  \text{ROM}_\text{ESKF} &= \max_{t \in \text{rep}} p_\text{ESKF}(t) - \min_{t \in \text{rep}} p_\text{ESKF}(t)
-\end{align}
-and reports the per-rep error, aggregate ROM RMSE, and ROM MAE.
-
+\paragraph{Does the inertial estimate agree with it?} That is the subject of
+Section~\ref{sec:imu_baseline}, which reports agreement per repetition with bias, limits of
+agreement, standard error of the estimate and correlation, both given the reference's
+repetition boundaries and with no camera input at all.
 
 \subsection{Synchronisation Validation: Tap Test}
 
@@ -138,18 +125,41 @@ Multiple tap tests within a session can be used to verify that drift remains bou
 
 \subsection{Allan Variance Characterisation}
 
-For IMU noise characterisation per IEEE~952-2020~\cite{ieee952}, the system includes a planned Allan variance analysis pipeline:
-\begin{itemize}[nosep]
-  \item A static recording of 4--12~hours is collected with the IMU motionless on a flat surface.
-  \item The Allan deviation $\sigma(\tau)$ is computed as a function of averaging time $\tau$ for each accelerometer and gyroscope axis.
-  \item The log-log plot of $\sigma(\tau)$ vs.\ $\tau$ reveals:
-  \begin{itemize}[nosep]
-    \item \textbf{Angle/Velocity Random Walk (ARW/VRW):} Slope $= -1/2$ region.
-    \item \textbf{Bias Instability:} Minimum of the curve.
-    \item \textbf{Rate Random Walk:} Slope $= +1/2$ region.
-  \end{itemize}
-  \item These parameters feed directly into the ESKF process-noise covariance matrix $\mathbf{Q}$.
-\end{itemize}
+The sensor is characterised per IEEE~952-2020~\cite{ieee952}, and \emph{from the corpus
+itself} rather than from a dedicated static recording. The overlapping Allan deviation
+$\sigma(\tau)$ is computed over \SI{507}{\second} of stillness in 72 stretches, found in the
+sensor's own angular rate across all \num{84} sessions. Stillness is \emph{found}, never
+assumed from a position in the session: the interval before the first repetition is not
+still, because the bar is being handled, and reading noise off it gives figures two hundred
+times the datasheet.
+
+\begin{table}[t]
+  \centering
+  \caption{Sensor characterisation, from \SI{507}{\second} of detected stillness across the
+           corpus. Produced by \texttt{scripts/imu/noise\_characterisation.py}.}
+  \label{tab:allan}
+  \begin{tabular}{lr}
+    \toprule
+    \multicolumn{2}{l}{\emph{Gyroscope}} \\
+    White noise, angle random walk & \SI{1.93}{\milli\degree\per\second\per\sqrt\hertz} \\
+    Bias instability               & \SI{12.2}{\degree\per\hour} \\
+    Rate random walk               & \SI{7.67}{\milli\degree\per\second\squared\per\sqrt\hertz} \\
+    \midrule
+    \multicolumn{2}{l}{\emph{Accelerometer}} \\
+    White noise, velocity random walk & \SI{50.1}{\micro\gram\per\sqrt\hertz} \\
+    Bias instability                  & \SI{100}{\micro\gram} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Two consequences. First, these are the values the process-noise covariance
+$\mathbf{Q}$ actually needs, and they matter: the filter had previously been run with a
+gyroscope white-noise density set by hand at twenty-six times the measured figure, which
+makes it distrust the gyroscope and lean on an accelerometer being shaken by the lift.
+Second, they bound what the sensor can support. Over a \SI{1.5}{\second} concentric these
+densities permit roughly \SI{20}{} to \SI{25}{\milli\metre\per\second}, against the
+\SI{47.9}{\milli\metre\per\second} measured in Section~\ref{sec:imu_baseline} --- so the
+sensor is not the limiting term.
 
 
 \subsection{Diagnostic Export}

@@ -80,15 +80,21 @@ version of what is and is not in this repository:
   are excluded on size, except for **two sample sessions** that carry both so the pipeline
   runs end to end from a clone: `session_20260510_121411` and `session_20260520_142117`.
 
+## Deleted, so you do not go looking
+
+The Annotation Studio (`src/annotation/`, 23 files) is **gone**, not merely unbuilt: it read
+`<session>/annotations/rep_segments*.json`, of which no session ever had one, and `camera/`
+is read-only so it could not write them either. `../src/gui/PostSessionPanel.cpp` replaces
+it. Also gone: `test_fsync` (a committed 600 kB binary), `test_imureader_fsync.cpp`, two
+orphan `.tex` files, `.superseded/`, two stale build trees, `blind_review/` (regenerable from
+`scripts/tools/make_blind_review.py`) and `vbt_groundtruth/out/`. See `CHANGELOG.md` v1.3.0.
+
 ## Superseded, so you do not read it as current
 
 | path | status |
 |---|---|
-| [`REPO_MAP.md`](REPO_MAP.md) | a plan for a Python package and HSMM decoder that was never built. §1, the acquisition audit, is still true. |
-| `../src/annotation/` | an earlier annotation studio that reads files no session has. Unwired and not built. |
-| `../vbt_groundtruth/` | an earlier standalone attempt, kept for history. |
-| `../paper/07_dataset_format.tex`, `../paper/08_validation.tex` | not `\input` by `main.tex`; `08_dataset_format` and `09_validation` are the live ones. |
-| `../paper/09_validation.tex` | still contains a "Golden Model Pipeline" subsection for a model that was removed, and an Allan-variance section marked *planned* that `PAPER_SOURCE.md` §5.1 now measures. |
+| [`REPO_MAP.md`](REPO_MAP.md) | trimmed to its acquisition audit, which is still true. The four sections documenting the deleted studio and the removed segmenter are gone. Read the layout and frame-rate corrections in its banner. |
+| `../vbt_groundtruth/` | an earlier standalone attempt. Its 462 MB `out/` is deleted; `src/vbt_gt/` stays because `scripts/tools/validate_orientation.py` imports it. |
 
 ## Branch
 

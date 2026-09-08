@@ -3,14 +3,21 @@
 Frozen description of the camera configuration the collection app applies.
 Mirrored to every session's `metadata.json` under `camera_snapshot`.
 
-> ⚠ **Authority note (2026-06-05).** This file is authoritative for the
+> ⚠ **Authority note (updated 2026-09-09).** This file is authoritative for the
 > *capture-time camera/tracker configuration only* (resolution, fps, sync
 > chain, the marker-tracker steps). Its **dataset statistics are historical**
 > — the "9-session" / "existing dataset" numbers below predate the cleaned
 > 84-session corpus — and several implications are **superseded** by the
 > offline, camera-only ground-truth pipeline. **Where anything here conflicts
-> with [REPO_MAP.md](REPO_MAP.md) or [../datasets/README.md](../datasets/README.md),
-> those win — ignore the conflicting statement here.** Known supersessions:
+> with [../paper/PAPER_SOURCE.md](../paper/PAPER_SOURCE.md) or
+> [../datasets/README.md](../datasets/README.md), those win — ignore the
+> conflicting statement here.** (This note used to point at `REPO_MAP.md`,
+> which is itself now trimmed to the part of it that is still true.) One
+> capture-time number below is also stale in a way worth naming: the frame
+> rate is **89.8654 Hz**, measured from each session's own trigger pulses and
+> consistent to 35 ppm across all 84 — not the nominal 90.000, which is wrong
+> by 1500 ppm. Anything here that divides by 90 is an approximation.
+> Known supersessions:
 > marker-quality stats (current detected=1 mean confidence ≈ 0.707, not
 > 0.616); `confidence` is a tracker quality score, **not** a probability; the
 > offline pipeline rotates the track into a **gravity-aligned frame** using the

@@ -567,8 +567,8 @@ interval before the first repetition is not still — the bar is being handled. 
 noise off "the still period before the set" gave figures **200× the datasheet**.
 
 **This closes a gap in the existing draft:**
-[`paper/09_validation.tex`](09_validation.tex) has carried an Allan-variance section marked
-*planned* since it was written. It can now be a measured section.
+[`paper/09_validation.tex`](09_validation.tex) had carried an Allan-variance section marked
+*planned* since it was written; it now reports this measurement, with the table above.
 
 **The sensor is not the limit.** Over a 1.5 s concentric these densities permit roughly
 20–25 mm/s against a measured 47.9.
@@ -1274,14 +1274,12 @@ to 1.5 by moving the per-exercise and per-load breakdowns of §8.3 to a table wi
 sentence of prose. **Do not cut §V or §VI** — the annotation and its validation are what make
 the corpus worth releasing, and they are the two sections no comparable dataset provides.
 
-**Housekeeping in the existing draft**: [`paper/07_dataset_format.tex`](07_dataset_format.tex)
-and [`paper/08_validation.tex`](08_validation.tex) exist but are not `\input` by
-[`main.tex`](main.tex) — `08_dataset_format` and `09_validation` are the live ones.
-[`09_validation.tex`](09_validation.tex) still contains a "Golden Model Pipeline" subsection
-describing a model that has been removed, and its Allan-variance section is marked *planned*
-where §5.1 now measures it. [`main.tex`](main.tex) carries a placeholder byline
-("Author Name / Department of XYZ") and a title describing the earlier
-system-description paper.
+**Housekeeping in the existing draft: done.** The two orphan `.tex` files are deleted;
+[`09_validation.tex`](09_validation.tex) no longer describes the removed Golden Model and its
+Allan section now reports the measurement of §5.1 rather than a plan;
+[`main.tex`](main.tex) carries the agreed title and an explicit
+`[AUTHOR LIST TO BE COMPLETED]` byline — **the author list and affiliation are recorded
+nowhere in this repository and must be filled in by hand before submission.**
 
 ### 11.2 Figures, and which script makes each
 

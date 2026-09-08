@@ -669,12 +669,11 @@ struct SessionInfo {
 struct AppConfig {
     int           schema_version = 2;
     std::string   dataset_root = "./datasets";
-    /// Step-7 ground-truth labeling tool roots (kept OUT of the read-only
-    /// dataset). Labels the studio writes go to gt_labels_root/<session_id>/
-    /// ground_truth.json; pipeline prefill + reference trace are read from
-    /// gt_prefill_root/<session_id>/ (written by export_prefill_for_studio.py).
-    std::string   gt_labels_root  = "./vbt_groundtruth/labels";
-    std::string   gt_prefill_root = "./vbt_groundtruth/out/prefill";
+    /// gt_labels_root and gt_prefill_root were removed with the Annotation Studio they
+    /// served: they pointed at ./vbt_groundtruth/{labels,out/prefill}, written by an
+    /// export_prefill_for_studio.py that no longer exists, for a studio whose input files
+    /// no session in the corpus ever had. NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT
+    /// ignores unknown keys, so an existing vbt_config.json carrying them still loads.
     /// Where the live real-time annotation for each session lives:
     /// <online_annotation_root>/<session_id>/rt_annotation.csv. Kept out of the
     /// dataset tree so that neither annotator can write next to the measurement.
@@ -690,7 +689,7 @@ struct AppConfig {
     std::vector<ExerciseProfile> exercise_profiles;
 
     NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(AppConfig, schema_version, dataset_root,
-                                   gt_labels_root, gt_prefill_root, online_annotation_root,
+                                   online_annotation_root,
                                    bids_layout, enable_audio_cues, enable_notifications,
                                    imu, camera, sync, rep_seg, plausibility,
                                    exercise_profiles)

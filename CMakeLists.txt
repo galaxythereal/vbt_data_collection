@@ -172,11 +172,12 @@ set(APP_SOURCES
     src/gui/PlotPanel.cpp
     src/gui/CalibrationPanel.cpp
     src/gui/PostSessionPanel.cpp
-    # src/annotation/ -- the old Annotation Studio. It reads
-    # <session>/annotations/rep_segments*.json, of which there are ZERO in the corpus, and
-    # raw/ is read-only so it cannot write them either. Every control in it acted on an
-    # empty list. Left on disk, no longer built or reachable; the post-session annotation
-    # window replaces it.
+    # The old Annotation Studio (src/annotation/) is DELETED, not merely unbuilt. It read
+    # <session>/annotations/rep_segments*.json, of which there were ZERO in the corpus, and
+    # camera/ is read-only so it could not write them either -- every control in it acted on
+    # an empty list. src/gui/PostSessionPanel.cpp replaces it. Its two live dependencies,
+    # src/processing/RepAnnotation and src/gui/ReplayMode, are reached from MainWindow and
+    # stay.
     src/utils/SerialPort.cpp
     src/utils/Timer.cpp
     src/utils/AudioCue.cpp

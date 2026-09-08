@@ -35,7 +35,7 @@ separately.
 Ten sessions were selected by rule rather than by hand: proportional across the five
 lifts, a fixed-seed shuffle within each, both recorder builds covered, and nothing
 excluded for being difficult -- choosing easy sessions would be choosing the answer.
-`blind_review/manifest.json` records the seed and the selection, so the choice can be
+The pack itself (`blind_review/`) has been deleted as regenerable: `scripts/tools/make_blind_review.py` rebuilds it from the same seed, so the choice can be
 checked rather than believed. The ten hold 186 repetitions, of which 185 are released.
 
 A rater outside the annotation work was given the audits for those ten sessions and asked
