@@ -5,8 +5,9 @@
 build/
 build-*/
 .cache/
-.venv/               # 627 MB; it self-excludes via a .gitignore inside itself, which is
-                     # too fragile a thing to rely on for an accident that size
+# .venv is 627 MB and self-excludes via a .gitignore inside itself, which is too
+# fragile a thing to rely on for an accident that size. Listed here explicitly.
+.venv/
 __pycache__/
 *.log
 .DS_Store
@@ -14,8 +15,10 @@ __pycache__/
 .idea/
 .codex/
 diagnostics/
-imgui.ini            # runtime window layout, rewritten every run
-vbt_config.json      # local configuration, carries machine-specific paths
+# imgui.ini is the runtime window layout, rewritten every run.
+# vbt_config.json is local configuration and carries machine-specific paths.
+imgui.ini
+vbt_config.json
 
 # The paper is NOT published. paper/ holds the manuscript, its sources
 # (PAPER_SOURCE.md, PROMPT.md), the .tex sections, references.bib and the figures.
