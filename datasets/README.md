@@ -1,22 +1,23 @@
 # datasets/
 
-> **WHAT IS IN THE REPOSITORY.** The raw measurement is **not** published: `camera/`
-> (marker positions, infrared video) and `imu/` (the inertial streams) are about 7.6 GB and
-> are held outside the repository. Everything derived from them is here — the annotation
-> (`annotation_live.csv`, `annotation_online.csv`, `annotation_offline.csv`,
-> `annotation_reviewed.csv`), `ground_truth.csv`, `metadata.json`, `rotation.json`,
-> `sync_map.csv`, `manifest.json`, `events.jsonl`, `CHECKSUMS.sha256`.
+> **WHAT IS IN THE REPOSITORY.** Three things per session are published — the
+> **annotation** (`annotation_live.csv`, `annotation_online.csv`, `annotation_offline.csv`,
+> `annotation_reviewed.csv`), the **metadata** (`metadata.json`, `manifest.json`,
+> `rotation.json`, `sync_map.csv`, `events.jsonl`, `CHECKSUMS.sha256`) and the four
+> **audits** (`audit_post_session.png`, `audit_imu.png`, `audit_pipeline_vqf.png`,
+> `audit_pipeline_eskf.png`) — plus `ground_truth.csv`, `README.md`, `REVIEW.md` and
+> `KNOWN_LIMITATIONS.md` at this level.
 >
-> Two files are excluded on size rather than on principle: `smoothed.csv`, the per-frame
-> reference track (118 MB over the corpus), and the per-session audit images (165 MB).
-> **Two sample sessions carry both** so the pipeline can be run end to end from a clone:
-> `session_20260510_121411` (biceps curl, 8 repetitions) and `session_20260520_142117`
-> (bench press, 27). Re-deriving the annotation for the other 82 needs the raw data.
+> **Not published:** `camera/` (marker positions, infrared video) and `imu/` (the raw
+> streams), about 7.6 GB; and `smoothed.csv`, the per-frame reference track, which is
+> derived but is neither annotation, metadata nor audit. The consequence is worth stating
+> plainly: **the annotation cannot be re-derived from a clone**, because both its input and
+> the track it was read off are absent. What a clone gives you is the annotation itself, the
+> ground truth, the audits to check them against, and the code that produced all three.
 >
 > Subject identifiers are pseudonyms (`S01`…). All participants consented to the use of the
-> recorded data. The layout below describes a session as recorded, including the parts held
-> back, so that the schema is complete.
-
+> recorded data. The layout below describes a session **as recorded**, including the parts
+> held back, so that the schema is complete.
 
 One folder per session. Nothing is nested by processing stage, and no folder is named
 after a process.

@@ -29,7 +29,7 @@ camera rather than helped by it.
 
 | you want | read |
 |---|---|
-| the whole story, every decision, every path | [`paper/PAPER_SOURCE.md`](paper/PAPER_SOURCE.md) |
+| the whole story, every decision, every path | [`paper/PAPER_SOURCE.md`](paper/PAPER_SOURCE.md) — **local only, not on the remote** |
 | an orientation to this repository | [`docs/WHAT_IS_HERE.md`](docs/WHAT_IS_HERE.md) |
 | the inertial design record, and what it means for a chip | [`docs/INERTIAL_ENGINE.md`](docs/INERTIAL_ENGINE.md) |
 | the annotation rules, stated verbatim | [`scripts/reference/annotate_v2.py`](scripts/reference/annotate_v2.py) header, and [`src/offline/OfflineAnnotator.h`](src/offline/OfflineAnnotator.h) |
@@ -38,21 +38,29 @@ camera rather than helped by it.
 
 ## What is in this repository, and what is not
 
-**Published here.** All source — the C++ acquisition and annotation app, the Python
-reference implementation and analysis, the ESP32 firmware. The **annotation** (four CSVs per
-session: live, online, offline, reviewed), the **ground truth**, the per-session metadata,
-the gravity rotation, and the **sync map** carrying the frame rate measured from each
-session's own trigger pulses. About 22 MB.
+**Published.** All source — the C++ acquisition and annotation app, the Python reference
+implementation and analysis, the ESP32 firmware — and all documentation under
+[`docs/`](docs/). From the corpus, per session: the **annotation** (four CSVs — live,
+online, offline, reviewed), the **metadata** (`metadata.json`, `manifest.json`,
+`rotation.json`, `sync_map.csv`, `events.jsonl`, `CHECKSUMS.sha256`) and the four
+**audits** (`audit_post_session.png`, `audit_imu.png`, `audit_pipeline_vqf.png`,
+`audit_pipeline_eskf.png`). At the corpus root: [`ground_truth.csv`](datasets/ground_truth.csv),
+[`README.md`](datasets/README.md), [`REVIEW.md`](datasets/REVIEW.md),
+[`KNOWN_LIMITATIONS.md`](datasets/KNOWN_LIMITATIONS.md). About 183 MB, of which the 336
+audit images are 165 MB.
 
-**Not published here.** The **raw measurement** — camera marker positions, infrared video,
-and the inertial streams — is about 7.6 GB and is held outside the repository. Two
-consequences worth knowing:
+**Not published.**
 
-- The per-frame reference track (`smoothed.csv`, 118 MB over the corpus) and the per-session
-  audit images (165 MB) are excluded on size. **Two sample sessions carry both**, so the
-  pipeline can be run end to end from this repository alone —
-  `session_20260510_121411` (biceps curl) and `session_20260520_142117` (bench press).
-- Re-deriving the annotation for the other 82 sessions needs the raw data.
+- **The measurement.** `camera/` (marker positions, infrared video) and `imu/` (the raw
+  streams), about 7.6 GB, held outside the repository.
+- **`smoothed.csv`**, the per-frame reference track (118 MB over the corpus). It is derived
+  rather than measured, but it is neither annotation, metadata nor audit. **Consequence:
+  re-deriving the annotation from a clone is not possible** — the reference track and the
+  raw data it comes from are both absent. The annotation, the ground truth and the audits
+  are what the corpus offers; the code that produced them is here in full.
+- **`paper/`** — the manuscript, its sources (`PAPER_SOURCE.md`, `PROMPT.md`), the `.tex`
+  sections, `references.bib` and its figures. **Links to `paper/…` in this README and under
+  `docs/` resolve in a local clone but not on the remote.**
 
 Subject identifiers are pseudonyms (`S01`…). All participants consented to the use of the
 recorded data.
@@ -63,9 +71,8 @@ recorded data.
     .venv/bin/python scripts/imu/pipeline_stats.py   --n 84   # the statistics of §8
     .venv/bin/python scripts/imu/independence.py     --n 84   # what the camera supplies
 
-Each needs the raw streams. On the two sample sessions, `--n 1` works from the repository as
-cloned. Every number in the write-up names the script that produced it; see
-[`paper/PAPER_SOURCE.md`](paper/PAPER_SOURCE.md) §12 for the full inventory.
+Each needs the raw streams, which are not in the repository — see above. Every number in
+the write-up names the script that produced it.
 
 ## Hardware (typical setup)
 

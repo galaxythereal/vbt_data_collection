@@ -72,13 +72,21 @@ between the sensors, not between two implementations.
 [`../datasets/README.md`](../datasets/README.md) has the per-session layout. The short
 version of what is and is not in this repository:
 
-- **here**: the annotation (four CSVs per session — live, online, offline, reviewed), the
-  ground truth (`ground_truth.csv`, 1400 × 46, self-contained), per-session metadata, the
-  gravity rotation, and the sync map. ~22 MB.
-- **not here**: the raw measurement (marker positions, infrared video, inertial streams),
-  ~7.6 GB, held outside the repository. The per-frame reference track and the audit images
-  are excluded on size, except for **two sample sessions** that carry both so the pipeline
-  runs end to end from a clone: `session_20260510_121411` and `session_20260520_142117`.
+- **here**, per session: the **annotation** (four CSVs — live, online, offline, reviewed),
+  the **metadata** (`metadata.json`, `manifest.json`, `rotation.json`, `sync_map.csv`,
+  `events.jsonl`, `CHECKSUMS.sha256`) and the four **audits** (`audit_post_session.png`,
+  `audit_imu.png`, `audit_pipeline_vqf.png`, `audit_pipeline_eskf.png`). At the root:
+  `ground_truth.csv` (1400 × 46, self-contained), `README.md`, `REVIEW.md`,
+  `KNOWN_LIMITATIONS.md`. ~183 MB, of which the audits are 165.
+- **not here**: the measurement — `camera/` and `imu/`, ~7.6 GB — and `smoothed.csv`, the
+  per-frame reference track, which is derived but is neither annotation, metadata nor audit.
+  So the annotation cannot be re-derived from a clone; the code that produced it is here in
+  full, but its input is not.
+
+**`paper/` is also not published**, so every `../paper/…` link below resolves in a local
+clone and not on the remote. That includes `PAPER_SOURCE.md`, which is the authority for
+every claim in this project — if you are reading this on the remote, that document is the
+one thing you do not have.
 
 ## Deleted, so you do not go looking
 

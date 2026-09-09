@@ -1,49 +1,63 @@
-# ── Build artefacts ───────────────────────────────────────────────────────────
+# ─── Outside datasets/, everything is published ──────────────────────────────
+# All source, firmware, documents, the paper and its figures are tracked. The only
+# things excluded here are GENERATED or MACHINE-LOCAL: they are not authored content
+# and would be rebuilt or rewritten on any other machine.
 build/
 build-*/
 .cache/
+.venv/               # 627 MB; it self-excludes via a .gitignore inside itself, which is
+                     # too fragile a thing to rely on for an accident that size
 __pycache__/
 *.log
-.superseded/
-
-# ── Editor and OS ─────────────────────────────────────────────────────────────
+.DS_Store
 .vscode/
 .idea/
-.DS_Store
 .codex/
-imgui.ini
 diagnostics/
+imgui.ini            # runtime window layout, rewritten every run
+vbt_config.json      # local configuration, carries machine-specific paths
 
-# ── Local configuration and reviewer packs ───────────────────────────────────
-vbt_config.json
-blind_review/
+# The paper is NOT published. paper/ holds the manuscript, its sources
+# (PAPER_SOURCE.md, PROMPT.md), the .tex sections, references.bib and the figures.
+# It stays local. Note that README.md and docs/ link into it: those links resolve in
+# a local clone and will not resolve on the remote, which is stated where they appear.
+paper/
 
-# ── The corpus ───────────────────────────────────────────────────────────────
-# RAW DATA IS NOT PUBLISHED. The camera streams (marker positions, the infrared
-# video) and the inertial streams are ~7.6 GB and are held outside the
-# repository. What IS published is everything derived from them: the annotation,
-# the ground truth, and the per-session files needed to read those.
+# ─── Inside datasets/ ───────────────────────────────────────────────────────
+# THE MEASUREMENT IS NOT PUBLISHED. camera/ (marker positions, infrared video) and
+# imu/ (the raw streams) are ~7.6 GB and stay outside the repository, as does
+# smoothed.csv, the per-frame reference track. What IS published, per session, is the
+# ANNOTATION, the METADATA and the AUDITS; and at the datasets/ root, the ground
+# truth and the corpus documents.
 #
-# Excluded on size rather than on principle: smoothed.csv is the per-frame
-# reference track (118 MB over the corpus) and the per-session audit images are
-# a further 165 MB. Two sample sessions carry both, so the pipeline can be run
-# end to end from the repository alone; see datasets/README.md.
+# Written as: ignore everything, then re-admit by name. The two directory
+# re-admissions (!datasets/session_*/) are required — an ignored directory is not
+# descended into, so a rule inside it would never be reached.
 datasets/*
-!datasets/*.csv
-!datasets/*.md
-!datasets/*.png
-!datasets/session_*/
 datasets/session_*/*
+
+# the ground truth and the corpus documents
+!datasets/ground_truth.csv
+!datasets/README.md
+!datasets/REVIEW.md
+!datasets/KNOWN_LIMITATIONS.md
+!datasets/*.png
+
+# the session folders themselves, so the rules below are reachable
+!datasets/session_*/
+
+# the annotation: as recorded live, the same algorithm re-run on the corrected
+# track, rules 1-6, and the reviewer's accept/reject
 !datasets/session_*/annotation_*.csv
+
+# the metadata: what describes the session rather than measures it
 !datasets/session_*/metadata.json
+!datasets/session_*/manifest.json
 !datasets/session_*/rotation.json
 !datasets/session_*/sync_map.csv
-!datasets/session_*/manifest.json
-!datasets/session_*/CHECKSUMS.sha256
 !datasets/session_*/events.jsonl
+!datasets/session_*/CHECKSUMS.sha256
 
-# The two sample sessions, complete enough to run the pipeline on
-!datasets/session_20260510_121411/smoothed.csv
-!datasets/session_20260510_121411/audit_*.png
-!datasets/session_20260520_142117/smoothed.csv
-!datasets/session_20260520_142117/audit_*.png
+# the audits: the reference annotation, the inertial comparison, and the
+# camera-free pipeline under each attitude engine
+!datasets/session_*/audit_*.png
